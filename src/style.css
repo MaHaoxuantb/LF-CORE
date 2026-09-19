@@ -182,6 +182,9 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .node-content { position: relative; flex: 1 1 auto; min-height: 0; margin: 8px 0 2px; overflow: hidden; cursor: text; user-select: text; font: .73rem/1.45 Georgia, 'Times New Roman', serif; color: #697486; }
 .topic-card.content-overflow .node-content::after { content: '…'; position: absolute; right: 0; bottom: 0; padding-left: 15px; background: linear-gradient(90deg, #fff0, #fff 35%); color: #8b93a3; pointer-events: none; }
 .node-content:empty::before { content: 'Add content…'; color: #a0a8b2; }
+.node-markdown-editor { display: block; width: 100%; min-height: 60px; max-height: 360px; resize: none; overflow: auto; border: 1px solid #aaa4e2; border-radius: 6px; outline: 0; padding: 6px 7px; background: #fbfaff; color: #3e4655; font: .72rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2; }
+.node-markdown-editor:focus { box-shadow: 0 0 0 2px #d9d5ff; }
+.topic-card.editing-node-content .node-content { overflow: visible; }
 .node-content h1, .node-content h2, .node-content h3, .node-content h4, .node-content h5, .node-content h6 { margin: 5px 0 4px; padding: 0; border: 0; font: 700 .85rem/1.25 ui-sans-serif, system-ui, sans-serif; }
 .node-content p, .node-content ul, .node-content ol, .node-content blockquote { margin: 0 0 6px; }
 .node-content .katex-display { margin: 7px 0; }

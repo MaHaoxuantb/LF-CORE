@@ -534,7 +534,7 @@ function openContextMenu(target, x, y) {
     option('Delete selected ideas', () => removeNodes([...selectedIds]), true);
   } else if (node) {
     option('Open details', () => selectNode(node.id));
-    option('Edit content', () => { selectNode(node.id); document.querySelector('.details-markdown')?.focus(); });
+    option('Edit content on canvas', () => beginNodeMarkdownEdit(node.id));
     if (passage?.targetId === node.id) option('Create idea from highlight', () => { selectedPassage = passage; createAnchoredBranch(); });
     option('Add child', () => addNode(node.id));
     option('Add sibling', () => addNode(node.parentId));
@@ -730,6 +730,11 @@ function renderNode(node, item) {
   content.innerHTML = renderMarkdown(node.document?.markdown || '');
   content.addEventListener('mouseup', (event) => capturePassage(content, node.id, event));
   content.addEventListener('keyup', (event) => capturePassage(content, node.id, event));
+  content.addEventListener('dblclick', (event) => {
+    if (event.target.closest('.anchor-mark')) return;
+    event.stopPropagation();
+    beginNodeMarkdownEdit(node.id);
+  });
   const count = item.nodes.filter((entry) => entry.parentId === node.id).length;
   const footer = count ? el('div', { class: 'topic-footer' }, button(node.collapsed ? `＋ ${count}` : `− ${count}`, (event) => { event.stopPropagation(); change((entry) => { entry.nodes.find((n) => n.id === node.id).collapsed = !node.collapsed; }); }, 'collapse-button', { 'aria-label': node.collapsed ? 'Expand children' : 'Collapse children' })) : null;
   const resize = button('', () => {}, 'resize-grip node-resize', { 'aria-label': `Resize ${node.title}`, title: 'Drag to resize; arrow keys also work' });
@@ -740,7 +745,12 @@ function renderNode(node, item) {
   card.append(el('div', { class: 'topic-top' }, grip), title, content);
   if (footer) card.append(footer);
   card.append(link, resize);
-  card.addEventListener('click', (event) => { if (event.target.closest('.anchor-mark, button, input') || !window.getSelection()?.isCollapsed) return; selectNode(node.id); });
+  card.addEventListener('click', (event) => {
+    // Leave the content surface alone so the browser can deliver a dblclick
+    // without the first click replacing the card's DOM.
+    if (event.target.closest('.node-content, .anchor-mark, button, input') || !window.getSelection()?.isCollapsed) return;
+    selectNode(node.id);
+  });
   card.addEventListener('dblclick', (event) => { if (!event.target.closest('.node-content')) beginRename(node.id); });
   card.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); selectNode(node.id); } });
   return card;
@@ -875,6 +885,56 @@ function startNodeDrag(event, node, card, grip) {
 }
 
 function selectNode(id) { selectedId = id; selectedIds.clear(); selectedPassage = null; editGroup = null; renderWorkspace(); }
+
+function beginNodeMarkdownEdit(id) {
+  const item = work();
+  const node = item?.nodes.find((entry) => entry.id === id);
+  const card = document.querySelector(`[data-node="${id}"]`);
+  if (!node || !card) return;
+  const preview = card.querySelector('.node-content');
+  if (!preview || preview.querySelector('.node-markdown-editor')) return;
+  const editor = el('textarea', { class: 'node-markdown-editor', 'aria-label': `${node.title} Markdown`, spellcheck: 'true' });
+  editor.value = node.document?.markdown || '';
+  const originalMarkdown = editor.value;
+  preview.replaceChildren(editor);
+  card.classList.add('editing-node-content');
+  const finish = (save = true) => {
+    if (!editor.isConnected) return;
+    if (!save) {
+      if (editor.value !== originalMarkdown) {
+        change((entry) => { entry.nodes.find((entryNode) => entryNode.id === id).document.markdown = originalMarkdown; }, { group: `markdown:${id}`, rerender: false });
+      }
+      editGroup = null;
+      renderWorkspace();
+      return;
+    }
+    // Persist once more on exit in case the browser did not emit an input
+    // event for the final change (for example, IME/composition input).
+    if (editor.value !== (work().nodes.find((entry) => entry.id === id)?.document?.markdown || '')) {
+      change((entry) => { entry.nodes.find((entryNode) => entryNode.id === id).document.markdown = editor.value; }, { group: `markdown:${id}`, rerender: false });
+    }
+    editGroup = null;
+    renderWorkspace();
+  };
+  editor.addEventListener('blur', () => finish(true), { once: true });
+  editor.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); editor.blur(); }
+  });
+  editor.addEventListener('input', () => {
+    change((entry) => { entry.nodes.find((entryNode) => entryNode.id === id).document.markdown = editor.value; }, { group: `markdown:${id}`, rerender: false });
+    resizeNodeEditor(editor);
+    updateCardOverflow(card);
+  });
+  resizeNodeEditor(editor);
+  editor.focus();
+  editor.select();
+}
+
+function resizeNodeEditor(editor) {
+  editor.style.height = 'auto';
+  editor.style.height = `${Math.max(60, Math.min(editor.scrollHeight + 2, 360))}px`;
+}
 
 function beginRename(id) {
   const card = document.querySelector(`[data-node="${id}"]`); if (!card) return;
