@@ -42,6 +42,28 @@ let state, loadError = null, saveError = null;
 try { state = loadState(); } catch (error) { state = emptyState(); loadError = error.message; saveError = error.message; }
 let saveMode = 'auto';
 try { saveMode = loadSaveMode(); } catch { /* Browser storage can be unavailable. */ }
+const THEME_KEY = 'learning-canvas:theme-v1';
+const COLOR_KEY = 'learning-canvas:color-v1';
+const themes = ['auto', 'light', 'dark'];
+const colors = ['violet', 'blue', 'green', 'rose', 'amber'];
+let theme = localStorage.getItem(THEME_KEY) || 'auto';
+let color = localStorage.getItem(COLOR_KEY) || 'violet';
+if (!themes.includes(theme)) theme = 'auto';
+if (!colors.includes(color)) color = 'violet';
+function applyAppearance() {
+  const accentColors = { violet: '#635fdb', blue: '#2563a9', green: '#287a58', rose: '#b04468', amber: '#aa6b20' };
+  const accentSoftColors = { violet: '#e9e6ff', blue: '#dcecff', green: '#dff4e8', rose: '#ffe0e9', amber: '#ffedcf' };
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.dataset.color = color;
+  document.documentElement.style.setProperty('--accent', accentColors[color] || accentColors.violet);
+  document.documentElement.style.setProperty('--accent-soft', accentSoftColors[color] || accentSoftColors.violet);
+}
+function setAppearance(nextTheme = theme, nextColor = color) {
+  theme = nextTheme; color = nextColor;
+  localStorage.setItem(THEME_KEY, theme); localStorage.setItem(COLOR_KEY, color);
+  applyAppearance(); renderWorkspace();
+}
+applyAppearance();
 let lastSaved = JSON.stringify(state), dirty = false;
 let currentId = null, selectedId = null, selectedIds = new Set(), editingMarkdown = false, outlineOpen = false;
 let selectedPassage = null, editGroup = null, view = { x: 0, y: 0, zoom: 1 };
@@ -362,6 +384,7 @@ function renderWorkspace() {
       el('span', { class: 'workspace-title', text: item.title })),
     el('div', { class: 'header-right' },
       saveControl(),
+      appearanceControl(),
       historyButton('undo', undo, !!state.history[item.id]?.length),
       historyButton('redo', redo, !!state.redo[item.id]?.length)));
   app.replaceChildren(el('div', { class: 'workspace-shell' }, renderCanvas(item), chrome));
@@ -375,6 +398,24 @@ function renderWorkspace() {
   document.querySelectorAll('.markdown-editor').forEach(resizeEditor);
   measurePaper();
   if (selectedPassage) renderPassageToolbar();
+}
+
+function appearanceControl() {
+  const wrapper = el('div', { class: 'appearance-control' });
+  const control = button('◐', () => wrapper.classList.toggle('open'), 'header-icon', { 'aria-label': 'Appearance', title: 'Appearance' });
+  const menu = el('div', { class: 'appearance-menu', role: 'menu', 'aria-label': 'Appearance settings' });
+  menu.append(el('strong', { text: 'Appearance' }));
+  const modeIcons = { auto: '◐', light: '☀', dark: '☾' };
+  const colorIcons = { violet: '●', blue: '●', green: '●', rose: '●', amber: '●' };
+  const choice = (value, current, icon, action) => {
+    const option = button('', action, 'appearance-option', { role: 'menuitemradio', 'aria-checked': current === value });
+    option.append(el('span', { class: 'appearance-option-icon', text: icon }), el('span', { text: value[0].toUpperCase() + value.slice(1) }), el('span', { class: 'appearance-option-check', text: current === value ? '✓' : '' }));
+    if (colorIcons[value]) option.dataset.color = value;
+    return option;
+  };
+  menu.append(el('label', { text: 'MODE' }), ...themes.map((value) => choice(value, theme, modeIcons[value], () => { setAppearance(value, color); wrapper.classList.remove('open'); })));
+  menu.append(el('label', { text: 'ACCENT COLOR' }), ...colors.map((value) => choice(value, color, colorIcons[value], () => { setAppearance(theme, value); wrapper.classList.remove('open'); })));
+  wrapper.append(control, menu); return wrapper;
 }
 
 function iconButton(path, label, action, active = false) {
@@ -400,6 +441,9 @@ function renderCanvas(item) {
   scene.append(renderPaper(item));
   scene.append(renderConnectors(item));
   for (const node of item.nodes) if (isVisible(item, node)) scene.append(renderNode(node, item));
+  // Anchored branch lines must sit above the source card: their origin is a
+  // highlighted passage inside that card, not its boundary.
+  scene.append(renderAnchorConnectors(item));
   for (const edge of item.edges) {
     const from = item.nodes.find((node) => node.id === edge.fromId);
     const to = item.nodes.find((node) => node.id === edge.toId);
@@ -667,17 +711,19 @@ function renderEdgeLabel(item, edge) {
 }
 
 function renderConnectors(item) {
+  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#514fc1';
   const svg = el('svg', { class: 'connectors', viewBox: '-4000 -4000 8000 8000', 'aria-hidden': 'true' });
   const defs = el('defs');
-  for (const [id, color] of [['arrow-primary', '#9186cb'], ['arrow-cross', '#9ca6b2']]) {
+  for (const [id, color] of [['arrow-primary', accent], ['arrow-cross', '#9ca6b2']]) {
     defs.append(el('marker', { id, markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient: id === 'arrow-cross' ? 'auto-start-reverse' : 'auto', markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: color, 'stroke-width': '1.6', 'stroke-opacity': '.72', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
   }
   svg.append(defs);
   for (const node of item.nodes) {
-    if (!isVisible(item, node)) continue;
-    if (!node.parentId && !node.anchor) continue;
+    if (!isVisible(item, node) || node.anchor) continue;
+    if (!node.parentId) continue;
     const source = sourceFor(item, node);
     const path = el('path', { d: source ? curve(source.point, pointFor(item, node.id), source.fromY) : '', class: 'branch-line', 'data-to': node.id, 'marker-end': 'url(#arrow-primary)' });
+    path.style.stroke = accent;
     if (!source) path.style.display = 'none';
     svg.append(path);
     if (node.anchor) {
@@ -690,6 +736,26 @@ function renderConnectors(item) {
     const from = item.nodes.find((node) => node.id === edge.fromId), to = item.nodes.find((node) => node.id === edge.toId);
     if (!from || !to || !isVisible(item, from) || !isVisible(item, to)) continue;
     svg.append(el('path', { d: curve(pointFor(item, from.id), pointFor(item, to.id)), class: 'cross-line', 'data-edge': edge.id, 'marker-start': 'url(#arrow-cross)', 'marker-end': 'url(#arrow-cross)' }));
+  }
+  return svg;
+}
+
+function renderAnchorConnectors(item) {
+  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#514fc1';
+  const svg = el('svg', { class: 'connectors anchor-connectors', viewBox: '-4000 -4000 8000 8000', 'aria-hidden': 'true' });
+  const defs = el('defs');
+  defs.append(el('marker', { id: 'arrow-anchor', markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient: 'auto', markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: accent, 'stroke-width': '1.6', 'stroke-opacity': '.72', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
+  svg.append(defs);
+  for (const node of item.nodes) {
+    if (!isVisible(item, node) || !node.anchor) continue;
+    const source = sourceFor(item, node);
+    const path = el('path', { d: source ? curve(source.point, pointFor(item, node.id), source.fromY) : '', class: 'branch-line', 'data-to': node.id, 'marker-end': 'url(#arrow-anchor)' });
+    path.style.stroke = accent;
+    if (!source) path.style.display = 'none';
+    svg.append(path);
+    const dot = el('circle', { class: 'origin-dot', 'data-origin': node.id, cx: source?.point.x ?? 0, cy: source?.point.y ?? 0, r: '3' });
+    if (!source) dot.style.display = 'none';
+    svg.append(dot);
   }
   return svg;
 }
@@ -1190,6 +1256,8 @@ function markAnchors(preview, nodes) {
       if (!match) fragment.append(document.createTextNode(text));
       else {
         const mark = el('span', { class: 'anchor-mark', tabindex: '0', role: 'button', 'data-anchor-node': match.node.id, title: 'Open connected idea', text });
+        mark.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--accent-soft').trim();
+        mark.style.borderBottomColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
         const open = (event) => {
           if (event.type === 'click' && !window.getSelection()?.isCollapsed) return;
           event.stopPropagation(); selectedId = match.node.id; selectedPassage = null;
