@@ -274,7 +274,7 @@ function renderHome() {
     ensurePositions(item); persist(); openWorkspace(item.id);
   }, 'example-link');
   if (loadError) exampleButton.disabled = true;
-  const main = el('main', { class: 'home-main' }, el('div', { class: 'home-eyebrow', text: 'YOUR WORKSPACE' }), el('h1', { text: 'Follow the shape of an idea.' }), el('p', { class: 'home-lead', text: 'Write at the center. Explore connected ideas, then return to what matters.' }), form, exampleButton, el('div', { class: 'list-heading' }, el('h2', { text: 'Your canvases' }), saveControl()), cards);
+  const main = el('main', { class: 'home-main' }, el('div', { class: 'home-eyebrow', text: 'YOUR WORKSPACE' }), el('h1', { text: 'Follow the shape of an idea.' }), el('p', { class: 'home-lead', text: 'Write at the center. Explore connected ideas, then return to what matters.' }), form, exampleButton, el('div', { class: 'list-heading' }, el('h2', { text: 'Your canvases' })), cards);
   if (loadError) main.prepend(el('p', { class: 'error-banner', text: `${loadError} Existing data was left untouched.` }));
   app.replaceChildren(el('div', { class: 'home' }, header, main));
   updateSaveControls();
