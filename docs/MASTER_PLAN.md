@@ -11,7 +11,7 @@ Read [core concepts](CORE_CONCEPTS.md) for product and data rules, and [design g
 Use a modular desktop-capable web UI with local persistence. Keep these responsibilities separate:
 
 1. **Domain and storage:** workspaces, article revisions, nodes, edges, anchors, proposals, source records, and canvas positions.
-2. **Article editor:** structured sections, selections, revision preview, undo, and anchor repair.
+2. **Article editor:** one Markdown document with LaTeX support, heading outline, selections, revision preview, undo/redo, and anchor repair.
 3. **Graph view:** nodes, labeled links, manual positions, and navigation to anchors.
 4. **Source reader:** PDF and pasted text, selection, source anchors, and local file management.
 5. **AI adapter:** selected-context packaging, freeform request, typed proposal response, research/source verification, and error handling.
@@ -32,7 +32,7 @@ For the first build, prefer integrating focused open-source components over fork
 
 ### Phase 1 — Manual knowledge workspace
 
-**Build:** library, workspace creation, editable master article, basic sections, graph nodes and links, highlight-to-node action, return navigation, autosave, undo, and keyboard alternatives. Seed an example article manually; AI is not needed to validate the core loop.
+**Build:** library, workspace creation, editable Markdown master article with a toggleable heading outline, graph nodes and links, highlight-to-node action, return navigation, autosave, undo/redo, resize controls, and keyboard alternatives. Seed an example article manually; AI is not needed to validate the core loop. Question entry belongs to the later chat interface, not the graph node model.
 
 **Exit gate:** after restarting the app, a user can open a workspace, read and edit the article, create a node from several highlighted sentences, and navigate both ways without broken links or lost data.
 
@@ -46,7 +46,7 @@ For the first build, prefer integrating focused open-source components over fork
 
 **Build:** generate a proposed outline and full introductory article from a topic; add freeform Ask on selections and nodes; supply a few suggested prompts; return typed proposals; show provenance and uncertainty. Implement “Put this in the article” as a previewed, reversible edit. Add model configuration and clear unavailable/error states.
 
-**Exit gate:** a user can start with “I want to learn LEAN,” read the generated article, investigate a selected proof step, and accept a useful explanation into a specific article section. The article does not change when the answer is merely viewed. No citation appears without a real source reference.
+**Exit gate:** a user can start with “I want to learn LEAN,” read the generated article, investigate a selected proof step, and accept a useful explanation into a specific article passage. The article does not change when the answer is merely viewed. No citation appears without a real source reference.
 
 ### Phase 4 — Research and consolidation
 

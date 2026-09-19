@@ -7,7 +7,7 @@ Aim for a modern, Apple-like experience in **clarity, typography, responsiveness
 ## Screen structure
 
 - **Library:** a small list of workspaces, a prominent “I want to learn …” entry, and import controls. Avoid folders in the first version.
-- **Workspace:** master article takes the main reading area. Graph opens adjacent to it or expands from an article selection. Sources open in a side panel, keeping the article location intact.
+- **Workspace:** a pannable canvas places the full Markdown document in a resizable card and connects ideas around it. The document expands with its content instead of scrolling inside the card. A floating upper-left control opens its heading outline; save status and history sit at the upper right. Sources will open without discarding the canvas position.
 - **Selection toolbar:** appears near selected content with a freeform Ask field and a few helpful suggestions. On narrow screens, use a compact action sheet.
 - **Proposal review:** answer and suggested change stay separate from the article until accepted. “Put this in the article” opens an edit preview at the intended location.
 - **Return view:** reopen at the article, with a discreet summary of unresolved questions and changes since the last session.
@@ -15,13 +15,13 @@ Aim for a modern, Apple-like experience in **clarity, typography, responsiveness
 ## Interaction rules
 
 1. **One primary action at a time.** Keep reading surfaces quiet; reveal tools when text or a node is selected.
-2. **Direct manipulation with an alternative.** Drag a highlight outward to make a node, but also offer “Create node from selection” and a keyboard route. Dragging must not be required for precision.
+2. **Direct manipulation with an alternative.** Selecting a passage shows creation at the selection point; its directed line begins at the highlight. Enlarging a card reveals notes. Provide button and keyboard routes for movement and resizing. Dragging must not be required for precision.
 3. **Preserve place.** Opening a node, source, or AI answer should not reset article scroll or selection.
-4. **Show where a change will land.** An AI article edit names the target section and previews additions and removals before acceptance.
+4. **Show where a change will land.** An AI article edit names the target passage or heading and previews additions and removals before acceptance.
 5. **Make origin available without visual noise.** Use subtle markers for source and AI provenance; reveal details on click or hover. Never use color alone to convey origin.
-6. **Support undo.** Creation, movement, linking, and accepted article edits need undo. Autosave should show a small, truthful saved state.
+6. **Support undo and redo.** Creation, movement, resizing, linking, and accepted article edits need both. Autosave should show a small, truthful saved state.
 7. **Use motion to explain.** A node created from a passage can animate outward from that passage. Keep motion brief and respect reduced-motion settings.
-8. **Keep the graph legible.** Node titles should be short, bodies expandable, and links readable. Prevent an automatic layout from unexpectedly moving manually positioned nodes.
+8. **Keep the graph legible.** Node titles should be short, bodies expandable, branches collapsible, and links readable. New branches get a suggested position; manually positioned branches stay where the learner puts them.
 
 ## Visual system for the prototype
 

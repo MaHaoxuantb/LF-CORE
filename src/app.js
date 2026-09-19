@@ -1,0 +1,1144 @@
+import { makeAnchor, resolveAnchor, selectionOffsets } from './anchors.js';
+import { createWorkspace, emptyState, loadSaveMode, loadState, saveSaveMode, saveState, snapshotWorkspace } from './storage.js';
+import { renderMarkdown, headingTokens } from './markdown.js';
+import 'katex/dist/katex.min.css';
+import './style.css';
+
+const app = document.querySelector('#app');
+const toast = document.querySelector('#toast');
+const ROOT = { x: 0, y: 0, width: 490, height: 550 };
+let rootBounds = { ...ROOT };
+const NODE = { width: 238, height: 140 };
+const example = `# Plate tectonics
+
+Earth’s outer shell is divided into large plates that move slowly over the mantle. Their motion helps explain why earthquakes, volcanoes, and mountain ranges cluster in particular places.
+
+## Three kinds of boundary
+
+At a **divergent boundary**, plates move apart and new crust can form. At a **convergent boundary**, plates move together; one may sink beneath the other, or two continents may collide. At a **transform boundary**, plates slide past one another.
+
+Local rock types and motion rates matter. A useful next step is to understand how scientists measure such slow movement.
+
+## Evidence for movement
+
+Matching rock layers and fossils on distant continents helped establish that continents had moved. Today, satellite positioning measures plate motion directly.
+
+If a plate moves $3\\,\\mathrm{cm}$ each year, it moves roughly $3\\,\\mathrm{m}$ in a century.
+
+$$
+d = vt
+$$
+
+What evidence would distinguish plate movement from another explanation for a mountain range?
+`;
+const examplePassages = {
+  'What moves the plates?': 'Earth’s outer shell is divided into large plates that move slowly over the mantle.',
+  'Evidence for motion': 'Matching rock layers and fossils on distant continents helped establish that continents had moved.',
+  'Three boundary types': 'At a divergent boundary, plates move apart and new crust can form.',
+  'How fast do plates move?': 'If a plate moves'
+};
+
+let state, loadError = null, saveError = null;
+try { state = loadState(); } catch (error) { state = emptyState(); loadError = error.message; saveError = error.message; }
+let saveMode = 'auto';
+try { saveMode = loadSaveMode(); } catch { /* Browser storage can be unavailable. */ }
+let lastSaved = JSON.stringify(state), dirty = false;
+let currentId = null, selectedId = null, selectedIds = new Set(), editingMarkdown = false, outlineOpen = false;
+let selectedPassage = null, editGroup = null, view = { x: 0, y: 0, zoom: 1 };
+let viewTimer = null, toastTimer = null;
+
+function el(tag, attrs = {}, ...children) {
+  const node = ['svg', 'path', 'text', 'defs', 'marker', 'circle'].includes(tag) ? document.createElementNS('http://www.w3.org/2000/svg', tag) : document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === 'class') node.setAttribute('class', value);
+    else if (key === 'text') node.textContent = value;
+    else if (key === 'value') node.value = value;
+    else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
+    else node.setAttribute(key, value);
+  }
+  for (const child of children.flat()) if (child != null) node.append(child);
+  return node;
+}
+const button = (label, action, className = '', attrs = {}) => el('button', { type: 'button', class: className, text: label, onclick: action, ...attrs });
+const work = () => state.workspaces.find((item) => item.id === currentId);
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+function announce(message) {
+  toast.textContent = message;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toast.textContent = ''; }, 3200);
+}
+
+function saveLabel() { return saveError ? 'Save failed' : dirty ? 'Unsaved' : 'Saved'; }
+
+function updateSaveControls() {
+  for (const wrapper of document.querySelectorAll('.save-control')) wrapper.dataset.state = saveError ? 'error' : dirty ? 'dirty' : 'saved';
+  for (const control of document.querySelectorAll('.save-main')) {
+    control.textContent = saveLabel();
+    control.title = saveMode === 'manual' ? 'Save now · ⌘S / Ctrl+S' : 'Auto save is on';
+    control.setAttribute('aria-label', `${saveLabel()}. ${saveMode === 'manual' ? 'Manual save. Click to save now.' : 'Auto save. Click for save options.'}`);
+    control.disabled = !!loadError;
+  }
+  for (const control of document.querySelectorAll('.save-mode-button')) control.title = `Save options · ${saveMode === 'auto' ? 'Auto save' : 'Manual save'}`;
+}
+
+function persist(force = false) {
+  if (loadError) { saveError = 'Saved data could not be read; no data was overwritten.'; updateSaveControls(); return false; }
+  const serialized = JSON.stringify(state);
+  dirty = serialized !== lastSaved;
+  if (saveMode === 'manual' && !force) { updateSaveControls(); return true; }
+  try {
+    saveState(state);
+    lastSaved = serialized; dirty = false; saveError = null;
+    updateSaveControls();
+    return true;
+  } catch (error) {
+    saveError = error.message; dirty = true;
+    updateSaveControls(); announce('Could not save. Check browser storage.');
+    return false;
+  }
+}
+
+function flushView() {
+  if (!viewTimer) return false;
+  clearTimeout(viewTimer); viewTimer = null;
+  const item = work();
+  if (item) item.view = { ...view, outlineOpen };
+  return !!item;
+}
+
+function saveNow() {
+  flushView();
+  const saved = persist(true);
+  if (saved) announce('Saved.');
+  return saved;
+}
+
+function setSaveMode(mode) {
+  if (mode === saveMode) return;
+  if (mode === 'manual' && !saveNow()) return;
+  try { saveSaveMode(mode); }
+  catch { announce('Could not save this preference. Check browser storage.'); return; }
+  saveMode = mode;
+  if (mode === 'auto') saveNow();
+  updateSaveControls();
+}
+
+function closeSaveMenu() {
+  document.querySelector('.save-menu')?.remove();
+  document.querySelectorAll('.save-mode-button').forEach((control) => control.setAttribute('aria-expanded', 'false'));
+}
+
+function toggleSaveMenu(wrapper) {
+  if (wrapper.querySelector('.save-menu')) return closeSaveMenu();
+  closeSaveMenu();
+  const menu = el('div', { class: 'save-menu', role: 'menu', 'aria-label': 'Save options' });
+  const action = (label, handler, attrs = {}) => menu.append(button(label, () => { closeSaveMenu(); handler(); }, 'save-menu-option', attrs));
+  action('Save now     ⌘S', saveNow, { role: 'menuitem' });
+  menu.append(el('div', { class: 'save-menu-separator', role: 'separator' }));
+  for (const mode of ['auto', 'manual']) action(`${saveMode === mode ? '✓' : '  '} ${mode === 'auto' ? 'Auto save' : 'Manual save'}`, () => setSaveMode(mode), { role: 'menuitemradio', 'aria-checked': saveMode === mode });
+  wrapper.append(menu);
+  wrapper.querySelector('.save-mode-button')?.setAttribute('aria-expanded', 'true');
+  menu.querySelector('button')?.focus();
+}
+
+function saveControl() {
+  const wrapper = el('div', { class: 'save-control', 'data-state': saveError ? 'error' : dirty ? 'dirty' : 'saved' });
+  wrapper.append(button(saveLabel(), () => saveMode === 'manual' ? saveNow() : toggleSaveMenu(wrapper), 'save-main', { 'aria-label': 'Save status' }), button('', () => toggleSaveMenu(wrapper), 'save-mode-button', { 'aria-label': 'Save options', 'aria-haspopup': 'menu', 'aria-expanded': 'false' }));
+  return wrapper;
+}
+
+function change(update, { group = null, article = false, rerender = true } = {}) {
+  const item = work(); if (!item) return;
+  const history = state.history[item.id] ||= [];
+  if (!group || group !== editGroup) {
+    history.push(snapshotWorkspace(item));
+    if (history.length > 40) history.shift();
+  }
+  editGroup = group;
+  state.redo[item.id] = [];
+  update(item);
+  if (article) item.article.revision++;
+  item.updatedAt = new Date().toISOString();
+  persist();
+  if (rerender) renderWorkspace();
+  else {
+    const undoControl = document.querySelector('[aria-label="Undo"]');
+    const redoControl = document.querySelector('[aria-label="Redo"]');
+    if (undoControl) undoControl.disabled = !state.history[item.id]?.length;
+    if (redoControl) redoControl.disabled = !state.redo[item.id]?.length;
+  }
+}
+
+function undo() {
+  const item = work();
+  const previous = item && state.history[item.id]?.pop();
+  if (!previous) return announce('Nothing to undo.');
+  (state.redo[item.id] ||= []).push(snapshotWorkspace(item));
+  state.workspaces[state.workspaces.findIndex((entry) => entry.id === item.id)] = previous;
+  if (selectedId && !previous.nodes.some((node) => node.id === selectedId)) selectedId = null;
+  selectedIds = new Set([...selectedIds].filter((id) => previous.nodes.some((node) => node.id === id)));
+  editingMarkdown = false; selectedPassage = null; editGroup = null;
+  persist(); renderWorkspace(); announce('Change undone.');
+}
+
+function redo() {
+  const item = work();
+  const next = item && state.redo[item.id]?.pop();
+  if (!next) return announce('Nothing to redo.');
+  (state.history[item.id] ||= []).push(snapshotWorkspace(item));
+  state.workspaces[state.workspaces.findIndex((entry) => entry.id === item.id)] = next;
+  if (selectedId && !next.nodes.some((node) => node.id === selectedId)) selectedId = null;
+  selectedIds = new Set([...selectedIds].filter((id) => next.nodes.some((node) => node.id === id)));
+  editingMarkdown = false; selectedPassage = null; editGroup = null;
+  persist(); renderWorkspace(); announce('Change redone.');
+}
+
+function ensurePositions(item) {
+  item.layout ||= { positions: {} };
+  item.layout.positions ||= {};
+  item.layout.sizes ||= {};
+  item.layout.articleSize ||= { width: ROOT.width, minHeight: ROOT.height };
+  item.nodes.forEach((node, index) => {
+    if (!item.layout.positions[node.id]) item.layout.positions[node.id] = suggestedPosition(item, node.parentId ?? null, index);
+  });
+}
+
+function suggestedPosition(item, parentId, index = item.nodes.length) {
+  const siblings = item.nodes.filter((node) => (node.parentId ?? null) === parentId && item.layout.positions[node.id]);
+  if (parentId) {
+    const parent = item.layout.positions[parentId] || { x: 740, y: 0 };
+    const side = parent.x < 0 ? -1 : 1;
+    return { x: parent.x + side * 340, y: parent.y + siblings.length * 132 };
+  }
+  const side = index % 2 === 0 ? 1 : -1;
+  const sideCount = item.nodes.slice(0, index).filter((node) => (node.parentId ?? null) === null && (item.layout.positions[node.id]?.x ?? (item.nodes.indexOf(node) % 2 ? -1 : 1)) * side > 0).length;
+  return { x: side > 0 ? 760 : -380, y: 22 + sideCount * 154 };
+}
+
+function renderHome() {
+  if (flushView()) persist();
+  currentId = null; selectedId = null; selectedIds.clear(); selectedPassage = null;
+  const header = el('header', { class: 'home-header' }, el('div', { class: 'brand' }, el('span', { class: 'brand-mark', text: '◈' }), el('span', { text: 'Learning Canvas' })), el('span', { class: 'home-tag', text: 'A space for understanding' }));
+  const form = el('form', { class: 'create-form' });
+  const input = el('input', { type: 'text', required: '', placeholder: 'What are you learning?', 'aria-label': 'Workspace topic' });
+  const create = el('button', { type: 'submit', text: 'Create canvas  ↗' });
+  if (loadError) { input.disabled = true; create.disabled = true; }
+  form.append(input, create);
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const item = createWorkspace(input.value);
+    state.workspaces.unshift(item); state.history[item.id] = []; persist(); openWorkspace(item.id);
+  });
+  const cards = el('div', { class: 'workspace-list' });
+  if (!state.workspaces.length) cards.append(el('p', { class: 'empty-home', text: 'Your canvas is ready. Start a topic or open the example below.' }));
+  for (const item of [...state.workspaces].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) {
+    const tile = el('div', { class: 'workspace-tile' });
+    tile.append(button('', () => openWorkspace(item.id), 'workspace-open', { 'aria-label': `Open ${item.title}` }), button('×', () => deleteWorkspace(item.id), 'workspace-delete', { 'aria-label': `Delete ${item.title}`, title: `Delete ${item.title}` }));
+    tile.firstElementChild.append(el('span', { class: 'tile-glyph', text: '◈' }), el('span', {}, el('strong', { text: item.title }), el('small', { text: `${item.nodes.length} connected ideas` })), el('span', { class: 'tile-arrow', text: '↗' }));
+    cards.append(tile);
+  }
+  const exampleButton = button('Explore the Plate tectonics example', () => {
+    const item = createWorkspace('Plate tectonics', example);
+    state.workspaces.unshift(item); state.history[item.id] = [];
+    const topics = [
+      { title: 'What moves the plates?', body: 'Investigate the forces behind slow plate motion.' },
+      { title: 'Evidence for motion', body: 'Fossils, rock layers, and satellite measurements.' },
+      { title: 'Three boundary types', body: 'Divergent, convergent, and transform.' },
+      { title: 'How fast do plates move?', body: 'A next study question.' }
+    ];
+    for (const topic of topics) item.nodes.push({ id: crypto.randomUUID(), title: topic.title, document: { type: 'markdown', markdown: topic.body }, parentId: null, anchor: null, collapsed: false, provenance: 'learner' });
+    attachExampleAnchors(item);
+    ensurePositions(item); persist(); openWorkspace(item.id);
+  }, 'example-link');
+  if (loadError) exampleButton.disabled = true;
+  const main = el('main', { class: 'home-main' }, el('div', { class: 'home-eyebrow', text: 'YOUR WORKSPACE' }), el('h1', { text: 'Follow the shape of an idea.' }), el('p', { class: 'home-lead', text: 'Write at the center. Explore connected ideas, then return to what matters.' }), form, exampleButton, el('div', { class: 'list-heading' }, el('h2', { text: 'Your canvases' }), saveControl()), cards);
+  if (loadError) main.prepend(el('p', { class: 'error-banner', text: `${loadError} Existing data was left untouched.` }));
+  app.replaceChildren(el('div', { class: 'home' }, header, main));
+  updateSaveControls();
+}
+
+function deleteWorkspace(id) {
+  const item = state.workspaces.find((entry) => entry.id === id);
+  if (!item || !window.confirm(`Delete “${item.title}” and all its connected ideas? This cannot be undone.`)) return;
+  state.workspaces = state.workspaces.filter((entry) => entry.id !== id);
+  delete state.history[id]; delete state.redo[id];
+  persist(); renderHome();
+}
+
+function openWorkspace(id) {
+  currentId = id; selectedId = null; selectedIds.clear(); editingMarkdown = false; selectedPassage = null; editGroup = null;
+  const item = work(); if (!item) return renderHome();
+  const needsFit = !item.layout?.articleSize;
+  if (attachExampleAnchors(item)) {
+    for (const snapshot of state.history[item.id] || []) attachExampleAnchors(snapshot);
+    for (const snapshot of state.redo[item.id] || []) attachExampleAnchors(snapshot);
+    persist();
+  }
+  ensurePositions(item);
+  const saved = item.view || {};
+  view = { x: saved.x, y: saved.y, zoom: saved.zoom || 1 };
+  outlineOpen = !!saved.outlineOpen;
+  renderWorkspace();
+  if (needsFit || view.x == null || view.y == null) fitCanvas();
+}
+
+function attachExampleAnchors(item) {
+  if (item.title !== 'Plate tectonics' || item.article?.markdown !== example) return false;
+  const text = markdownPlainText(item.article.markdown);
+  let changed = false;
+  for (const node of item.nodes) {
+    if (node.anchor || node.parentId || !Object.hasOwn(examplePassages, node.title)) continue;
+    const quote = examplePassages[node.title], start = text.indexOf(quote);
+    if (start < 0) continue;
+    node.anchor = makeAnchor('article', text, start, start + quote.length);
+    changed = true;
+  }
+  return changed;
+}
+
+function saveView() {
+  clearTimeout(viewTimer);
+  if (saveMode === 'manual') {
+    viewTimer = null;
+    const item = work(); if (!item) return;
+    item.view = { ...view, outlineOpen };
+    persist();
+    return;
+  }
+  viewTimer = setTimeout(() => {
+    viewTimer = null;
+    const item = work(); if (!item) return;
+    item.view = { ...view, outlineOpen };
+    persist();
+  }, 250);
+}
+
+function applyView() {
+  const scene = document.querySelector('.scene');
+  const viewport = document.querySelector('.canvas-viewport');
+  if (!scene || !viewport) return;
+  scene.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`;
+  viewport.style.backgroundSize = `${24 * view.zoom}px ${24 * view.zoom}px`;
+  viewport.style.backgroundPosition = `${view.x}px ${view.y}px`;
+  document.querySelector('.zoom-value').textContent = `${Math.round(view.zoom * 100)}%`;
+}
+
+function fitCanvas() {
+  const viewport = document.querySelector('.canvas-viewport'); if (!viewport) return;
+  const item = work();
+  const bounds = item.nodes.map((node) => pointFor(item, node.id));
+  const minX = Math.min(-430, ...bounds.map((point) => point.x));
+  const maxX = Math.max(rootBounds.width + 80, ...bounds.map((point) => point.x + point.width));
+  const minY = Math.min(-80, ...bounds.map((point) => point.y));
+  const maxY = Math.max(rootBounds.height + 80, ...bounds.map((point) => point.y + point.height));
+  const width = maxX - minX + 160, height = maxY - minY + 160;
+  view.zoom = clamp(Math.min(viewport.clientWidth / width, viewport.clientHeight / height, 1), .45, 1);
+  view.x = viewport.clientWidth / 2 - ((minX + maxX) / 2) * view.zoom;
+  view.y = viewport.clientHeight / 2 - ((minY + maxY) / 2) * view.zoom;
+  applyView(); saveView();
+}
+
+function zoomTo(next, clientX, clientY) {
+  const viewport = document.querySelector('.canvas-viewport'); if (!viewport) return;
+  const rect = viewport.getBoundingClientRect();
+  const px = clientX == null ? rect.width / 2 : clientX - rect.left;
+  const py = clientY == null ? rect.height / 2 : clientY - rect.top;
+  const worldX = (px - view.x) / view.zoom, worldY = (py - view.y) / view.zoom;
+  view.zoom = clamp(next, .35, 1.8);
+  view.x = px - worldX * view.zoom; view.y = py - worldY * view.zoom;
+  applyView(); saveView();
+}
+
+function renderWorkspace() {
+  const item = work(); if (!item) return renderHome();
+  if (selectedId) selectedIds.clear();
+  else selectedIds = new Set([...selectedIds].filter((id) => item.nodes.some((node) => node.id === id && isVisible(item, node))));
+  ensurePositions(item);
+  const chrome = el('div', { class: 'workspace-chrome' },
+    el('div', { class: 'header-left' },
+      iconButton('M3 11 12 3l9 8v9a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z', 'Home', renderHome),
+      iconButton('M4 5h16M4 10h11M4 15h16M4 20h11', outlineOpen ? 'Hide outline' : 'Open outline', () => { outlineOpen = !outlineOpen; saveView(); renderWorkspace(); }, outlineOpen),
+      el('span', { class: 'workspace-title', text: item.title })),
+    el('div', { class: 'header-right' },
+      saveControl(),
+      historyButton('undo', undo, !!state.history[item.id]?.length),
+      historyButton('redo', redo, !!state.redo[item.id]?.length)));
+  app.replaceChildren(el('div', { class: 'workspace-shell' }, renderCanvas(item), chrome));
+  updateSaveControls();
+  applyView();
+  for (const preview of document.querySelectorAll('.markdown-preview')) {
+    const targetId = preview.dataset.documentId;
+    markAnchors(preview, item.nodes.filter((node) => node.anchor?.targetId === targetId));
+  }
+  document.querySelectorAll('.markdown-editor').forEach(resizeEditor);
+  measurePaper();
+  if (selectedPassage) renderPassageToolbar();
+}
+
+function iconButton(path, label, action, active = false) {
+  const svg = el('svg', { viewBox: '0 0 24 24', width: '19', height: '19', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' });
+  svg.append(el('path', { d: path }));
+  const control = button('', action, `header-icon ${active ? 'active' : ''}`, { 'aria-label': label, title: label });
+  control.append(svg);
+  return control;
+}
+
+function historyButton(kind, action, enabled) {
+  const svg = el('svg', { viewBox: '0 0 24 24', width: '19', height: '19', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' });
+  svg.append(el('path', { d: kind === 'undo' ? 'M9 14 4 9l5-5M4 9h9a7 7 0 0 1 0 14' : 'm15 14 5-5-5-5m5 5h-9a7 7 0 0 0 0 14' }));
+  const control = button('', action, 'header-icon', { 'aria-label': kind === 'undo' ? 'Undo' : 'Redo', title: kind === 'undo' ? 'Undo · ⌘Z / Ctrl+Z' : 'Redo · ⇧⌘Z / Ctrl+Shift+Z' });
+  control.disabled = !enabled;
+  control.append(svg);
+  return control;
+}
+
+function renderCanvas(item) {
+  const viewport = el('main', { class: 'canvas-viewport', 'aria-label': 'Knowledge canvas' });
+  const scene = el('div', { class: 'scene' });
+  scene.append(renderPaper(item));
+  scene.append(renderConnectors(item));
+  for (const node of item.nodes) if (isVisible(item, node)) scene.append(renderNode(node, item));
+  viewport.append(scene);
+  attachPanAndZoom(viewport);
+  const zoom = el('div', { class: 'zoom-controls' }, button('−', () => zoomTo(view.zoom - .15), '', { 'aria-label': 'Zoom out' }), el('span', { class: 'zoom-value', text: '100%' }), button('+', () => zoomTo(view.zoom + .15), '', { 'aria-label': 'Zoom in' }), el('span', { class: 'zoom-divider' }), button('Fit', fitCanvas, 'fit-button', { 'aria-label': 'Fit canvas' }));
+  const shell = el('div', { class: 'canvas-shell' }, viewport, zoom);
+  if (outlineOpen) shell.append(renderOutline(item));
+  if (selectedId) {
+    const node = item.nodes.find((entry) => entry.id === selectedId);
+    if (node) shell.append(renderDetails(node, item));
+  } else if (selectedIds.size > 1) {
+    shell.append(el('div', { class: 'selection-toolbar', role: 'status' }, el('span', { text: `${selectedIds.size} selected` }), button('Delete', () => removeNodes([...selectedIds]), 'selection-delete'), button('Clear', () => { selectedIds.clear(); renderWorkspace(); }, 'selection-clear')));
+  }
+  return shell;
+}
+
+function attachPanAndZoom(viewport) {
+  let suppressCanvasClick = false;
+  viewport.addEventListener('pointerdown', (event) => {
+    if (event.button === 0 && !event.target.closest('.paper, .topic-card')) {
+      event.preventDefault();
+      closeContextMenu();
+      const start = { x: event.clientX, y: event.clientY, moved: false };
+      const frame = viewport.getBoundingClientRect();
+      const rectangle = el('div', { class: 'selection-rectangle', 'aria-hidden': 'true' });
+      viewport.setPointerCapture(event.pointerId);
+      const bounds = (x, y) => ({ left: Math.min(start.x, x), top: Math.min(start.y, y), right: Math.max(start.x, x), bottom: Math.max(start.y, y) });
+      const matches = (box) => [...viewport.querySelectorAll('.topic-card')].filter((card) => {
+        const rect = card.getBoundingClientRect();
+        return rect.left < box.right && rect.right > box.left && rect.top < box.bottom && rect.bottom > box.top;
+      });
+      const move = (next) => {
+        if (!start.moved && Math.hypot(next.clientX - start.x, next.clientY - start.y) < 5) return;
+        if (!start.moved) { start.moved = true; viewport.append(rectangle); viewport.classList.add('selecting'); }
+        const box = bounds(next.clientX, next.clientY);
+        Object.assign(rectangle.style, { left: `${box.left - frame.left}px`, top: `${box.top - frame.top}px`, width: `${box.right - box.left}px`, height: `${box.bottom - box.top}px` });
+        const included = new Set(matches(box));
+        viewport.querySelectorAll('.topic-card').forEach((card) => card.classList.toggle('marquee-target', included.has(card)));
+      };
+      const finish = (next) => {
+        viewport.removeEventListener('pointermove', move);
+        viewport.removeEventListener('pointerup', finish);
+        viewport.removeEventListener('pointercancel', cancel);
+        if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
+        viewport.classList.remove('selecting');
+        if (start.moved && next.type === 'pointerup') {
+          const ids = matches(bounds(next.clientX, next.clientY)).map((card) => card.dataset.node);
+          selectedId = ids.length === 1 ? ids[0] : null;
+          selectedIds = new Set(ids.length > 1 ? ids : []);
+          selectedPassage = null;
+          suppressCanvasClick = true;
+          setTimeout(() => { suppressCanvasClick = false; }, 0);
+          renderWorkspace();
+        } else if (next.type === 'pointerup') {
+          selectedId = null; selectedIds.clear(); selectedPassage = null;
+          renderWorkspace();
+        } else {
+          rectangle.remove();
+          viewport.querySelectorAll('.marquee-target').forEach((card) => card.classList.remove('marquee-target'));
+        }
+      };
+      const cancel = () => finish({ type: 'pointercancel' });
+      viewport.addEventListener('pointermove', move);
+      viewport.addEventListener('pointerup', finish);
+      viewport.addEventListener('pointercancel', cancel);
+      return;
+    }
+    if (event.button !== 2 || event.target.closest('input, textarea, select, [contenteditable]')) return;
+    event.preventDefault();
+    closeContextMenu();
+    const start = { x: event.clientX, y: event.clientY, panX: view.x, panY: view.y, target: event.target, moved: false };
+    viewport.setPointerCapture(event.pointerId);
+    const move = (next) => {
+      if (!start.moved && Math.hypot(next.clientX - start.x, next.clientY - start.y) < 5) return;
+      start.moved = true;
+      viewport.classList.add('panning');
+      view.x = start.panX + next.clientX - start.x;
+      view.y = start.panY + next.clientY - start.y;
+      applyView();
+    };
+    const finish = (next) => {
+      viewport.removeEventListener('pointermove', move);
+      viewport.removeEventListener('pointerup', finish);
+      viewport.removeEventListener('pointercancel', cancel);
+      viewport.classList.remove('panning');
+      if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
+      if (start.moved) saveView();
+      else if (next.type === 'pointerup') openContextMenu(start.target, next.clientX, next.clientY);
+    };
+    const cancel = () => finish({ type: 'pointercancel' });
+    viewport.addEventListener('pointermove', move);
+    viewport.addEventListener('pointerup', finish);
+    viewport.addEventListener('pointercancel', cancel);
+  });
+  viewport.addEventListener('click', (event) => {
+    if (suppressCanvasClick) return;
+    if (event.button !== 0 || event.target.closest('.paper, .topic-card')) return;
+    if (!window.getSelection()?.isCollapsed) return;
+    closeContextMenu();
+    if (selectedId || selectedIds.size || selectedPassage) { selectedId = null; selectedIds.clear(); selectedPassage = null; renderWorkspace(); }
+  });
+  viewport.addEventListener('contextmenu', (event) => {
+    if (event.target.closest('input, textarea, select, [contenteditable]')) return;
+    event.preventDefault();
+  });
+  viewport.addEventListener('wheel', (event) => {
+    event.preventDefault();
+    if (event.ctrlKey || event.metaKey) zoomTo(view.zoom * (event.deltaY < 0 ? 1.08 : .92), event.clientX, event.clientY);
+    else { view.x -= event.deltaX; view.y -= event.deltaY; applyView(); saveView(); }
+  }, { passive: false });
+}
+
+function closeContextMenu() { document.querySelector('.context-menu')?.remove(); }
+
+function openContextMenu(target, x, y) {
+  closeContextMenu();
+  const item = work(); if (!item) return;
+  const card = target.closest('.topic-card');
+  const node = card && item.nodes.find((entry) => entry.id === card.dataset.node);
+  const onPaper = !!target.closest('.paper');
+  const group = selectedIds.size > 1 && !onPaper && (!node || selectedIds.has(node.id));
+  const passage = selectedPassage;
+  if (!group && !node && (selectedId || selectedIds.size)) { selectedId = null; selectedIds.clear(); renderWorkspace(); }
+  const menu = el('div', { class: 'context-menu', role: 'menu', 'aria-label': group ? 'Selection options' : node ? `${node.title} options` : onPaper ? 'Document options' : 'Canvas options' });
+  const option = (label, action, destructive = false) => menu.append(button(label, () => { closeContextMenu(); action(); }, `context-option ${destructive ? 'destructive' : ''}`, { role: 'menuitem' }));
+  if (group) {
+    option(`Clear ${selectedIds.size} selected`, () => { selectedIds.clear(); renderWorkspace(); });
+    menu.append(el('div', { class: 'context-separator', role: 'separator' }));
+    option('Delete selected ideas', () => removeNodes([...selectedIds]), true);
+  } else if (node) {
+    option('Open details', () => selectNode(node.id));
+    option('Edit content', () => { selectNode(node.id); document.querySelector('.details-markdown')?.focus(); });
+    if (passage?.targetId === node.id) option('Create idea from highlight', () => { selectedPassage = passage; createAnchoredBranch(); });
+    option('Add child', () => addNode(node.id));
+    option('Add sibling', () => addNode(node.parentId));
+    option('Rename', () => beginRename(node.id));
+    menu.append(el('div', { class: 'context-separator', role: 'separator' }));
+    option('Delete idea', () => removeNode(node.id), true);
+  } else if (onPaper) {
+    if (passage?.targetId === 'article') option('Create idea from highlight', () => { selectedPassage = passage; createAnchoredBranch(); });
+    option(editingMarkdown ? 'Done editing' : 'Edit document', () => { editingMarkdown = !editingMarkdown; selectedPassage = null; renderWorkspace(); if (editingMarkdown) document.querySelector('.markdown-editor')?.focus(); });
+    option('Add idea', () => addNode());
+    option('Fit canvas', fitCanvas);
+  } else {
+    option('Add idea', () => addNode());
+    option('Fit canvas', fitCanvas);
+    option('Zoom in', () => zoomTo(view.zoom + .15, x, y));
+    option('Zoom out', () => zoomTo(view.zoom - .15, x, y));
+  }
+  document.querySelector('.workspace-shell')?.append(menu);
+  menu.style.left = `${clamp(x, 8, window.innerWidth - menu.offsetWidth - 8)}px`;
+  menu.style.top = `${clamp(y, 8, window.innerHeight - menu.offsetHeight - 8)}px`;
+  menu.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    const options = [...menu.querySelectorAll('[role="menuitem"]')];
+    const index = options.indexOf(document.activeElement);
+    options[(index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length]?.focus();
+  });
+  menu.querySelector('button')?.focus();
+}
+
+document.addEventListener('pointerdown', (event) => {
+  if (!event.target.closest('.context-menu')) closeContextMenu();
+  if (!event.target.closest('.save-control')) closeSaveMenu();
+}, true);
+
+function isVisible(item, node) {
+  let parentId = node.parentId;
+  while (parentId) {
+    const parent = item.nodes.find((entry) => entry.id === parentId);
+    if (!parent || parent.collapsed) return false;
+    parentId = parent.parentId;
+  }
+  return true;
+}
+
+function pointFor(item, id) {
+  if (!id) return rootBounds;
+  const point = item.layout.positions[id];
+  return point ? { ...point, ...NODE, ...item.layout.sizes?.[id] } : rootBounds;
+}
+
+function sourceFor(item, node) {
+  if (!node.anchor && node.parentId) return { point: pointFor(item, node.parentId), fromY: null, anchored: false };
+  const marks = [...document.querySelectorAll(`.anchor-mark[data-anchor-node="${node.id}"]`)];
+  const scene = document.querySelector('.scene');
+  if (marks.length && scene && view.zoom) {
+    const to = pointFor(item, node.id);
+    const origin = node.anchor?.targetId === 'article' ? rootBounds : pointFor(item, node.anchor?.targetId);
+    const right = to.x + to.width / 2 >= origin.x + origin.width / 2;
+    const rects = marks.flatMap((mark) => {
+      const scroll = mark.closest('.node-content');
+      const visible = scroll?.getBoundingClientRect();
+      return [...mark.getClientRects()].filter((rect) => rect.width > 0 && rect.height > 0 && (!visible || (rect.bottom > visible.top && rect.top < visible.bottom)));
+    });
+    const line = rects.sort((a, b) => right ? b.right - a.right : a.left - b.left)[0];
+    if (line) {
+      const sceneRect = scene.getBoundingClientRect();
+      const x = ((right ? line.right : line.left) - sceneRect.left) / view.zoom;
+      const y = (line.top + line.height / 2 - sceneRect.top) / view.zoom;
+      return { point: { x, y, width: 0, height: 0 }, fromY: null, anchored: true };
+    }
+  }
+  return null;
+}
+
+function measurePaper() {
+  const paper = document.querySelector('.paper');
+  if (!paper) return;
+  rootBounds = { x: ROOT.x, y: ROOT.y, width: paper.offsetWidth, height: paper.offsetHeight };
+  updateConnectors();
+}
+
+function curve(from, to, fromY = null) {
+  const right = to.x >= from.x + from.width / 2;
+  const x1 = right ? from.x + from.width : from.x;
+  const x2 = right ? to.x : to.x + to.width;
+  const y1 = fromY ?? from.y + from.height / 2;
+  const y2 = to.y + to.height / 2;
+  const bend = Math.max(70, Math.abs(x2 - x1) * .5);
+  return `M ${x1} ${y1} C ${x1 + (right ? bend : -bend)} ${y1}, ${x2 - (right ? bend : -bend)} ${y2}, ${x2} ${y2}`;
+}
+
+function renderConnectors(item) {
+  const svg = el('svg', { class: 'connectors', viewBox: '-4000 -4000 8000 8000', 'aria-hidden': 'true' });
+  const defs = el('defs');
+  for (const [id, color] of [['arrow-primary', '#9186cb'], ['arrow-cross', '#9ca6b2']]) {
+    defs.append(el('marker', { id, markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient: 'auto', markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: color, 'stroke-width': '1.6', 'stroke-opacity': '.72', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
+  }
+  svg.append(defs);
+  for (const node of item.nodes) {
+    if (!isVisible(item, node)) continue;
+    if (!node.parentId && !node.anchor) continue;
+    const source = sourceFor(item, node);
+    const path = el('path', { d: source ? curve(source.point, pointFor(item, node.id), source.fromY) : '', class: 'branch-line', 'data-to': node.id, 'marker-end': 'url(#arrow-primary)' });
+    if (!source) path.style.display = 'none';
+    svg.append(path);
+    if (node.anchor) {
+      const dot = el('circle', { class: 'origin-dot', 'data-origin': node.id, cx: source?.point.x ?? 0, cy: source?.point.y ?? 0, r: '3' });
+      if (!source) dot.style.display = 'none';
+      svg.append(dot);
+    }
+  }
+  for (const edge of item.edges) {
+    const from = item.nodes.find((node) => node.id === edge.fromId), to = item.nodes.find((node) => node.id === edge.toId);
+    if (!from || !to || !isVisible(item, from) || !isVisible(item, to)) continue;
+    svg.append(el('path', { d: curve(pointFor(item, from.id), pointFor(item, to.id)), class: 'cross-line', 'data-edge': edge.id, 'marker-end': 'url(#arrow-cross)' }));
+    const source = pointFor(item, from.id);
+    svg.append(el('text', { x: source.x + source.width / 2, y: source.y - 12, class: 'edge-label', text: edge.label || 'related' }));
+  }
+  return svg;
+}
+
+function updateConnectors() {
+  const item = work(); if (!item) return;
+  for (const node of item.nodes) {
+    const path = document.querySelector(`[data-to="${node.id}"]`);
+    const source = sourceFor(item, node);
+    if (path) {
+      path.style.display = source ? '' : 'none';
+      if (source) path.setAttribute('d', curve(source.point, pointFor(item, node.id), source.fromY));
+    }
+    const dot = document.querySelector(`[data-origin="${node.id}"]`);
+    if (dot) {
+      dot.style.display = source?.anchored ? '' : 'none';
+      if (source?.anchored) { dot.setAttribute('cx', source.point.x); dot.setAttribute('cy', source.point.y); }
+    }
+  }
+  for (const edge of item.edges) {
+    const path = document.querySelector(`[data-edge="${edge.id}"]`);
+    if (path) path.setAttribute('d', curve(pointFor(item, edge.fromId), pointFor(item, edge.toId)));
+    const label = path?.nextElementSibling;
+    const source = pointFor(item, edge.fromId);
+    if (label?.classList.contains('edge-label')) { label.setAttribute('x', source.x + source.width / 2); label.setAttribute('y', source.y - 12); }
+  }
+}
+
+function renderNode(node, item) {
+  const pos = item.layout.positions[node.id];
+  const card = el('div', { class: `topic-card ${selectedId === node.id || selectedIds.has(node.id) ? 'selected' : ''}`, 'data-node': node.id, tabindex: '0', role: 'button', 'aria-label': node.title });
+  const size = pointFor(item, node.id);
+  card.style.left = `${pos.x}px`; card.style.top = `${pos.y}px`; card.style.width = `${size.width}px`; card.style.height = `${size.height}px`;
+  applyNodeSizeClass(card, size.width, size.height);
+  const grip = el('button', { type: 'button', class: 'drag-grip', text: '⠿', title: 'Move', 'aria-label': `Move ${node.title}` });
+  grip.addEventListener('pointerdown', (event) => startNodeDrag(event, node, card, grip));
+  const title = el('strong', { class: 'topic-title', text: node.title || 'Untitled' });
+  const content = el('div', { class: 'node-content markdown-preview', 'data-document-id': node.id, tabindex: '0', 'aria-label': `${node.title} content` });
+  content.innerHTML = renderMarkdown(node.document?.markdown || '');
+  content.addEventListener('mouseup', (event) => capturePassage(content, node.id, event));
+  content.addEventListener('keyup', (event) => capturePassage(content, node.id, event));
+  content.addEventListener('scroll', updateConnectors, { passive: true });
+  const count = item.nodes.filter((entry) => entry.parentId === node.id).length;
+  const footer = el('div', { class: 'topic-footer' }, el('span', { text: node.anchor ? '↗' : '' }), count ? button(node.collapsed ? `＋ ${count}` : `− ${count}`, (event) => { event.stopPropagation(); change((entry) => { entry.nodes.find((n) => n.id === node.id).collapsed = !node.collapsed; }); }, 'collapse-button', { 'aria-label': node.collapsed ? 'Expand children' : 'Collapse children' }) : null);
+  const resize = button('', () => {}, 'resize-grip node-resize', { 'aria-label': `Resize ${node.title}`, title: 'Drag to resize; arrow keys also work' });
+  resize.addEventListener('pointerdown', (event) => startNodeResize(event, node, card, resize));
+  resize.addEventListener('keydown', (event) => resizeNodeWithKeys(event, node));
+  const edit = button('Edit', (event) => { event.stopPropagation(); selectNode(node.id); document.querySelector('.details-markdown')?.focus(); }, 'node-edit', { 'aria-label': `Edit ${node.title}` });
+  card.append(el('div', { class: 'topic-top' }, edit, grip), title, content, footer, resize);
+  card.addEventListener('click', (event) => { if (event.target.closest('.anchor-mark, button, input') || !window.getSelection()?.isCollapsed) return; selectNode(node.id); });
+  card.addEventListener('dblclick', (event) => { if (!event.target.closest('.node-content')) beginRename(node.id); });
+  card.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); selectNode(node.id); } });
+  return card;
+}
+
+function applyNodeSizeClass(card, width, height) {
+  const expanded = width >= 280 || height >= 180;
+  card.classList.toggle('expanded', expanded);
+}
+
+function startNodeResize(event, node, card, grip) {
+  if (event.button !== 0) return;
+  event.preventDefault(); event.stopPropagation();
+  const item = work(), original = { ...pointFor(item, node.id) }, x = event.clientX, y = event.clientY;
+  grip.setPointerCapture(event.pointerId);
+  const move = (next) => {
+    const width = clamp(Math.round(original.width + (next.clientX - x) / view.zoom), 170, 680);
+    const height = clamp(Math.round(original.height + (next.clientY - y) / view.zoom), 100, 480);
+    item.layout.sizes[node.id] = { width, height };
+    card.style.width = `${width}px`; card.style.height = `${height}px`;
+    applyNodeSizeClass(card, width, height);
+    updateConnectors();
+  };
+  let ended = false;
+  const up = () => {
+    if (ended) return;
+    ended = true;
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    window.removeEventListener('mouseup', up);
+    grip.removeEventListener('lostpointercapture', up);
+    const final = item.layout.sizes[node.id] || { width: original.width, height: original.height };
+    item.layout.sizes[node.id] = { width: original.width, height: original.height };
+    if (final.width !== original.width || final.height !== original.height) change((entry) => { entry.layout.sizes[node.id] = final; });
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+  window.addEventListener('mouseup', up);
+  grip.addEventListener('lostpointercapture', up);
+}
+
+function resizeNodeWithKeys(event, node) {
+  const steps = { ArrowRight: [20, 0], ArrowLeft: [-20, 0], ArrowDown: [0, 20], ArrowUp: [0, -20] };
+  const step = steps[event.key]; if (!step) return;
+  event.preventDefault(); event.stopPropagation();
+  change((item) => {
+    const size = pointFor(item, node.id);
+    item.layout.sizes[node.id] = { width: clamp(size.width + step[0], 170, 680), height: clamp(size.height + step[1], 100, 480) };
+  });
+  document.querySelector(`[data-node="${node.id}"] .node-resize`)?.focus();
+}
+
+function startNodeDrag(event, node, card, grip) {
+  if (event.button !== 0) return;
+  event.stopPropagation(); event.preventDefault();
+  const item = work(), moving = selectedIds.has(node.id) ? [...selectedIds] : [node.id];
+  const original = Object.fromEntries(moving.map((id) => [id, { ...item.layout.positions[id] }]));
+  const originX = event.clientX, originY = event.clientY;
+  grip.setPointerCapture(event.pointerId);
+  const move = (next) => {
+    const dx = Math.round((next.clientX - originX) / view.zoom), dy = Math.round((next.clientY - originY) / view.zoom);
+    for (const id of moving) {
+      const position = { x: original[id].x + dx, y: original[id].y + dy };
+      item.layout.positions[id] = position;
+      const element = document.querySelector(`[data-node="${id}"]`);
+      if (element) { element.style.left = `${position.x}px`; element.style.top = `${position.y}px`; }
+    }
+    updateConnectors();
+  };
+  let ended = false;
+  const up = () => {
+    if (ended) return;
+    ended = true;
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    window.removeEventListener('mouseup', up);
+    grip.removeEventListener('lostpointercapture', up);
+    const final = Object.fromEntries(moving.map((id) => [id, { ...item.layout.positions[id] }]));
+    for (const id of moving) item.layout.positions[id] = original[id];
+    if (moving.some((id) => final[id].x !== original[id].x || final[id].y !== original[id].y)) change((entry) => { for (const id of moving) entry.layout.positions[id] = final[id]; });
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+  window.addEventListener('mouseup', up);
+  grip.addEventListener('lostpointercapture', up);
+}
+
+function selectNode(id) { selectedId = id; selectedIds.clear(); selectedPassage = null; editGroup = null; renderWorkspace(); }
+
+function beginRename(id) {
+  const card = document.querySelector(`[data-node="${id}"]`); if (!card) return;
+  const title = card.querySelector('.topic-title');
+  const node = work().nodes.find((entry) => entry.id === id);
+  const input = el('input', { class: 'inline-title', value: node.title, 'aria-label': 'Rename idea' });
+  title.replaceWith(input); input.focus(); input.select();
+  const finish = () => { const value = input.value.trim() || 'Untitled'; if (value !== node.title) change((entry) => { entry.nodes.find((n) => n.id === id).title = value; }); else renderWorkspace(); };
+  input.addEventListener('blur', finish, { once: true });
+  input.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); input.blur(); } if (event.key === 'Escape') { input.value = node.title; input.blur(); } });
+}
+
+function addNode(parentId = null, anchor = null) {
+  const item = work(); if (!item) return;
+  const node = { id: crypto.randomUUID(), parentId, title: anchor ? shortTitle(anchor.quote) : 'Untitled', document: { type: 'markdown', markdown: '' }, anchor, collapsed: false, provenance: 'learner' };
+  const position = suggestedPosition(item, parentId);
+  change((entry) => { entry.nodes.push(node); entry.layout.positions[node.id] = position; });
+  selectedPassage = null; selectedId = node.id; editingMarkdown = false; renderWorkspace();
+  if (anchor) focusSourceAndNode(node.id);
+  else focusNode(node.id);
+  beginRename(node.id);
+}
+
+function shortTitle(text) { const clean = text.replace(/\s+/g, ' ').trim(); return clean.length > 58 ? `${clean.slice(0, 55)}…` : clean; }
+
+function focusNode(id) {
+  const viewport = document.querySelector('.canvas-viewport'), point = work()?.layout.positions[id];
+  if (!viewport || !point) return;
+  const size = pointFor(work(), id);
+  view.x = viewport.clientWidth / 2 - (point.x + size.width / 2) * view.zoom;
+  view.y = viewport.clientHeight / 2 - (point.y + size.height / 2) * view.zoom;
+  applyView(); saveView();
+}
+
+function focusSourceAndNode(id) {
+  const viewport = document.querySelector('.canvas-viewport'), item = work();
+  if (!viewport || !item) return;
+  const target = item.nodes.find((entry) => entry.id === id);
+  const node = pointFor(item, id), source = target?.anchor?.targetId === 'article' ? rootBounds : pointFor(item, target?.anchor?.targetId);
+  const minX = Math.min(source.x, node.x), maxX = Math.max(source.x + source.width, node.x + node.width);
+  const minY = Math.min(source.y, node.y), maxY = Math.max(source.y + source.height, node.y + node.height);
+  const left = outlineOpen ? 280 : 32, right = selectedId ? 358 : 32, top = 80, bottom = 65;
+  const width = Math.max(220, viewport.clientWidth - left - right), height = Math.max(220, viewport.clientHeight - top - bottom);
+  view.zoom = clamp(Math.min(width / (maxX - minX + 100), height / (maxY - minY + 100), 1.15), .22, 1.15);
+  view.x = left + width / 2 - ((minX + maxX) / 2) * view.zoom;
+  view.y = top + height / 2 - ((minY + maxY) / 2) * view.zoom;
+  applyView(); saveView();
+}
+
+function removeNode(id) { removeNodes([id]); }
+
+function removeNodes(ids) {
+  const item = work(); if (!item) return;
+  const roots = ids.map((id) => item.nodes.find((entry) => entry.id === id)).filter(Boolean);
+  if (!roots.length) return;
+  const removed = new Set(roots.map((node) => node.id));
+  let growing = true;
+  while (growing) {
+    growing = false;
+    for (const child of item.nodes) if ((removed.has(child.parentId) || removed.has(child.anchor?.targetId)) && !removed.has(child.id)) { removed.add(child.id); growing = true; }
+  }
+  change((entry) => {
+    entry.nodes = entry.nodes.filter((node) => !removed.has(node.id));
+    entry.edges = entry.edges.filter((edge) => !removed.has(edge.fromId) && !removed.has(edge.toId));
+    for (const nodeId of removed) { delete entry.layout.positions[nodeId]; delete entry.layout.sizes[nodeId]; }
+  });
+  selectedId = roots.length === 1 && !removed.has(roots[0].parentId) ? roots[0].parentId : null;
+  selectedIds.clear(); selectedPassage = null;
+  renderWorkspace(); announce(`${removed.size} idea${removed.size === 1 ? '' : 's'} deleted. Undo is available.`);
+}
+
+function renderDetails(node, item) {
+  const anchorRange = resolveAnchor(node.anchor, sourcePlainText(item, node.anchor?.targetId));
+  const panel = el('aside', { class: 'details-panel', 'aria-label': 'Idea details' }, el('div', { class: 'panel-heading' }, el('span', { class: 'panel-eyebrow', text: 'DETAILS' }), button('×', () => { selectedId = null; renderWorkspace(); }, 'panel-close', { 'aria-label': 'Close details' })));
+  const title = el('input', { class: 'details-title', value: node.title, 'aria-label': 'Title' });
+  title.addEventListener('input', () => {
+    change((entry) => { entry.nodes.find((n) => n.id === node.id).title = title.value; }, { group: `title:${node.id}`, rerender: false });
+    const card = document.querySelector(`[data-node="${node.id}"] .topic-title`); if (card) card.textContent = title.value;
+  });
+  title.addEventListener('blur', () => { editGroup = null; });
+  const markdown = el('textarea', { class: 'details-markdown', placeholder: 'Write here…', 'aria-label': 'Markdown content', spellcheck: 'true' }); markdown.value = node.document?.markdown || '';
+  markdown.addEventListener('input', () => {
+    change((entry) => { entry.nodes.find((n) => n.id === node.id).document.markdown = markdown.value; }, { group: `markdown:${node.id}`, rerender: false });
+    const preview = document.querySelector(`[data-node="${node.id}"] .node-content`);
+    if (preview) {
+      preview.innerHTML = renderMarkdown(markdown.value);
+      markAnchors(preview, work().nodes.filter((entry) => entry.anchor?.targetId === node.id));
+      updateConnectors();
+    }
+  });
+  markdown.addEventListener('blur', () => { editGroup = null; });
+  panel.append(el('label', { text: 'TITLE' }), title, el('label', { text: 'CONTENT' }), markdown);
+  if (node.anchor) {
+    panel.append(el('div', { class: `source-quote ${anchorRange ? '' : 'unresolved'}` }, el('span', { class: 'source-label', text: anchorRange ? 'LINKED PASSAGE' : 'PASSAGE NEEDS REPAIR' }), el('p', { text: node.anchor.quote })));
+    panel.append(button(anchorRange ? '↗ Go to passage' : 'Reconnect selected passage', () => anchorRange ? goToPassage(node) : reconnect(node), 'panel-action'));
+  }
+  const actions = el('div', { class: 'panel-actions' }, button('＋ Child', () => addNode(node.id), 'panel-action'), button('＋ Sibling', () => addNode(node.parentId), 'panel-secondary'));
+  panel.append(actions);
+  const others = item.nodes.filter((entry) => entry.id !== node.id);
+  if (others.length) {
+    const target = el('select', { 'aria-label': 'Connect to idea' }, el('option', { value: '', text: 'Choose an idea…' }), ...others.map((entry) => el('option', { value: entry.id, text: entry.title })));
+    const label = el('input', { placeholder: 'Relationship label', 'aria-label': 'Connection label' });
+    panel.append(el('div', { class: 'panel-connect' }, el('label', { text: 'CONNECTION' }), target, label, button('Connect', () => {
+      if (!target.value) return announce('Choose an idea first.');
+      change((entry) => { entry.edges.push({ id: crypto.randomUUID(), fromId: node.id, toId: target.value, label: label.value.trim() || 'related' }); });
+    }, 'panel-secondary')));
+  }
+  for (const edge of item.edges.filter((entry) => entry.fromId === node.id || entry.toId === node.id)) {
+    const other = item.nodes.find((entry) => entry.id === (edge.fromId === node.id ? edge.toId : edge.fromId));
+    panel.append(el('div', { class: 'connection-row' }, el('span', { text: `${edge.label} · ${other?.title || 'Unknown'}` }), button('×', () => change((entry) => { entry.edges = entry.edges.filter((link) => link.id !== edge.id); }), '', { 'aria-label': `Remove connection to ${other?.title || 'unknown'}` })));
+  }
+  panel.append(button(item.nodes.some((entry) => entry.parentId === node.id) ? 'Delete idea and its descendants' : 'Delete idea', () => removeNode(node.id), 'remove-branch'));
+  return panel;
+}
+
+function goToPassage(node) {
+  selectedId = null; editingMarkdown = false; selectedPassage = null; renderWorkspace();
+  const mark = document.querySelector(`.anchor-mark[data-anchor-node="${node.id}"]`);
+  if (!mark) return announce('The linked passage could not be found.');
+  centerOnElement(mark);
+  mark.classList.add('arrived'); setTimeout(() => mark.classList.remove('arrived'), 1700);
+  mark.focus();
+}
+
+function reconnect(node) {
+  if (!selectedPassage) return announce('Select the matching passage first.');
+  try {
+    const targetId = selectedPassage.targetId;
+    if (targetId === node.id || isDescendant(work(), targetId, node.id)) return announce('Choose a passage outside this idea and its descendants.');
+    const anchor = makeAnchor(targetId, sourcePlainText(work(), targetId), selectedPassage.start, selectedPassage.end);
+    change((entry) => { const target = entry.nodes.find((n) => n.id === node.id); target.anchor = anchor; target.parentId = targetId === 'article' ? null : targetId; });
+    selectedPassage = null; announce('Passage reconnected.');
+  } catch (error) { announce(error.message); }
+}
+
+function renderPaper(item) {
+  const paper = el('article', { class: 'paper', 'aria-label': 'Document' });
+  paper.style.left = `${ROOT.x}px`; paper.style.top = `${ROOT.y}px`;
+  paper.style.width = `${item.layout.articleSize.width}px`;
+  paper.style.minHeight = `${item.layout.articleSize.minHeight}px`;
+  paper.append(el('div', { class: 'paper-heading' }, button(editingMarkdown ? 'Done' : 'Edit', () => { editingMarkdown = !editingMarkdown; selectedPassage = null; editGroup = null; renderWorkspace(); if (editingMarkdown) document.querySelector('.markdown-editor')?.focus(); }, 'article-edit', { 'aria-label': editingMarkdown ? 'Finish editing' : 'Edit document' })));
+  const scroll = el('div', { class: 'paper-scroll' });
+  if (editingMarkdown) {
+    const editor = el('textarea', { class: 'markdown-editor', 'aria-label': 'Edit document', spellcheck: 'true' });
+    editor.value = item.article.markdown;
+    editor.addEventListener('input', () => {
+      change((entry) => { entry.article.markdown = editor.value; }, { group: 'article-markdown', article: true, rerender: false });
+      resizeEditor(editor); refreshOutline();
+    });
+    editor.addEventListener('blur', () => { editGroup = null; });
+    scroll.append(editor);
+  } else {
+    const preview = el('div', { class: 'markdown-preview', 'data-document-id': 'article', tabindex: '0' });
+    preview.innerHTML = renderMarkdown(item.article.markdown);
+    preview.addEventListener('mouseup', (event) => capturePassage(preview, 'article', event));
+    preview.addEventListener('keyup', (event) => capturePassage(preview, 'article', event));
+    scroll.append(preview);
+  }
+  paper.append(scroll);
+  const grip = button('', () => {}, 'resize-grip paper-resize', { 'aria-label': 'Resize article', title: 'Drag to resize article; arrow keys also work' });
+  grip.addEventListener('pointerdown', (event) => startPaperResize(event, paper, grip));
+  grip.addEventListener('keydown', (event) => {
+    const steps = { ArrowRight: [24, 0], ArrowLeft: [-24, 0], ArrowDown: [0, 24], ArrowUp: [0, -24] };
+    const step = steps[event.key]; if (!step) return;
+    event.preventDefault(); event.stopPropagation();
+    change((entry) => {
+      const size = entry.layout.articleSize;
+      size.width = clamp(size.width + step[0], 320, 1100);
+      size.minHeight = clamp(size.minHeight + step[1], 250, 2400);
+    });
+    document.querySelector('.paper-resize')?.focus();
+  });
+  paper.append(grip);
+  return paper;
+}
+
+function startPaperResize(event, paper, grip) {
+  if (event.button !== 0) return;
+  event.preventDefault(); event.stopPropagation();
+  const size = { ...work().layout.articleSize };
+  const startX = event.clientX, startY = event.clientY;
+  grip.setPointerCapture(event.pointerId);
+  const move = (next) => {
+    const width = clamp(Math.round(size.width + (next.clientX - startX) / view.zoom), 320, 1100);
+    const minHeight = clamp(Math.round(size.minHeight + (next.clientY - startY) / view.zoom), 250, 2400);
+    paper.style.width = `${width}px`; paper.style.minHeight = `${minHeight}px`;
+    measurePaper();
+  };
+  let ended = false;
+  const up = () => {
+    if (ended) return;
+    ended = true;
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    window.removeEventListener('mouseup', up);
+    grip.removeEventListener('lostpointercapture', up);
+    const final = { width: Number.parseInt(paper.style.width, 10), minHeight: Number.parseInt(paper.style.minHeight, 10) };
+    if (final.width !== size.width || final.minHeight !== size.minHeight) change((entry) => { entry.layout.articleSize = final; });
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+  window.addEventListener('mouseup', up);
+  grip.addEventListener('lostpointercapture', up);
+}
+
+function resizeEditor(editor) {
+  editor.style.height = 'auto';
+  editor.style.height = `${editor.scrollHeight + 2}px`;
+  measurePaper();
+}
+
+function textOf(element) {
+  const range = document.createRange(); range.selectNodeContents(element); return range.toString();
+}
+
+function markdownPlainText(markdown) {
+  const temp = el('div'); temp.innerHTML = renderMarkdown(markdown); return textOf(temp);
+}
+
+function sourcePlainText(item, targetId) {
+  if (!targetId) return '';
+  const markdown = targetId === 'article' ? item.article.markdown : item.nodes.find((node) => node.id === targetId)?.document?.markdown;
+  return markdown == null ? '' : markdownPlainText(markdown);
+}
+
+function capturePassage(preview, targetId, event) {
+  if (event.type === 'mouseup' && event.button !== 0) return;
+  const offsets = selectionOffsets(preview);
+  if (!offsets) { selectedPassage = null; document.querySelector('.passage-toolbar')?.remove(); return; }
+  const selection = window.getSelection();
+  const rect = selection?.rangeCount ? selection.getRangeAt(0).getBoundingClientRect() : null;
+  selectedPassage = { ...offsets, targetId, x: event.clientX || rect?.right || window.innerWidth / 2, y: event.clientY || rect?.bottom || window.innerHeight / 2 };
+  renderPassageToolbar();
+}
+
+function isDescendant(item, candidateId, ancestorId) {
+  let current = candidateId;
+  while (current && current !== 'article') {
+    if (current === ancestorId) return true;
+    current = item.nodes.find((node) => node.id === current)?.parentId;
+  }
+  return false;
+}
+
+function markAnchors(preview, nodes) {
+  const allText = textOf(preview);
+  const links = nodes.map((node) => ({ node, range: resolveAnchor(node.anchor, allText) })).filter((entry) => entry.range);
+  if (!links.length) return;
+  const walker = document.createTreeWalker(preview, NodeFilter.SHOW_TEXT);
+  const textNodes = []; while (walker.nextNode()) textNodes.push(walker.currentNode);
+  for (const textNode of textNodes) {
+    if (!textNode.nodeValue || textNode.parentElement?.closest('.katex, .anchor-mark')) continue;
+    const before = document.createRange(); before.selectNodeContents(preview); before.setEnd(textNode, 0);
+    const start = before.toString().length, end = start + textNode.nodeValue.length;
+    const cuts = new Set([start, end]);
+    for (const link of links) if (link.range.start < end && link.range.end > start) { cuts.add(Math.max(start, link.range.start)); cuts.add(Math.min(end, link.range.end)); }
+    if (!links.some((link) => link.range.start < end && link.range.end > start)) continue;
+    const points = [...cuts].sort((a, b) => a - b), fragment = document.createDocumentFragment();
+    for (let index = 0; index < points.length - 1; index++) {
+      const a = points[index], b = points[index + 1], text = textNode.nodeValue.slice(a - start, b - start);
+      const match = links.find((link) => link.range.start <= a && link.range.end >= b);
+      if (!match) fragment.append(document.createTextNode(text));
+      else {
+        const mark = el('span', { class: 'anchor-mark', tabindex: '0', role: 'button', 'data-anchor-node': match.node.id, title: 'Open connected idea', text });
+        const open = (event) => {
+          if (event.type === 'click' && !window.getSelection()?.isCollapsed) return;
+          event.stopPropagation(); selectedId = match.node.id; selectedPassage = null;
+          renderWorkspace(); focusSourceAndNode(selectedId);
+        };
+        mark.addEventListener('click', open);
+        mark.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); open(event); } });
+        fragment.append(mark);
+      }
+    }
+    textNode.replaceWith(fragment);
+  }
+}
+
+function renderOutline(item) {
+  const panel = el('aside', { class: 'outline-panel', 'aria-label': 'Document outline' }, el('div', { class: 'outline-heading', text: 'OUTLINE' }));
+  const headings = headingTokens(item.article.markdown);
+  if (!headings.length) panel.append(el('p', { class: 'outline-empty', text: 'Add headings to see the outline.' }));
+  headings.forEach((heading, index) => {
+    const row = button(heading.title, () => {
+      selectedId = null; editingMarkdown = false; selectedPassage = null; renderWorkspace();
+      const target = document.querySelectorAll('.paper .markdown-preview h1, .paper .markdown-preview h2, .paper .markdown-preview h3, .paper .markdown-preview h4, .paper .markdown-preview h5, .paper .markdown-preview h6')[index];
+      if (target) { centerOnElement(target); target.classList.add('arrived'); setTimeout(() => target.classList.remove('arrived'), 1600); }
+    }, 'outline-row');
+    row.style.paddingLeft = `${12 + (heading.level - 1) * 14}px`;
+    panel.append(row);
+  });
+  return panel;
+}
+
+function refreshOutline() {
+  const panel = document.querySelector('.outline-panel');
+  if (panel) panel.replaceWith(renderOutline(work()));
+}
+
+function centerOnElement(element) {
+  const viewport = document.querySelector('.canvas-viewport'); if (!viewport) return;
+  const rect = element.getBoundingClientRect(), bounds = viewport.getBoundingClientRect();
+  view.x += bounds.left + bounds.width / 2 - (rect.left + rect.width / 2);
+  view.y += bounds.top + bounds.height / 2 - (rect.top + rect.height / 2);
+  applyView(); saveView();
+}
+
+function renderPassageToolbar() {
+  document.querySelector('.passage-toolbar')?.remove();
+  if (!selectedPassage) return;
+  const toolbar = el('div', { class: 'passage-toolbar' }, button('＋ Idea', createAnchoredBranch, 'passage-create', { 'aria-label': 'Create connected idea' }), button('×', () => { selectedPassage = null; toolbar.remove(); }, 'passage-close', { 'aria-label': 'Dismiss selection action' }));
+  toolbar.style.left = `${clamp(selectedPassage.x + 12, 12, window.innerWidth - 135)}px`;
+  toolbar.style.top = `${clamp(selectedPassage.y - 48, 72, window.innerHeight - 58)}px`;
+  document.querySelector('.workspace-shell')?.append(toolbar);
+}
+
+function createAnchoredBranch() {
+  const selection = selectedPassage; if (!selection) return;
+  try {
+    const parentId = selection.targetId === 'article' ? null : selection.targetId;
+    addNode(parentId, makeAnchor(selection.targetId, sourcePlainText(work(), selection.targetId), selection.start, selection.end));
+  }
+  catch (error) { announce(error.message); }
+}
+
+document.addEventListener('keydown', (event) => {
+  const key = event.key.toLowerCase(), mod = event.metaKey || event.ctrlKey;
+  if (event.key === 'Escape' && document.querySelector('.save-menu')) { event.preventDefault(); closeSaveMenu(); return; }
+  if (mod && key === 's') { event.preventDefault(); saveNow(); return; }
+  if (!currentId) return;
+  if (event.key === 'Escape' && document.querySelector('.context-menu')) { event.preventDefault(); closeContextMenu(); return; }
+  if (mod && key === 'z' && !event.shiftKey) { event.preventDefault(); undo(); return; }
+  if (mod && ((key === 'z' && event.shiftKey) || key === 'y')) { event.preventDefault(); redo(); return; }
+  if (mod && key === 'k' && selectedPassage) { event.preventDefault(); createAnchoredBranch(); return; }
+  if (event.target.closest('input, textarea, select, [contenteditable]')) return;
+  if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+    event.preventDefault();
+    const contextId = selectedId || selectedIds.values().next().value;
+    const target = contextId ? document.querySelector(`[data-node="${contextId}"]`) : document.querySelector('.paper');
+    const rect = target?.getBoundingClientRect();
+    if (target && rect) openContextMenu(target, rect.left + 24, rect.top + 24);
+    return;
+  }
+  if (event.key === 'Escape') { selectedId = null; selectedIds.clear(); selectedPassage = null; renderWorkspace(); return; }
+  if (event.key === 'Tab' && selectedId) { event.preventDefault(); addNode(selectedId); }
+  else if (event.key === 'Enter' && selectedId) { event.preventDefault(); addNode(work().nodes.find((node) => node.id === selectedId)?.parentId || null); }
+  else if (key === 'f2' && selectedId) { event.preventDefault(); beginRename(selectedId); }
+  else if ((key === 'backspace' || key === 'delete') && (selectedId || selectedIds.size) && window.getSelection()?.isCollapsed) { event.preventDefault(); removeNodes(selectedId ? [selectedId] : [...selectedIds]); }
+  else if (event.key === ' ' && !selectedId && !selectedIds.size) { event.preventDefault(); fitCanvas(); }
+});
+
+window.addEventListener('beforeunload', (event) => {
+  if (saveMode === 'auto' && flushView()) persist(true);
+  if (dirty) { event.preventDefault(); event.returnValue = ''; }
+});
+
+renderHome();

@@ -18,14 +18,14 @@ The product cycle is **explore → understand → consolidate → revisit**. A s
 | Object | Purpose | Key behavior |
 | --- | --- | --- |
 | Workspace | One learning subject | Opens to the master article and remembers reading position |
-| Master article | Coherent current understanding | Editable sections; AI changes are previewed before application |
-| Graph node | One idea, question, explanation, or research lead | Can anchor to an article passage, a source passage, or another node |
+| Master article | Coherent current understanding | One Markdown document with LaTeX formulas and a heading outline; AI changes are previewed before application |
+| Graph node | One idea, explanation, or research lead | Can anchor to an article passage, a source passage, or another node; questions are handled by the later chat interface |
 | Link | Relationship between two items | May have a short label such as “supports,” “contradicts,” or “extends” |
 | Source | Imported PDF or pasted material | Original content stays separate from generated content |
 | Source anchor | Precise reference to a passage | Opens the original file and location where possible |
 | AI proposal | Suggested answer or workspace change | Can be accepted, edited, discarded, or kept as an exploration note |
 
-The graph is a **view of connected objects**, not the only place those objects exist. Closing the graph does not hide or erase knowledge promoted into the article.
+The graph is the workspace surface. The article remains fully visible on it, so promoted knowledge is always available without switching views.
 
 ## Primary journey
 
@@ -38,9 +38,9 @@ The graph is a **view of connected objects**, not the only place those objects e
 
 ## Product rules
 
-1. **Article first.** The article is readable as a document even when the graph is closed.
+1. **Article first.** The complete article remains readable on the graph canvas.
 2. **Explore freely; consolidate deliberately.** AI answers and graph branches do not silently rewrite the article.
-3. **Selection provides context, language provides intent.** A request may apply to a passage, section, node, link, source excerpt, or multiple selected items. Common prompts are discoverable shortcuts.
+3. **Selection provides context, language provides intent.** A request may apply to a passage, heading, node, link, source excerpt, or multiple selected items. Common prompts are discoverable shortcuts.
 4. **Provenance survives editing.** Original source, learner writing, and AI-generated text have distinct records. An accepted AI edit retains its origin even when the visible article reads naturally.
 5. **No invented citations.** A generated article can contain unsourced sections; they must remain identifiable. A citation is attached only when the referenced source and location exist.
 6. **Every connection is navigable.** From a graph node, the learner can return to its article or source anchor; from an anchored passage, they can find its nodes.
@@ -54,15 +54,14 @@ Use stable IDs and persist content separately from visual layout. This is a prop
 | Entity | Minimum fields |
 | --- | --- |
 | `Workspace` | `id`, `title`, `createdAt`, `updatedAt`, `articleId` |
-| `Article` | `id`, `workspaceId`, ordered `sectionIds`, `revision` |
-| `Section` | `id`, `articleId`, `title`, rich-text body, order |
-| `Node` | `id`, `workspaceId`, `kind`, title, body, status, provenance |
+| `Article` | `id`, `workspaceId`, Markdown source, `revision`; heading outline is derived |
+| `Node` | `id`, `workspaceId`, title, body, status, provenance |
 | `Edge` | `id`, `fromId`, `toId`, `label` |
 | `Anchor` | `id`, target type/ID, location, quoted-text fallback, `sourceId` if applicable |
 | `Source` | `id`, `workspaceId`, type, title, local file reference or pasted text, metadata |
 | `Proposal` | `id`, request, selected-context references, output type, payload, status, createdAt |
 | `ArticleRevision` | `id`, articleId, applied proposal ID if any, timestamp, change summary |
-| `CanvasLayout` | workspaceId, node IDs and positions, viewport |
+| `CanvasLayout` | workspaceId, node IDs, positions and sizes, viewport, article size |
 
 An anchor should use structural positions plus a quoted-text fallback; pure character offsets break when the article changes. If an anchor cannot be resolved after editing, mark it for repair rather than silently pointing elsewhere. Imported source bytes must never be overwritten by an AI operation.
 
@@ -74,7 +73,7 @@ Each passage or node records one or more origins: `learner`, `ai`, or `source`. 
 
 The request system should support open-ended instructions. The implementation can route a request to one or more output types: answer, node, link, source lead, article edit, or a combination. The selection and nearby context are explicit inputs. The AI returns a **proposal**, not an unreviewed mutation.
 
-For article edits, present target section, proposed text, and diff; apply only after acceptance. For research, distinguish a lead to investigate from a verified source attachment. A model response alone does not count as proof that a paper or claim exists.
+For article edits, present the target passage or heading, proposed text, and diff; apply only after acceptance. For research, distinguish a lead to investigate from a verified source attachment. A model response alone does not count as proof that a paper or claim exists.
 
 ## Files, folders, and portability
 
