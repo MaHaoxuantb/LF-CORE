@@ -8,7 +8,7 @@ const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
 const ROOT = { x: 0, y: 0, width: 490, height: 550 };
 let rootBounds = { ...ROOT };
-const NODE = { width: 238, height: 140 };
+const NODE = { width: 238, height: 108 };
 const example = `# Plate tectonics
 
 Earth’s outer shell is divided into large plates that move slowly over the mantle. Their motion helps explain why earthquakes, volcanoes, and mountain ranges cluster in particular places.
@@ -57,6 +57,7 @@ function applyAppearance() {
   const dark = theme === 'dark' || (theme === 'auto' && window.matchMedia?.('(prefers-color-scheme: dark)').matches);
   document.documentElement.dataset.theme = theme;
   document.documentElement.dataset.color = color;
+  document.documentElement.dataset.dark = String(dark);
   document.documentElement.style.setProperty('--accent', accentColors[color] || accentColors.violet);
   document.documentElement.style.setProperty('--accent-soft', (dark ? darkSoftColors : lightSoftColors)[color] || (dark ? darkSoftColors : lightSoftColors).violet);
 }
@@ -72,7 +73,7 @@ let selectedPassage = null, editGroup = null, view = { x: 0, y: 0, zoom: 1 };
 let viewTimer = null, toastTimer = null;
 
 function el(tag, attrs = {}, ...children) {
-  const node = ['svg', 'path', 'text', 'defs', 'marker', 'circle'].includes(tag) ? document.createElementNS('http://www.w3.org/2000/svg', tag) : document.createElement(tag);
+  const node = ['svg', 'path', 'text', 'defs', 'marker', 'circle', 'linearGradient', 'stop'].includes(tag) ? document.createElementNS('http://www.w3.org/2000/svg', tag) : document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {
     if (key === 'class') node.setAttribute('class', value);
     else if (key === 'text') node.textContent = value;
@@ -259,7 +260,7 @@ function renderHome() {
   for (const item of [...state.workspaces].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) {
     const tile = el('div', { class: 'workspace-tile' });
     tile.append(button('', () => openWorkspace(item.id), 'workspace-open', { 'aria-label': `Open ${item.title}` }), button('×', () => deleteWorkspace(item.id), 'workspace-delete', { 'aria-label': `Delete ${item.title}`, title: `Delete ${item.title}` }));
-    tile.firstElementChild.append(el('span', { class: 'tile-glyph', text: '◈' }), el('span', {}, el('strong', { text: item.title }), el('small', { text: `${item.nodes.length} connected ideas` })), el('span', { class: 'tile-arrow', text: '↗' }));
+    tile.firstElementChild.append(el('span', { class: 'tile-glyph', text: '◈' }), el('span', {}, el('strong', { text: item.title }), el('small', { text: `${item.nodes.length} connected nodes` })), el('span', { class: 'tile-arrow', text: '↗' }));
     cards.append(tile);
   }
   const exampleButton = button('Explore the Plate tectonics example', () => {
@@ -276,7 +277,7 @@ function renderHome() {
     ensurePositions(item); persist(); openWorkspace(item.id);
   }, 'example-link');
   if (loadError) exampleButton.disabled = true;
-  const main = el('main', { class: 'home-main' }, el('div', { class: 'home-eyebrow', text: 'YOUR WORKSPACE' }), el('h1', { text: 'Follow the shape of an idea.' }), el('p', { class: 'home-lead', text: 'Write at the center. Explore connected ideas, then return to what matters.' }), form, exampleButton, el('div', { class: 'list-heading' }, el('h2', { text: 'Your canvases' })), cards);
+  const main = el('main', { class: 'home-main' }, el('div', { class: 'home-eyebrow', text: 'YOUR WORKSPACE' }), el('h1', { text: 'Follow the shape of a thought.' }), el('p', { class: 'home-lead', text: 'Write at the center. Explore connected nodes, then return to what matters.' }), form, exampleButton, el('div', { class: 'list-heading' }, el('h2', { text: 'Your canvases' })), cards);
   if (loadError) main.prepend(el('p', { class: 'error-banner', text: `${loadError} Existing data was left untouched.` }));
   app.replaceChildren(el('div', { class: 'home' }, header, main));
   updateSaveControls();
@@ -284,7 +285,7 @@ function renderHome() {
 
 function deleteWorkspace(id) {
   const item = state.workspaces.find((entry) => entry.id === id);
-  if (!item || !window.confirm(`Delete “${item.title}” and all its connected ideas? This cannot be undone.`)) return;
+  if (!item || !window.confirm(`Delete “${item.title}” and all its connected nodes? This cannot be undone.`)) return;
   state.workspaces = state.workspaces.filter((entry) => entry.id !== id);
   delete state.history[id]; delete state.redo[id];
   persist(); renderHome();
@@ -453,7 +454,11 @@ function renderCanvas(item) {
   }
   viewport.append(scene);
   attachPanAndZoom(viewport);
-  const zoom = el('div', { class: 'zoom-controls' }, button('−', () => zoomTo(view.zoom - .15), '', { 'aria-label': 'Zoom out' }), el('span', { class: 'zoom-value', text: '100%' }), button('+', () => zoomTo(view.zoom + .15), '', { 'aria-label': 'Zoom in' }), el('span', { class: 'zoom-divider' }), button('Fit', fitCanvas, 'fit-button', { 'aria-label': 'Fit canvas' }));
+  const presets = el('div', { class: 'zoom-presets', role: 'menu', 'aria-label': 'Zoom presets' });
+  const zoomMenu = el('div', { class: 'zoom-menu' }, button('100%', () => { const open = zoomMenu.classList.toggle('open'); zoomMenu.querySelector('.zoom-value').setAttribute('aria-expanded', String(open)); if (open) presets.querySelector('button')?.focus(); }, 'zoom-value', { 'aria-label': 'Zoom level; choose a preset', 'aria-haspopup': 'menu', 'aria-expanded': 'false' }), presets);
+  for (const level of [50, 75, 100, 125, 150, 175]) presets.append(button(`${level}%`, () => { zoomTo(level / 100); zoomMenu.classList.remove('open'); zoomMenu.querySelector('.zoom-value').setAttribute('aria-expanded', 'false'); }, 'zoom-preset', { role: 'menuitem' }));
+  presets.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.stopPropagation(); zoomMenu.classList.remove('open'); zoomMenu.querySelector('.zoom-value').setAttribute('aria-expanded', 'false'); zoomMenu.querySelector('.zoom-value').focus(); } });
+  const zoom = el('div', { class: 'zoom-controls' }, button('−', () => zoomTo(view.zoom - .15), '', { 'aria-label': 'Zoom out' }), zoomMenu, button('+', () => zoomTo(view.zoom + .15), '', { 'aria-label': 'Zoom in' }), el('span', { class: 'zoom-divider' }), button('Fit', fitCanvas, 'fit-button', { 'aria-label': 'Fit canvas' }));
   const shell = el('div', { class: 'canvas-shell' }, viewport, zoom);
   if (outlineOpen) shell.append(renderOutline(item));
   if (selectedId) {
@@ -468,7 +473,7 @@ function renderCanvas(item) {
 function attachPanAndZoom(viewport) {
   let suppressCanvasClick = false;
   viewport.addEventListener('pointerdown', (event) => {
-    if (event.button === 0 && !event.target.closest('.paper, .topic-card, .edge-label-chip')) {
+    if (event.button === 0 && !event.target.closest('.paper, .topic-card, .edge-label-chip, .connector-hit')) {
       event.preventDefault();
       closeContextMenu();
       const start = { x: event.clientX, y: event.clientY, moved: false };
@@ -545,7 +550,7 @@ function attachPanAndZoom(viewport) {
   });
   viewport.addEventListener('click', (event) => {
     if (suppressCanvasClick) return;
-    if (event.button !== 0 || event.target.closest('.paper, .topic-card, .edge-label-chip')) return;
+    if (event.button !== 0 || event.target.closest('.paper, .topic-card, .edge-label-chip, .connector-hit')) return;
     if (!window.getSelection()?.isCollapsed) return;
     closeContextMenu();
     if (selectedId || selectedIds.size || selectedPassage) { selectedId = null; selectedIds.clear(); selectedPassage = null; renderWorkspace(); }
@@ -577,23 +582,23 @@ function openContextMenu(target, x, y) {
   if (group) {
     option(`Clear ${selectedIds.size} selected`, () => { selectedIds.clear(); renderWorkspace(); });
     menu.append(el('div', { class: 'context-separator', role: 'separator' }));
-    option('Delete selected ideas', () => removeNodes([...selectedIds]), true);
+    option('Delete selected nodes', () => removeNodes([...selectedIds]), true);
   } else if (node) {
     option('Open details', () => selectNode(node.id));
     option('Edit content on canvas', () => beginNodeMarkdownEdit(node.id));
-    if (passage?.targetId === node.id) option('Create idea from highlight', () => { selectedPassage = passage; createAnchoredBranch(); });
+    if (passage?.targetId === node.id) option('Create node from highlight', () => { selectedPassage = passage; createAnchoredNode(); });
     option('Add child', () => addNode(node.id));
     option('Add sibling', () => addNode(node.parentId));
     option('Rename', () => beginRename(node.id));
     menu.append(el('div', { class: 'context-separator', role: 'separator' }));
-    option('Delete idea', () => removeNode(node.id), true);
+    option('Delete node', () => removeNode(node.id), true);
   } else if (onPaper) {
-    if (passage?.targetId === 'article') option('Create idea from highlight', () => { selectedPassage = passage; createAnchoredBranch(); });
+    if (passage?.targetId === 'article') option('Create node from highlight', () => { selectedPassage = passage; createAnchoredNode(); });
     option(editingMarkdown ? 'Done editing' : 'Edit document', () => { editingMarkdown = !editingMarkdown; selectedPassage = null; renderWorkspace(); if (editingMarkdown) document.querySelector('.markdown-editor')?.focus(); });
-    option('Add idea', () => addNode());
+    option('Add node', () => addNode());
     option('Fit canvas', fitCanvas);
   } else {
-    option('Add idea', () => addNode());
+    option('Add node', () => addNode());
     option('Fit canvas', fitCanvas);
     option('Zoom in', () => zoomTo(view.zoom + .15, x, y));
     option('Zoom out', () => zoomTo(view.zoom - .15, x, y));
@@ -614,6 +619,10 @@ function openContextMenu(target, x, y) {
 document.addEventListener('pointerdown', (event) => {
   if (!event.target.closest('.context-menu')) closeContextMenu();
   if (!event.target.closest('.save-control')) closeSaveMenu();
+  if (!event.target.closest('.zoom-menu')) {
+    document.querySelector('.zoom-menu.open')?.classList.remove('open');
+    document.querySelector('.zoom-value')?.setAttribute('aria-expanded', 'false');
+  }
 }, true);
 
 function isVisible(item, node) {
@@ -663,26 +672,86 @@ function measurePaper() {
   updateConnectors();
 }
 
-function curve(from, to, fromY = null) {
-  const right = to.x >= from.x + from.width / 2;
-  const x1 = right ? from.x + from.width : from.x;
-  const x2 = right ? to.x : to.x + to.width;
-  const y1 = fromY ?? from.y + from.height / 2;
-  const y2 = to.y + to.height / 2;
-  const bend = Math.max(70, Math.abs(x2 - x1) * .5);
-  return `M ${x1} ${y1} C ${x1 + (right ? bend : -bend)} ${y1}, ${x2 - (right ? bend : -bend)} ${y2}, ${x2} ${y2}`;
+function connectorRoute(from, to, fromY = null, side = 'auto') {
+  const targetSide = side === 'auto' ? (to.x >= from.x + from.width / 2 ? 'left' : 'right') : side;
+  const entry = {
+    left: [to.x, to.y + to.height / 2, -1, 0],
+    right: [to.x + to.width, to.y + to.height / 2, 1, 0],
+    top: [to.x + to.width / 2, to.y, 0, -1],
+    bottom: [to.x + to.width / 2, to.y + to.height, 0, 1],
+  }[targetSide];
+  const [x2, y2, dx, dy] = entry;
+  const anchored = from.width === 0 && from.height === 0;
+  const x1 = anchored ? from.x : dx ? (dx < 0 ? from.x + from.width : from.x) : from.x + from.width / 2;
+  const y1 = fromY ?? (anchored ? from.y : dy ? (dy < 0 ? from.y + from.height : from.y) : from.y + from.height / 2);
+  const bend = Math.max(48, (dx ? Math.abs(x2 - x1) : Math.abs(y2 - y1)) * .48);
+  const c1x = x1 + (dx ? -dx * bend : 0), c1y = y1 + (dy ? -dy * bend : 0);
+  const c2x = x2 + dx * bend, c2y = y2 + dy * bend;
+  return { d: `M ${x1} ${y1} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${x2} ${y2}`, x1, y1, x2, y2 };
 }
 
-function edgeMidpoint(from, to) {
-  const right = to.x >= from.x + from.width / 2;
-  return {
-    x: ((right ? from.x + from.width : from.x) + (right ? to.x : to.x + to.width)) / 2,
-    y: (from.y + from.height / 2 + to.y + to.height / 2) / 2,
-  };
+function curve(from, to, fromY = null, side = 'auto') {
+  return connectorRoute(from, to, fromY, side).d;
+}
+
+function updateRoute(path, from, to, fromY = null, side = 'auto') {
+  const route = connectorRoute(from, to, fromY, side);
+  path.setAttribute('d', route.d);
+  if (path._hit) path._hit.setAttribute('d', route.d);
+  const gradient = path._gradient || document.getElementById(path.dataset.gradient);
+  if (gradient) for (const key of ['x1', 'y1', 'x2', 'y2']) gradient.setAttribute(key, route[key]);
+}
+
+function makeConnector(svg, id, from, to, fromY, side, className, attrs, onClick) {
+  const gradientId = `line-${id}`;
+  const gradient = el('linearGradient', { id: gradientId, gradientUnits: 'userSpaceOnUse' }, el('stop', { offset: '0%', class: 'line-start' }), el('stop', { offset: '100%', class: 'line-end' }));
+  svg.querySelector('defs').append(gradient);
+  const path = el('path', { ...attrs, class: className, 'data-gradient': gradientId });
+  path.style.stroke = `url(#${gradientId})`;
+  path._gradient = gradient;
+  updateRoute(path, from, to, fromY, side);
+  const hit = el('path', { d: path.getAttribute('d'), class: 'connector-hit', 'aria-label': 'Arrow options', tabindex: '0', role: 'button' });
+  const activate = (event) => { event.stopPropagation(); onClick(event); };
+  hit.addEventListener('click', activate);
+  hit.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(event); } });
+  svg.append(path, hit);
+  path._hit = hit;
+  return path;
+}
+
+function openArrowMenu(event, kind, id) {
+  closeContextMenu();
+  const item = work();
+  const target = kind === 'node' ? item.nodes.find((node) => node.id === id) : item.edges.find((edge) => edge.id === id);
+  if (!target) return;
+  const menu = el('div', { class: 'context-menu arrow-menu', role: 'menu', 'aria-label': 'Arrow endpoint position' });
+  menu.append(el('div', { class: 'arrow-menu-heading', text: 'Arrow enters node from' }));
+  const current = kind === 'node' ? target.connectionSide || 'auto' : target.toSide || 'auto';
+  for (const side of ['auto', 'left', 'top', 'right', 'bottom']) {
+    menu.append(button(`${current === side ? '✓ ' : '　'}${side === 'auto' ? 'Automatic' : side[0].toUpperCase() + side.slice(1)}`, () => {
+      closeContextMenu();
+      change((entry) => {
+        const connection = kind === 'node' ? entry.nodes.find((node) => node.id === id) : entry.edges.find((edge) => edge.id === id);
+        if (kind === 'node') connection.connectionSide = side;
+        else connection.toSide = side;
+      });
+    }, 'context-option', { role: 'menuitem' }));
+  }
+  document.querySelector('.workspace-shell')?.append(menu);
+  const rect = event.currentTarget?.getBoundingClientRect();
+  const x = event.clientX || rect?.left || 10, y = event.clientY || rect?.top || 80;
+  menu.style.left = `${clamp(x, 8, window.innerWidth - menu.offsetWidth - 8)}px`;
+  menu.style.top = `${clamp(y, 8, window.innerHeight - menu.offsetHeight - 8)}px`;
+  menu.querySelector('button')?.focus();
+}
+
+function edgeMidpoint(from, to, side = 'auto') {
+  const route = connectorRoute(from, to, null, side);
+  return { x: (route.x1 + route.x2) / 2, y: (route.y1 + route.y2) / 2 };
 }
 
 function placeEdgeLabel(label, item, edge) {
-  const middle = edgeMidpoint(pointFor(item, edge.fromId), pointFor(item, edge.toId));
+  const middle = edgeMidpoint(pointFor(item, edge.fromId), pointFor(item, edge.toId), edge.toSide);
   label.style.left = `${middle.x}px`;
   label.style.top = `${middle.y}px`;
 }
@@ -714,7 +783,7 @@ function renderEdgeLabel(item, edge) {
 
 function renderConnectors(item) {
   const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#514fc1';
-  const svg = el('svg', { class: 'connectors', viewBox: '-4000 -4000 8000 8000', 'aria-hidden': 'true' });
+  const svg = el('svg', { class: 'connectors', viewBox: '-4000 -4000 8000 8000', role: 'group', 'aria-label': 'Node connections' });
   const defs = el('defs');
   for (const [id, color] of [['arrow-primary', accent], ['arrow-cross', accent]]) {
     defs.append(el('marker', { id, markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient: id === 'arrow-cross' ? 'auto-start-reverse' : 'auto', markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: color, style: `stroke: ${color}`, 'stroke-width': '1.6', 'stroke-opacity': '.72', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
@@ -724,10 +793,8 @@ function renderConnectors(item) {
     if (!isVisible(item, node) || node.anchor) continue;
     if (!node.parentId) continue;
     const source = sourceFor(item, node);
-    const path = el('path', { d: source ? curve(source.point, pointFor(item, node.id), source.fromY) : '', class: 'branch-line', 'data-to': node.id, 'marker-end': 'url(#arrow-primary)' });
-    path.style.stroke = accent;
-    if (!source) path.style.display = 'none';
-    svg.append(path);
+    const path = makeConnector(svg, node.id, source?.point || rootBounds, pointFor(item, node.id), source?.fromY, node.connectionSide, 'branch-line', { 'data-to': node.id, 'marker-end': 'url(#arrow-primary)' }, (event) => openArrowMenu(event, 'node', node.id));
+    if (!source) { path.style.display = 'none'; path._hit.style.display = 'none'; }
     if (node.anchor) {
       const dot = el('circle', { class: 'origin-dot', 'data-origin': node.id, cx: source?.point.x ?? 0, cy: source?.point.y ?? 0, r: '3' });
       if (!source) dot.style.display = 'none';
@@ -737,26 +804,22 @@ function renderConnectors(item) {
   for (const edge of item.edges) {
     const from = item.nodes.find((node) => node.id === edge.fromId), to = item.nodes.find((node) => node.id === edge.toId);
     if (!from || !to || !isVisible(item, from) || !isVisible(item, to)) continue;
-    const crossPath = el('path', { d: curve(pointFor(item, from.id), pointFor(item, to.id)), class: 'cross-line', 'data-edge': edge.id, 'marker-start': 'url(#arrow-cross)', 'marker-end': 'url(#arrow-cross)' });
-    crossPath.style.stroke = accent;
-    svg.append(crossPath);
+    makeConnector(svg, edge.id, pointFor(item, from.id), pointFor(item, to.id), null, edge.toSide, 'cross-line', { 'data-edge': edge.id, 'marker-start': 'url(#arrow-cross)', 'marker-end': 'url(#arrow-cross)' }, (event) => openArrowMenu(event, 'edge', edge.id));
   }
   return svg;
 }
 
 function renderAnchorConnectors(item) {
   const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#514fc1';
-  const svg = el('svg', { class: 'connectors anchor-connectors', viewBox: '-4000 -4000 8000 8000', 'aria-hidden': 'true' });
+  const svg = el('svg', { class: 'connectors anchor-connectors', viewBox: '-4000 -4000 8000 8000', role: 'group', 'aria-label': 'Passage connections' });
   const defs = el('defs');
   defs.append(el('marker', { id: 'arrow-anchor', markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient: 'auto', markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: accent, style: `stroke: ${accent}`, 'stroke-width': '1.6', 'stroke-opacity': '.72', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
   svg.append(defs);
   for (const node of item.nodes) {
     if (!isVisible(item, node) || !node.anchor) continue;
     const source = sourceFor(item, node);
-    const path = el('path', { d: source ? curve(source.point, pointFor(item, node.id), source.fromY) : '', class: 'branch-line', 'data-to': node.id, 'marker-end': 'url(#arrow-anchor)' });
-    path.style.stroke = accent;
-    if (!source) path.style.display = 'none';
-    svg.append(path);
+    const path = makeConnector(svg, node.id, source?.point || rootBounds, pointFor(item, node.id), source?.fromY, node.connectionSide, 'branch-line', { 'data-to': node.id, 'marker-end': 'url(#arrow-anchor)' }, (event) => openArrowMenu(event, 'node', node.id));
+    if (!source) { path.style.display = 'none'; path._hit.style.display = 'none'; }
     const dot = el('circle', { class: 'origin-dot', 'data-origin': node.id, cx: source?.point.x ?? 0, cy: source?.point.y ?? 0, r: '3' });
     if (!source) dot.style.display = 'none';
     svg.append(dot);
@@ -771,7 +834,8 @@ function updateConnectors() {
     const source = sourceFor(item, node);
     if (path) {
       path.style.display = source ? '' : 'none';
-      if (source) path.setAttribute('d', curve(source.point, pointFor(item, node.id), source.fromY));
+      if (path._hit) path._hit.style.display = source ? '' : 'none';
+      if (source) updateRoute(path, source.point, pointFor(item, node.id), source.fromY, node.connectionSide);
     }
     const dot = document.querySelector(`[data-origin="${node.id}"]`);
     if (dot) {
@@ -781,7 +845,7 @@ function updateConnectors() {
   }
   for (const edge of item.edges) {
     const path = document.querySelector(`[data-edge="${edge.id}"]`);
-    if (path) path.setAttribute('d', curve(pointFor(item, edge.fromId), pointFor(item, edge.toId)));
+    if (path) updateRoute(path, pointFor(item, edge.fromId), pointFor(item, edge.toId), null, edge.toSide);
     const label = document.querySelector(`[data-edge-label="${edge.id}"]`);
     if (label) placeEdgeLabel(label, item, edge);
   }
@@ -823,7 +887,7 @@ function renderNode(node, item) {
   const count = item.nodes.filter((entry) => entry.parentId === node.id).length;
   const footer = count ? el('div', { class: 'topic-footer' }, button(node.collapsed ? `＋ ${count}` : `− ${count}`, (event) => { event.stopPropagation(); change((entry) => { entry.nodes.find((n) => n.id === node.id).collapsed = !node.collapsed; }); }, 'collapse-button', { 'aria-label': node.collapsed ? 'Expand children' : 'Collapse children' })) : null;
   const resize = button('', () => {}, 'resize-grip node-resize', { 'aria-label': `Resize ${node.title}`, title: 'Drag to resize; arrow keys also work' });
-  const link = button('↔', () => {}, 'link-grip', { 'aria-label': `Connect ${node.title} to another idea`, title: 'Drag to another idea to connect' });
+  const link = button('↔', () => {}, 'link-grip', { 'aria-label': `Connect ${node.title} to another node`, title: 'Drag to another node to connect' });
   link.addEventListener('pointerdown', (event) => startEdgeDrag(event, node, link));
   link.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -851,12 +915,12 @@ function openLinkMenu(node, grip) {
   const item = work();
   const available = item.nodes.filter((candidate) => candidate.id !== node.id &&
     !item.edges.some((edge) => (edge.fromId === node.id && edge.toId === candidate.id) || (edge.toId === node.id && edge.fromId === candidate.id)));
-  if (!available.length) return announce('No unconnected ideas are available.');
+  if (!available.length) return announce('No unconnected nodes are available.');
   const menu = el('div', { class: 'context-menu', role: 'menu', 'aria-label': `Connect ${node.title}` });
   for (const candidate of available) menu.append(button(`Connect to ${candidate.title}`, () => {
     closeContextMenu();
     change((entry) => { entry.edges.push({ id: crypto.randomUUID(), fromId: node.id, toId: candidate.id, label: 'related' }); });
-    announce('Ideas connected. Select the label on the line to rename it.');
+    announce('Nodes connected. Select the label on the line to rename it.');
   }, 'context-option', { role: 'menuitem' }));
   document.querySelector('.workspace-shell')?.append(menu);
   const rect = grip.getBoundingClientRect();
@@ -895,9 +959,9 @@ function startEdgeDrag(event, node, grip) {
     if (grip.hasPointerCapture(event.pointerId)) grip.releasePointerCapture(event.pointerId);
     if (next.type !== 'pointerup' || !target) return;
     const exists = work().edges.some((edge) => (edge.fromId === node.id && edge.toId === target) || (edge.fromId === target && edge.toId === node.id));
-    if (exists) return announce('These ideas are already connected.');
+    if (exists) return announce('These nodes are already connected.');
     change((item) => { item.edges.push({ id: crypto.randomUUID(), fromId: node.id, toId: target, label: 'related' }); });
-    announce('Ideas connected. Select the label on the line to rename it.');
+    announce('Nodes connected. Select the label on the line to rename it.');
   };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', finish);
@@ -1049,7 +1113,7 @@ function beginRename(id) {
   const card = document.querySelector(`[data-node="${id}"]`); if (!card) return;
   const title = card.querySelector('.topic-title');
   const node = work().nodes.find((entry) => entry.id === id);
-  const input = el('input', { class: 'inline-title', value: node.title, 'aria-label': 'Rename idea' });
+  const input = el('input', { class: 'inline-title', value: node.title, 'aria-label': 'Rename node' });
   title.replaceWith(input); input.focus(); input.select();
   const finish = () => { const value = input.value.trim() || 'Untitled'; if (value !== node.title) change((entry) => { entry.nodes.find((n) => n.id === id).title = value; }); else renderWorkspace(); };
   input.addEventListener('blur', finish, { once: true });
@@ -1112,12 +1176,12 @@ function removeNodes(ids) {
   });
   selectedId = roots.length === 1 && !removed.has(roots[0].parentId) ? roots[0].parentId : null;
   selectedIds.clear(); selectedPassage = null;
-  renderWorkspace(); announce(`${removed.size} idea${removed.size === 1 ? '' : 's'} deleted. Undo is available.`);
+  renderWorkspace(); announce(`${removed.size} node${removed.size === 1 ? '' : 's'} deleted. Undo is available.`);
 }
 
 function renderDetails(node, item) {
   const anchorRange = resolveAnchor(node.anchor, sourcePlainText(item, node.anchor?.targetId));
-  const panel = el('aside', { class: 'details-panel', 'aria-label': 'Idea details' }, el('div', { class: 'panel-heading' }, el('span', { class: 'panel-eyebrow', text: 'DETAILS' }), button('×', () => { selectedId = null; renderWorkspace(); }, 'panel-close', { 'aria-label': 'Close details' })));
+  const panel = el('aside', { class: 'details-panel', 'aria-label': 'Node details' }, el('div', { class: 'panel-heading' }, el('span', { class: 'panel-eyebrow', text: 'NODE DETAILS' }), button('×', () => { selectedId = null; renderWorkspace(); }, 'panel-close', { 'aria-label': 'Close details' })));
   const title = el('input', { class: 'details-title', value: node.title, 'aria-label': 'Title' });
   title.addEventListener('input', () => {
     change((entry) => { entry.nodes.find((n) => n.id === node.id).title = title.value; }, { group: `title:${node.id}`, rerender: false });
@@ -1143,7 +1207,7 @@ function renderDetails(node, item) {
   }
   const actions = el('div', { class: 'panel-actions' }, button('＋ Child', () => addNode(node.id), 'panel-action'), button('＋ Sibling', () => addNode(node.parentId), 'panel-secondary'));
   panel.append(actions);
-  panel.append(button(item.nodes.some((entry) => entry.parentId === node.id) ? 'Delete idea and its descendants' : 'Delete idea', () => removeNode(node.id), 'remove-branch'));
+  panel.append(button(item.nodes.some((entry) => entry.parentId === node.id) ? 'Delete node and its descendants' : 'Delete node', () => removeNode(node.id), 'remove-branch'));
   return panel;
 }
 
@@ -1160,7 +1224,7 @@ function reconnect(node) {
   if (!selectedPassage) return announce('Select the matching passage first.');
   try {
     const targetId = selectedPassage.targetId;
-    if (targetId === node.id || isDescendant(work(), targetId, node.id)) return announce('Choose a passage outside this idea and its descendants.');
+    if (targetId === node.id || isDescendant(work(), targetId, node.id)) return announce('Choose a passage outside this node and its descendants.');
     const anchor = makeAnchor(targetId, sourcePlainText(work(), targetId), selectedPassage.start, selectedPassage.end);
     change((entry) => { const target = entry.nodes.find((n) => n.id === node.id); target.anchor = anchor; target.parentId = targetId === 'article' ? null : targetId; });
     selectedPassage = null; announce('Passage reconnected.');
@@ -1298,7 +1362,7 @@ function markAnchors(preview, nodes) {
       const match = links.find((link) => link.range.start <= a && link.range.end >= b);
       if (!match) fragment.append(document.createTextNode(text));
       else {
-        const mark = el('span', { class: 'anchor-mark', tabindex: '0', role: 'button', 'data-anchor-node': match.node.id, title: 'Open connected idea', text });
+        const mark = el('span', { class: 'anchor-mark', tabindex: '0', role: 'button', 'data-anchor-node': match.node.id, title: 'Open connected node', text });
         mark.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--accent-soft').trim();
         mark.style.borderBottomColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
         const open = (event) => {
@@ -1347,13 +1411,13 @@ function centerOnElement(element) {
 function renderPassageToolbar() {
   document.querySelector('.passage-toolbar')?.remove();
   if (!selectedPassage) return;
-  const toolbar = el('div', { class: 'passage-toolbar' }, button('＋ Idea', createAnchoredBranch, 'passage-create', { 'aria-label': 'Create connected idea' }), button('×', () => { selectedPassage = null; toolbar.remove(); }, 'passage-close', { 'aria-label': 'Dismiss selection action' }));
+  const toolbar = el('div', { class: 'passage-toolbar' }, button('＋ Node', createAnchoredNode, 'passage-create', { 'aria-label': 'Create connected node' }), button('×', () => { selectedPassage = null; toolbar.remove(); }, 'passage-close', { 'aria-label': 'Dismiss selection action' }));
   toolbar.style.left = `${clamp(selectedPassage.x + 12, 12, window.innerWidth - 135)}px`;
   toolbar.style.top = `${clamp(selectedPassage.y - 48, 72, window.innerHeight - 58)}px`;
   document.querySelector('.workspace-shell')?.append(toolbar);
 }
 
-function createAnchoredBranch() {
+function createAnchoredNode() {
   const selection = selectedPassage; if (!selection) return;
   try {
     const parentId = selection.targetId === 'article' ? null : selection.targetId;
@@ -1370,7 +1434,7 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && document.querySelector('.context-menu')) { event.preventDefault(); closeContextMenu(); return; }
   if (mod && key === 'z' && !event.shiftKey) { event.preventDefault(); undo(); return; }
   if (mod && ((key === 'z' && event.shiftKey) || key === 'y')) { event.preventDefault(); redo(); return; }
-  if (mod && key === 'k' && selectedPassage) { event.preventDefault(); createAnchoredBranch(); return; }
+  if (mod && key === 'k' && selectedPassage) { event.preventDefault(); createAnchoredNode(); return; }
   if (event.target.closest('input, textarea, select, [contenteditable]')) return;
   if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
     event.preventDefault();

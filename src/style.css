@@ -304,3 +304,94 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .selection-toolbar .selection-delete { color: #a34d56; }
 .selection-toolbar .selection-delete:hover { background: #fff0f1; }
 @media (max-width: 620px) { .workspace-chrome { inset: 10px 10px auto; gap: 6px; } .workspace-chrome .header-left { max-width: calc(100vw - 100px); } .workspace-chrome .header-right { gap: 0; } .workspace-chrome .workspace-title { display: block; max-width: 120px; padding: 0 5px; font-size: .76rem; } .outline-panel { top: 62px; bottom: 75px; } .details-panel { top: auto; bottom: 64px; } .zoom-controls { bottom: 12px; } }
+
+/* Floating panels should reveal the canvas, not cover it from top to bottom. */
+.outline-panel { bottom: auto; max-height: min(420px, calc(100vh - 155px)); }
+.details-panel { bottom: auto; max-height: calc(100vh - 88px); }
+.outline-row { transition: background-color .15s ease, color .15s ease; }
+
+/* Keep every secondary surface in the same neutral dark palette. */
+:root[data-dark='true'] .outline-panel,
+:root[data-dark='true'] .source-quote,
+:root[data-dark='true'] .appearance-menu,
+:root[data-dark='true'] .save-menu,
+:root[data-dark='true'] .context-menu,
+:root[data-dark='true'] .edge-label-chip,
+:root[data-dark='true'] .selection-toolbar,
+:root[data-dark='true'] .passage-toolbar { background: #222; color: #e7e7eb; border-color: #454545; }
+:root[data-dark='true'] .outline-heading,
+:root[data-dark='true'] .panel-eyebrow,
+:root[data-dark='true'] .source-label { color: #aaa8f2; }
+:root[data-dark='true'] .outline-row,
+:root[data-dark='true'] .edge-label-chip button,
+:root[data-dark='true'] .edge-label-input { color: #d3d5dc; }
+:root[data-dark='true'] .outline-row:hover,
+:root[data-dark='true'] .outline-row:focus-visible,
+:root[data-dark='true'] .appearance-option:hover,
+:root[data-dark='true'] .context-option:hover,
+:root[data-dark='true'] .save-menu-option:hover { background: #33313e; color: #f2efff; }
+:root[data-dark='true'] .source-quote { background: color-mix(in srgb, var(--accent) 16%, #222); border-left-color: var(--accent); }
+:root[data-dark='true'] .source-quote.unresolved { background: #342a23; border-left-color: #dfa75e; }
+:root[data-dark='true'] .source-quote p { color: #d5d2df; }
+:root[data-dark='true'] .panel-secondary,
+:root[data-dark='true'] .collapse-button { background: #303036; color: #e6e2ff; border-color: #5a5864; }
+:root[data-dark='true'] .panel-secondary:hover,
+:root[data-dark='true'] .collapse-button:hover { background: #3b3948; }
+:root[data-dark='true'] .details-panel label,
+:root[data-dark='true'] .appearance-menu label,
+:root[data-dark='true'] .paper-label { color: #acafbb; }
+:root[data-dark='true'] .markdown-preview h2,
+:root[data-dark='true'] .markdown-preview th,
+:root[data-dark='true'] .markdown-preview td { border-color: #444; }
+:root[data-dark='true'] .markdown-preview code,
+:root[data-dark='true'] .markdown-preview pre { background: #303035; color: #e9e7ef; }
+:root[data-dark='true'] .markdown-preview blockquote { color: #bfc2cb; }
+:root[data-dark='true'] .topic-card.content-overflow .node-content::after { background: linear-gradient(90deg, #1b1b1b00, #1b1b1b 35%); }
+:root[data-dark='true'] .zoom-controls button,
+:root[data-dark='true'] .workspace-chrome .header-icon,
+:root[data-dark='true'] .panel-close { color: #bdc0ca; }
+:root[data-dark='true'] .workspace-chrome .header-icon:hover,
+:root[data-dark='true'] .zoom-controls button:hover { background: #34343b; color: #f0edff; }
+:root[data-dark='true'] .workspace-chrome .header-icon.active { background: #383451; color: #e4ddff; }
+:root[data-dark='true'] .zoom-divider,
+:root[data-dark='true'] .context-separator,
+:root[data-dark='true'] .save-menu-separator { background: #454545; }
+:root[data-dark='true'] .link-grip { background: #292932; border-color: #8f89bb; color: #dedaff; }
+:root[data-dark='true'] .connectors path.branch-line,
+:root[data-dark='true'] .connectors path.cross-line,
+:root[data-dark='true'] .connectors path.edge-preview { stroke: color-mix(in srgb, var(--accent) 70%, white); stroke-opacity: .82; }
+:root[data-dark='true'] .topic-card.selected,
+:root[data-dark='true'] .topic-card.edge-target { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent), 0 8px 21px #0005; }
+@media (max-width: 620px) {
+  .outline-panel { bottom: auto; max-height: min(340px, calc(100vh - 140px)); }
+  .details-panel { bottom: 64px; max-height: 50vh; }
+}
+
+/* Compact nodes keep their controls in the corner instead of reserving a row. */
+.topic-card { padding: 11px 13px 19px; }
+.topic-top { position: absolute; top: 9px; right: 11px; height: auto; }
+.topic-title { margin: 0 22px 0 0; line-height: 1.3; }
+.node-content { flex: 0 1 auto; margin: 5px 0 0; }
+.node-content p:last-child, .node-content ul:last-child, .node-content ol:last-child { margin-bottom: 0; }
+.topic-footer { margin-top: 5px; }
+.node-resize { right: 3px; bottom: 3px; }
+
+.zoom-menu { position: relative; height: 34px; }
+.zoom-controls .zoom-value { width: 47px; height: 34px; font-size: .75rem; font-weight: 650; }
+.zoom-controls .zoom-value:hover, .zoom-controls .zoom-value[aria-expanded='true'] { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+.zoom-presets { display: none; position: absolute; bottom: calc(100% + 9px); left: 50%; transform: translateX(-50%); z-index: 30; min-width: 100px; padding: 5px; border: 1px solid #dce1e9; border-radius: 9px; background: #fff; box-shadow: 0 10px 26px #0003; }
+.zoom-menu.open .zoom-presets { display: grid; }
+.zoom-controls .zoom-preset { width: 100%; height: 31px; border-radius: 5px; font-size: .76rem; text-align: left; padding: 0 10px; }
+.zoom-controls .zoom-preset:hover, .zoom-controls .zoom-preset:focus-visible { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+:root[data-dark='true'] .zoom-presets { background: #242424; border-color: #454545; }
+
+/* A connector fades in toward its destination and retains a wider invisible hit target. */
+.connectors .line-start { stop-color: var(--accent); stop-opacity: .08; }
+.connectors .line-end { stop-color: var(--accent); stop-opacity: .85; }
+:root[data-dark='true'] .connectors .line-start,
+:root[data-dark='true'] .connectors .line-end { stop-color: color-mix(in srgb, var(--accent) 70%, white); }
+.connectors .connector-hit { fill: none; stroke: transparent; stroke-width: 12; pointer-events: stroke; cursor: pointer; }
+.connectors .connector-hit:hover, .connectors .connector-hit:focus-visible { stroke: color-mix(in srgb, var(--accent) 20%, transparent); outline: none; }
+.connectors .edge-preview { pointer-events: none; }
+.arrow-menu-heading { padding: 8px 10px 5px; color: #7b8392; font-size: .67rem; font-weight: 750; letter-spacing: .04em; }
+:root[data-dark='true'] .arrow-menu-heading { color: #aeb0bb; }
