@@ -29,3 +29,11 @@ Browser local storage is used for small manual workspaces. The current version u
 | Passage links | Quote, rendered-text offsets, surrounding context | Keep the anchor contract and improve repair when richer editing arrives. |
 
 PDF import, AI requests, proposals, and source records remain later-phase work. The sample article is manually written and has no citations.
+
+## Phase 0 alternatives and deferred decisions
+
+The browser shell was chosen over an Electron or Tauri wrapper for the first manual slice: it needs no installer and works offline once the local server and bundled assets are present. A wrapper would offer better local-file access and packaging but adds platform builds and update handling before the article-to-graph interaction is validated. Browser local storage was chosen over IndexedDB or SQLite for the small sample because the records are compact and synchronous; its quota, lack of backup, and browser-profile dependence mean it must be replaced or supplemented before sizeable PDF imports. This is not yet a packaged, double-click desktop app.
+
+Native DOM text selection plus Markdown source was chosen over a structured editor such as ProseMirror or TipTap. It gives a small selectable rendered document and portable text at the cost of limited WYSIWYG editing and quote-based anchor repair. DOM cards with SVG connectors were chosen over React Flow or a whiteboard scene format: manual positions and edges remain domain data, but large graphs will need performance testing. The PDF spike uses a separate [reading fixture](../output/pdf/plate-tectonics-spike.pdf); adding a PDF renderer now would be premature because Phase 1 neither imports nor navigates source pages.
+
+Remote versus on-device AI, initial article length, OCR/chapter handling, export format, and observed learner preferences are not resolved by this non-AI manual slice. They remain explicit decisions for the phases that exercise those capabilities. See [Phase 0/1 verification](PHASE_0_1_CHECK.md) for the technical checks and their limits.

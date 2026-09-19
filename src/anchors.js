@@ -21,7 +21,6 @@ function commonPrefix(a, b) {
 
 export function resolveAnchor(anchor, text) {
   if (!anchor || !anchor.quote || !text) return null;
-  if (text.slice(anchor.start, anchor.end) === anchor.quote) return { start: anchor.start, end: anchor.end };
   const candidates = [];
   let cursor = 0;
   while ((cursor = text.indexOf(anchor.quote, cursor)) !== -1) {

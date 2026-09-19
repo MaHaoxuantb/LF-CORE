@@ -795,6 +795,21 @@ function renderNode(node, item) {
   applyNodeSizeClass(card, size.width, size.height);
   const grip = el('button', { type: 'button', class: 'drag-grip', text: '⠿', title: 'Move', 'aria-label': `Move ${node.title}` });
   grip.addEventListener('pointerdown', (event) => startNodeDrag(event, node, card, grip));
+  grip.addEventListener('keydown', (event) => {
+    const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
+    if (!direction) return;
+    event.preventDefault(); event.stopPropagation();
+    const step = event.shiftKey ? 24 : 8;
+    const ids = selectedIds.has(node.id) ? [...selectedIds] : [node.id];
+    change((entry) => {
+      for (const id of ids) {
+        const position = entry.layout.positions[id];
+        position.x += direction[0] * step;
+        position.y += direction[1] * step;
+      }
+    }, { group: `keyboard-move:${ids.join(',')}` });
+    document.querySelector(`[data-node="${node.id}"] .drag-grip`)?.focus();
+  });
   const title = el('strong', { class: 'topic-title', text: node.title || 'Untitled' });
   const content = el('div', { class: 'node-content markdown-preview', 'data-document-id': node.id, tabindex: '0', 'aria-label': `${node.title} content` });
   content.innerHTML = renderMarkdown(node.document?.markdown || '');
@@ -810,6 +825,11 @@ function renderNode(node, item) {
   const resize = button('', () => {}, 'resize-grip node-resize', { 'aria-label': `Resize ${node.title}`, title: 'Drag to resize; arrow keys also work' });
   const link = button('↔', () => {}, 'link-grip', { 'aria-label': `Connect ${node.title} to another idea`, title: 'Drag to another idea to connect' });
   link.addEventListener('pointerdown', (event) => startEdgeDrag(event, node, link));
+  link.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault(); event.stopPropagation();
+    openLinkMenu(node, link);
+  });
   resize.addEventListener('pointerdown', (event) => startNodeResize(event, node, card, resize));
   resize.addEventListener('keydown', (event) => resizeNodeWithKeys(event, node));
   card.append(el('div', { class: 'topic-top' }, grip), title, content);
@@ -824,6 +844,25 @@ function renderNode(node, item) {
   card.addEventListener('dblclick', (event) => { if (!event.target.closest('.node-content')) beginRename(node.id); });
   card.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); selectNode(node.id); } });
   return card;
+}
+
+function openLinkMenu(node, grip) {
+  closeContextMenu();
+  const item = work();
+  const available = item.nodes.filter((candidate) => candidate.id !== node.id &&
+    !item.edges.some((edge) => (edge.fromId === node.id && edge.toId === candidate.id) || (edge.toId === node.id && edge.fromId === candidate.id)));
+  if (!available.length) return announce('No unconnected ideas are available.');
+  const menu = el('div', { class: 'context-menu', role: 'menu', 'aria-label': `Connect ${node.title}` });
+  for (const candidate of available) menu.append(button(`Connect to ${candidate.title}`, () => {
+    closeContextMenu();
+    change((entry) => { entry.edges.push({ id: crypto.randomUUID(), fromId: node.id, toId: candidate.id, label: 'related' }); });
+    announce('Ideas connected. Select the label on the line to rename it.');
+  }, 'context-option', { role: 'menuitem' }));
+  document.querySelector('.workspace-shell')?.append(menu);
+  const rect = grip.getBoundingClientRect();
+  menu.style.left = `${clamp(rect.left, 8, window.innerWidth - menu.offsetWidth - 8)}px`;
+  menu.style.top = `${clamp(rect.bottom + 4, 8, window.innerHeight - menu.offsetHeight - 8)}px`;
+  menu.querySelector('button')?.focus();
 }
 
 function startEdgeDrag(event, node, grip) {

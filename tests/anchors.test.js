@@ -13,6 +13,24 @@ test('multi-sentence article links survive nearby edits', () => {
   assert.equal(resolveAnchor(anchor, body.replace('First sentence.', 'Changed thought.')), null);
 });
 
+test('repeated passages resolve by surrounding context, even when an old offset still matches', () => {
+  const original = 'Introduction. Repeated thought. Middle. Repeated thought. Conclusion.';
+  const start = original.lastIndexOf('Repeated thought.');
+  const anchor = makeAnchor('article', original, start, start + 'Repeated thought.'.length);
+  const edited = 'Introduction. Repeated thought. Middle expanded. Repeated thought. Conclusion.';
+  assert.deepEqual(resolveAnchor(anchor, edited), {
+    start: edited.lastIndexOf('Repeated thought.'),
+    end: edited.lastIndexOf('Repeated thought.') + 'Repeated thought.'.length
+  });
+  // Moving the first occurrence onto the saved offset must not steal the link.
+  const shifted = `${'x'.repeat(start - original.indexOf('Repeated thought.'))}${original}`;
+  assert.equal(shifted.slice(anchor.start, anchor.end), anchor.quote);
+  assert.deepEqual(resolveAnchor(anchor, shifted), {
+    start: shifted.lastIndexOf('Repeated thought.'),
+    end: shifted.lastIndexOf('Repeated thought.') + 'Repeated thought.'.length
+  });
+});
+
 test('Markdown workspace, graph sizes, history and redo reopen', () => {
   const memory = new Map();
   const storage = { getItem: (key) => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value) };
