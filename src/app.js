@@ -371,6 +371,7 @@ function renderWorkspace() {
     const targetId = preview.dataset.documentId;
     markAnchors(preview, item.nodes.filter((node) => node.anchor?.targetId === targetId));
   }
+  document.querySelectorAll('.topic-card').forEach(updateCardOverflow);
   document.querySelectorAll('.markdown-editor').forEach(resizeEditor);
   measurePaper();
   if (selectedPassage) renderPassageToolbar();
@@ -399,6 +400,11 @@ function renderCanvas(item) {
   scene.append(renderPaper(item));
   scene.append(renderConnectors(item));
   for (const node of item.nodes) if (isVisible(item, node)) scene.append(renderNode(node, item));
+  for (const edge of item.edges) {
+    const from = item.nodes.find((node) => node.id === edge.fromId);
+    const to = item.nodes.find((node) => node.id === edge.toId);
+    if (from && to && isVisible(item, from) && isVisible(item, to)) scene.append(renderEdgeLabel(item, edge));
+  }
   viewport.append(scene);
   attachPanAndZoom(viewport);
   const zoom = el('div', { class: 'zoom-controls' }, button('−', () => zoomTo(view.zoom - .15), '', { 'aria-label': 'Zoom out' }), el('span', { class: 'zoom-value', text: '100%' }), button('+', () => zoomTo(view.zoom + .15), '', { 'aria-label': 'Zoom in' }), el('span', { class: 'zoom-divider' }), button('Fit', fitCanvas, 'fit-button', { 'aria-label': 'Fit canvas' }));
@@ -416,7 +422,7 @@ function renderCanvas(item) {
 function attachPanAndZoom(viewport) {
   let suppressCanvasClick = false;
   viewport.addEventListener('pointerdown', (event) => {
-    if (event.button === 0 && !event.target.closest('.paper, .topic-card')) {
+    if (event.button === 0 && !event.target.closest('.paper, .topic-card, .edge-label-chip')) {
       event.preventDefault();
       closeContextMenu();
       const start = { x: event.clientX, y: event.clientY, moved: false };
@@ -493,7 +499,7 @@ function attachPanAndZoom(viewport) {
   });
   viewport.addEventListener('click', (event) => {
     if (suppressCanvasClick) return;
-    if (event.button !== 0 || event.target.closest('.paper, .topic-card')) return;
+    if (event.button !== 0 || event.target.closest('.paper, .topic-card, .edge-label-chip')) return;
     if (!window.getSelection()?.isCollapsed) return;
     closeContextMenu();
     if (selectedId || selectedIds.size || selectedPassage) { selectedId = null; selectedIds.clear(); selectedPassage = null; renderWorkspace(); }
@@ -621,11 +627,50 @@ function curve(from, to, fromY = null) {
   return `M ${x1} ${y1} C ${x1 + (right ? bend : -bend)} ${y1}, ${x2 - (right ? bend : -bend)} ${y2}, ${x2} ${y2}`;
 }
 
+function edgeMidpoint(from, to) {
+  const right = to.x >= from.x + from.width / 2;
+  return {
+    x: ((right ? from.x + from.width : from.x) + (right ? to.x : to.x + to.width)) / 2,
+    y: (from.y + from.height / 2 + to.y + to.height / 2) / 2,
+  };
+}
+
+function placeEdgeLabel(label, item, edge) {
+  const middle = edgeMidpoint(pointFor(item, edge.fromId), pointFor(item, edge.toId));
+  label.style.left = `${middle.x}px`;
+  label.style.top = `${middle.y}px`;
+}
+
+function renderEdgeLabel(item, edge) {
+  const chip = el('div', { class: 'edge-label-chip', 'data-edge-label': edge.id });
+  placeEdgeLabel(chip, item, edge);
+  const name = button(edge.label || 'related', () => {
+    const input = el('input', { class: 'edge-label-input', value: edge.label || '', 'aria-label': 'Relationship label' });
+    let finished = false;
+    const finish = (save) => {
+      if (finished) return;
+      finished = true;
+      const value = input.value.trim() || 'related';
+      if (save && value !== (edge.label || 'related')) change((entry) => { entry.edges.find((link) => link.id === edge.id).label = value; });
+      else { input.replaceWith(name); name.focus(); }
+    };
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+      if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+    });
+    input.addEventListener('blur', () => finish(true));
+    name.replaceWith(input); input.focus(); input.select();
+  }, 'edge-label-name', { title: 'Edit relationship' });
+  const remove = button('×', () => change((entry) => { entry.edges = entry.edges.filter((link) => link.id !== edge.id); }), 'edge-label-remove', { 'aria-label': 'Remove relationship' });
+  chip.append(name, remove);
+  return chip;
+}
+
 function renderConnectors(item) {
   const svg = el('svg', { class: 'connectors', viewBox: '-4000 -4000 8000 8000', 'aria-hidden': 'true' });
   const defs = el('defs');
   for (const [id, color] of [['arrow-primary', '#9186cb'], ['arrow-cross', '#9ca6b2']]) {
-    defs.append(el('marker', { id, markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient: 'auto', markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: color, 'stroke-width': '1.6', 'stroke-opacity': '.72', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
+    defs.append(el('marker', { id, markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient: id === 'arrow-cross' ? 'auto-start-reverse' : 'auto', markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: color, 'stroke-width': '1.6', 'stroke-opacity': '.72', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
   }
   svg.append(defs);
   for (const node of item.nodes) {
@@ -644,9 +689,7 @@ function renderConnectors(item) {
   for (const edge of item.edges) {
     const from = item.nodes.find((node) => node.id === edge.fromId), to = item.nodes.find((node) => node.id === edge.toId);
     if (!from || !to || !isVisible(item, from) || !isVisible(item, to)) continue;
-    svg.append(el('path', { d: curve(pointFor(item, from.id), pointFor(item, to.id)), class: 'cross-line', 'data-edge': edge.id, 'marker-end': 'url(#arrow-cross)' }));
-    const source = pointFor(item, from.id);
-    svg.append(el('text', { x: source.x + source.width / 2, y: source.y - 12, class: 'edge-label', text: edge.label || 'related' }));
+    svg.append(el('path', { d: curve(pointFor(item, from.id), pointFor(item, to.id)), class: 'cross-line', 'data-edge': edge.id, 'marker-start': 'url(#arrow-cross)', 'marker-end': 'url(#arrow-cross)' }));
   }
   return svg;
 }
@@ -669,9 +712,8 @@ function updateConnectors() {
   for (const edge of item.edges) {
     const path = document.querySelector(`[data-edge="${edge.id}"]`);
     if (path) path.setAttribute('d', curve(pointFor(item, edge.fromId), pointFor(item, edge.toId)));
-    const label = path?.nextElementSibling;
-    const source = pointFor(item, edge.fromId);
-    if (label?.classList.contains('edge-label')) { label.setAttribute('x', source.x + source.width / 2); label.setAttribute('y', source.y - 12); }
+    const label = document.querySelector(`[data-edge-label="${edge.id}"]`);
+    if (label) placeEdgeLabel(label, item, edge);
   }
 }
 
@@ -688,23 +730,70 @@ function renderNode(node, item) {
   content.innerHTML = renderMarkdown(node.document?.markdown || '');
   content.addEventListener('mouseup', (event) => capturePassage(content, node.id, event));
   content.addEventListener('keyup', (event) => capturePassage(content, node.id, event));
-  content.addEventListener('scroll', updateConnectors, { passive: true });
   const count = item.nodes.filter((entry) => entry.parentId === node.id).length;
-  const footer = el('div', { class: 'topic-footer' }, el('span', { text: node.anchor ? '↗' : '' }), count ? button(node.collapsed ? `＋ ${count}` : `− ${count}`, (event) => { event.stopPropagation(); change((entry) => { entry.nodes.find((n) => n.id === node.id).collapsed = !node.collapsed; }); }, 'collapse-button', { 'aria-label': node.collapsed ? 'Expand children' : 'Collapse children' }) : null);
+  const footer = count ? el('div', { class: 'topic-footer' }, button(node.collapsed ? `＋ ${count}` : `− ${count}`, (event) => { event.stopPropagation(); change((entry) => { entry.nodes.find((n) => n.id === node.id).collapsed = !node.collapsed; }); }, 'collapse-button', { 'aria-label': node.collapsed ? 'Expand children' : 'Collapse children' })) : null;
   const resize = button('', () => {}, 'resize-grip node-resize', { 'aria-label': `Resize ${node.title}`, title: 'Drag to resize; arrow keys also work' });
+  const link = button('↔', () => {}, 'link-grip', { 'aria-label': `Connect ${node.title} to another idea`, title: 'Drag to another idea to connect' });
+  link.addEventListener('pointerdown', (event) => startEdgeDrag(event, node, link));
   resize.addEventListener('pointerdown', (event) => startNodeResize(event, node, card, resize));
   resize.addEventListener('keydown', (event) => resizeNodeWithKeys(event, node));
-  const edit = button('Edit', (event) => { event.stopPropagation(); selectNode(node.id); document.querySelector('.details-markdown')?.focus(); }, 'node-edit', { 'aria-label': `Edit ${node.title}` });
-  card.append(el('div', { class: 'topic-top' }, edit, grip), title, content, footer, resize);
+  card.append(el('div', { class: 'topic-top' }, grip), title, content);
+  if (footer) card.append(footer);
+  card.append(link, resize);
   card.addEventListener('click', (event) => { if (event.target.closest('.anchor-mark, button, input') || !window.getSelection()?.isCollapsed) return; selectNode(node.id); });
   card.addEventListener('dblclick', (event) => { if (!event.target.closest('.node-content')) beginRename(node.id); });
   card.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); selectNode(node.id); } });
   return card;
 }
 
+function startEdgeDrag(event, node, grip) {
+  if (event.button !== 0) return;
+  event.preventDefault(); event.stopPropagation();
+  closeContextMenu();
+  const scene = document.querySelector('.scene');
+  const preview = el('path', { class: 'edge-preview', 'marker-start': 'url(#arrow-cross)', 'marker-end': 'url(#arrow-cross)' });
+  document.querySelector('.connectors').append(preview);
+  grip.setPointerCapture(event.pointerId);
+  let target = null;
+  const move = (next) => {
+    const rect = scene.getBoundingClientRect();
+    const destination = { x: (next.clientX - rect.left) / view.zoom, y: (next.clientY - rect.top) / view.zoom, width: 0, height: 0 };
+    preview.setAttribute('d', curve(pointFor(work(), node.id), destination));
+    const hovered = document.elementFromPoint(next.clientX, next.clientY)?.closest('.topic-card');
+    const nextId = hovered?.dataset.node === node.id ? null : hovered?.dataset.node || null;
+    if (target !== nextId) {
+      document.querySelector(`[data-node="${target}"]`)?.classList.remove('edge-target');
+      target = nextId;
+      hovered?.classList.toggle('edge-target', !!target);
+    }
+  };
+  const finish = (next) => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', finish);
+    window.removeEventListener('pointercancel', finish);
+    document.querySelector(`[data-node="${target}"]`)?.classList.remove('edge-target');
+    preview.remove();
+    if (grip.hasPointerCapture(event.pointerId)) grip.releasePointerCapture(event.pointerId);
+    if (next.type !== 'pointerup' || !target) return;
+    const exists = work().edges.some((edge) => (edge.fromId === node.id && edge.toId === target) || (edge.fromId === target && edge.toId === node.id));
+    if (exists) return announce('These ideas are already connected.');
+    change((item) => { item.edges.push({ id: crypto.randomUUID(), fromId: node.id, toId: target, label: 'related' }); });
+    announce('Ideas connected. Select the label on the line to rename it.');
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', finish);
+  window.addEventListener('pointercancel', finish);
+  move(event);
+}
+
 function applyNodeSizeClass(card, width, height) {
   const expanded = width >= 280 || height >= 180;
   card.classList.toggle('expanded', expanded);
+}
+
+function updateCardOverflow(card) {
+  const content = card.querySelector('.node-content');
+  if (content) card.classList.toggle('content-overflow', content.scrollHeight > content.clientHeight + 2 || content.scrollWidth > content.clientWidth + 2);
 }
 
 function startNodeResize(event, node, card, grip) {
@@ -718,6 +807,7 @@ function startNodeResize(event, node, card, grip) {
     item.layout.sizes[node.id] = { width, height };
     card.style.width = `${width}px`; card.style.height = `${height}px`;
     applyNodeSizeClass(card, width, height);
+    updateCardOverflow(card);
     updateConnectors();
   };
   let ended = false;
@@ -872,6 +962,7 @@ function renderDetails(node, item) {
     if (preview) {
       preview.innerHTML = renderMarkdown(markdown.value);
       markAnchors(preview, work().nodes.filter((entry) => entry.anchor?.targetId === node.id));
+      updateCardOverflow(preview.closest('.topic-card'));
       updateConnectors();
     }
   });
@@ -883,19 +974,6 @@ function renderDetails(node, item) {
   }
   const actions = el('div', { class: 'panel-actions' }, button('＋ Child', () => addNode(node.id), 'panel-action'), button('＋ Sibling', () => addNode(node.parentId), 'panel-secondary'));
   panel.append(actions);
-  const others = item.nodes.filter((entry) => entry.id !== node.id);
-  if (others.length) {
-    const target = el('select', { 'aria-label': 'Connect to idea' }, el('option', { value: '', text: 'Choose an idea…' }), ...others.map((entry) => el('option', { value: entry.id, text: entry.title })));
-    const label = el('input', { placeholder: 'Relationship label', 'aria-label': 'Connection label' });
-    panel.append(el('div', { class: 'panel-connect' }, el('label', { text: 'CONNECTION' }), target, label, button('Connect', () => {
-      if (!target.value) return announce('Choose an idea first.');
-      change((entry) => { entry.edges.push({ id: crypto.randomUUID(), fromId: node.id, toId: target.value, label: label.value.trim() || 'related' }); });
-    }, 'panel-secondary')));
-  }
-  for (const edge of item.edges.filter((entry) => entry.fromId === node.id || entry.toId === node.id)) {
-    const other = item.nodes.find((entry) => entry.id === (edge.fromId === node.id ? edge.toId : edge.fromId));
-    panel.append(el('div', { class: 'connection-row' }, el('span', { text: `${edge.label} · ${other?.title || 'Unknown'}` }), button('×', () => change((entry) => { entry.edges = entry.edges.filter((link) => link.id !== edge.id); }), '', { 'aria-label': `Remove connection to ${other?.title || 'unknown'}` })));
-  }
   panel.append(button(item.nodes.some((entry) => entry.parentId === node.id) ? 'Delete idea and its descendants' : 'Delete idea', () => removeNode(node.id), 'remove-branch'));
   return panel;
 }
@@ -925,7 +1003,7 @@ function renderPaper(item) {
   paper.style.left = `${ROOT.x}px`; paper.style.top = `${ROOT.y}px`;
   paper.style.width = `${item.layout.articleSize.width}px`;
   paper.style.minHeight = `${item.layout.articleSize.minHeight}px`;
-  paper.append(el('div', { class: 'paper-heading' }, button(editingMarkdown ? 'Done' : 'Edit', () => { editingMarkdown = !editingMarkdown; selectedPassage = null; editGroup = null; renderWorkspace(); if (editingMarkdown) document.querySelector('.markdown-editor')?.focus(); }, 'article-edit', { 'aria-label': editingMarkdown ? 'Finish editing' : 'Edit document' })));
+  paper.append(el('div', { class: 'paper-heading' }, el('span', { class: 'paper-label', text: 'master article' })));
   const scroll = el('div', { class: 'paper-scroll' });
   if (editingMarkdown) {
     const editor = el('textarea', { class: 'markdown-editor', 'aria-label': 'Edit document', spellcheck: 'true' });
@@ -933,6 +1011,9 @@ function renderPaper(item) {
     editor.addEventListener('input', () => {
       change((entry) => { entry.article.markdown = editor.value; }, { group: 'article-markdown', article: true, rerender: false });
       resizeEditor(editor); refreshOutline();
+    });
+    editor.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); editingMarkdown = false; editGroup = null; renderWorkspace(); }
     });
     editor.addEventListener('blur', () => { editGroup = null; });
     scroll.append(editor);
