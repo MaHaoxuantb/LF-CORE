@@ -52,11 +52,13 @@ if (!themes.includes(theme)) theme = 'auto';
 if (!colors.includes(color)) color = 'violet';
 function applyAppearance() {
   const accentColors = { violet: '#635fdb', blue: '#2563a9', green: '#287a58', rose: '#b04468', amber: '#aa6b20' };
-  const accentSoftColors = { violet: '#e9e6ff', blue: '#dcecff', green: '#dff4e8', rose: '#ffe0e9', amber: '#ffedcf' };
+  const lightSoftColors = { violet: '#e9e6ff', blue: '#dcecff', green: '#dff4e8', rose: '#ffe0e9', amber: '#ffedcf' };
+  const darkSoftColors = { violet: '#39345c', blue: '#263d5a', green: '#234a38', rose: '#542d3b', amber: '#5a4324' };
+  const dark = theme === 'dark' || (theme === 'auto' && window.matchMedia?.('(prefers-color-scheme: dark)').matches);
   document.documentElement.dataset.theme = theme;
   document.documentElement.dataset.color = color;
   document.documentElement.style.setProperty('--accent', accentColors[color] || accentColors.violet);
-  document.documentElement.style.setProperty('--accent-soft', accentSoftColors[color] || accentSoftColors.violet);
+  document.documentElement.style.setProperty('--accent-soft', (dark ? darkSoftColors : lightSoftColors)[color] || (dark ? darkSoftColors : lightSoftColors).violet);
 }
 function setAppearance(nextTheme = theme, nextColor = color) {
   theme = nextTheme; color = nextColor;
@@ -714,8 +716,8 @@ function renderConnectors(item) {
   const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#514fc1';
   const svg = el('svg', { class: 'connectors', viewBox: '-4000 -4000 8000 8000', 'aria-hidden': 'true' });
   const defs = el('defs');
-  for (const [id, color] of [['arrow-primary', accent], ['arrow-cross', '#9ca6b2']]) {
-    defs.append(el('marker', { id, markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient: id === 'arrow-cross' ? 'auto-start-reverse' : 'auto', markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: color, 'stroke-width': '1.6', 'stroke-opacity': '.72', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
+  for (const [id, color] of [['arrow-primary', accent], ['arrow-cross', accent]]) {
+    defs.append(el('marker', { id, markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient: id === 'arrow-cross' ? 'auto-start-reverse' : 'auto', markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: color, style: `stroke: ${color}`, 'stroke-width': '1.6', 'stroke-opacity': '.72', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
   }
   svg.append(defs);
   for (const node of item.nodes) {
@@ -735,7 +737,9 @@ function renderConnectors(item) {
   for (const edge of item.edges) {
     const from = item.nodes.find((node) => node.id === edge.fromId), to = item.nodes.find((node) => node.id === edge.toId);
     if (!from || !to || !isVisible(item, from) || !isVisible(item, to)) continue;
-    svg.append(el('path', { d: curve(pointFor(item, from.id), pointFor(item, to.id)), class: 'cross-line', 'data-edge': edge.id, 'marker-start': 'url(#arrow-cross)', 'marker-end': 'url(#arrow-cross)' }));
+    const crossPath = el('path', { d: curve(pointFor(item, from.id), pointFor(item, to.id)), class: 'cross-line', 'data-edge': edge.id, 'marker-start': 'url(#arrow-cross)', 'marker-end': 'url(#arrow-cross)' });
+    crossPath.style.stroke = accent;
+    svg.append(crossPath);
   }
   return svg;
 }
@@ -744,7 +748,7 @@ function renderAnchorConnectors(item) {
   const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#514fc1';
   const svg = el('svg', { class: 'connectors anchor-connectors', viewBox: '-4000 -4000 8000 8000', 'aria-hidden': 'true' });
   const defs = el('defs');
-  defs.append(el('marker', { id: 'arrow-anchor', markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient: 'auto', markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: accent, 'stroke-width': '1.6', 'stroke-opacity': '.72', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
+  defs.append(el('marker', { id: 'arrow-anchor', markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient: 'auto', markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: accent, style: `stroke: ${accent}`, 'stroke-width': '1.6', 'stroke-opacity': '.72', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
   svg.append(defs);
   for (const node of item.nodes) {
     if (!isVisible(item, node) || !node.anchor) continue;

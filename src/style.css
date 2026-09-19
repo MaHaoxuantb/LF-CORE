@@ -89,6 +89,9 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .appearance-option[data-color='rose'] .appearance-option-icon { color: #b04468; }
 .appearance-option[data-color='amber'] .appearance-option-icon { color: #aa6b20; }
 .appearance-option-check { margin-left: auto; min-width: 14px; color: var(--accent); font-weight: 800; }
+/* Keep the small article label free of a decorative color block. */
+.paper-heading, .paper-label { background: transparent !important; }
+.paper-heading { border: 0 !important; }
 /* Light canvas and nodes use a neutral ultra-light gray instead of blue-white. */
 .canvas-viewport { background-color: #f5f5f5; }
 ::selection { background: var(--accent-soft); color: inherit; }
@@ -107,7 +110,7 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
   :root[data-theme='auto'] .header-icon, :root[data-theme='auto'] .details-panel input, :root[data-theme='auto'] .details-panel select, :root[data-theme='auto'] .details-panel textarea, :root[data-theme='auto'] .create-form input { background-color: #242424; }
 }
 /* The selected accent also drives the graph, not just the controls. */
-.connectors path.branch-line, .connectors path.edge-preview { stroke: var(--accent); }
+.connectors path.branch-line, .connectors path.cross-line, .connectors path.edge-preview { stroke: var(--accent); }
 .connectors .origin-dot { fill: var(--accent); }
 .topic-card { border-left-color: var(--accent); }
 .topic-card.selected, .topic-card.edge-target { border-color: var(--accent); }
