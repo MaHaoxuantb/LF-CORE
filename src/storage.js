@@ -13,7 +13,7 @@ export function createWorkspace(title, markdown = '') {
   return {
     id, title: name, createdAt: now, updatedAt: now,
     article: { id: crypto.randomUUID(), revision: 1, markdown: markdown || `# ${name}\n\n` },
-    nodes: [], edges: [], layout: { positions: {}, sizes: {}, articleSize: { width: 490, minHeight: 550 } },
+    nodes: [], edges: [], sources: [], layout: { positions: {}, sizes: {}, articleSize: { width: 490, minHeight: 550 } },
     view: { x: null, y: null, zoom: 1, outlineOpen: false }
   };
 }
@@ -51,7 +51,9 @@ function migrateWorkspace(old) {
 }
 
 function normalizeWorkspace(work) {
+  work.sources ||= [];
   for (const node of work.nodes || []) {
+    node.sourceRefs ||= [];
     if (node.anchor && 'sectionId' in node.anchor) {
       node.anchor.targetId = 'article';
       delete node.anchor.sectionId;

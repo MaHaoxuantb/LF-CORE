@@ -109,6 +109,36 @@ test('save preference is independent of workspace data', () => {
   assert.throws(() => saveSaveMode('sometimes', storage), /Unsupported save mode/);
 });
 
+test('source records and exact page references persist apart from article text', () => {
+  const memory = new Map();
+  const storage = { getItem: (key) => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value) };
+  const workspace = createWorkspace('Geology', '# Geology\n\n## Working notes\n');
+  const passage = 'Plate movement is measured by satellites.';
+  workspace.sources.push({ id: 'pdf-1', type: 'pdf', title: 'Geology reader', fileName: 'reader.pdf', checksum: 'abc', pages: 3 });
+  workspace.nodes.push({ id: 'node-1', title: 'Measurement', document: { type: 'markdown', markdown: 'A sourced note.' }, sourceRefs: [{ id: 'ref-1', sourceId: 'pdf-1', page: 2, anchor: makeAnchor('pdf-1', passage, 0, 14) }] });
+  const state = emptyState(); state.workspaces.push(workspace);
+  saveState(state, storage);
+  const reopened = loadState(storage).workspaces[0];
+  assert.equal(reopened.sources[0].pages, 3);
+  assert.equal(reopened.nodes[0].sourceRefs[0].page, 2);
+  assert.deepEqual(resolveAnchor(reopened.nodes[0].sourceRefs[0].anchor, passage), { start: 0, end: 14 });
+  assert.equal(reopened.article.markdown.includes(passage), false);
+  assert.equal(JSON.stringify(reopened).includes('%PDF'), false);
+});
+
+test('old saved workspaces gain empty source collections without losing nodes', () => {
+  const memory = new Map();
+  const storage = { getItem: (key) => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value) };
+  const workspace = createWorkspace('Old');
+  delete workspace.sources;
+  workspace.nodes.push({ id: 'n', title: 'Existing node' });
+  const state = emptyState(); state.workspaces.push(workspace);
+  saveState(state, storage);
+  const reopened = loadState(storage).workspaces[0];
+  assert.deepEqual(reopened.sources, []);
+  assert.deepEqual(reopened.nodes[0].sourceRefs, []);
+});
+
 test('outline uses headings and skips fenced code', () => {
   assert.deepEqual(headingTokens('# A\n\nText\n\n```md\n# Not a heading\n```\n\n### B'), [
     { level: 1, title: 'A' }, { level: 3, title: 'B' }

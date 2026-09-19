@@ -1,8 +1,12 @@
 import { makeAnchor, resolveAnchor, selectionOffsets } from './anchors.js';
 import { createWorkspace, emptyState, loadSaveMode, loadState, saveSaveMode, saveState, snapshotWorkspace } from './storage.js';
 import { renderMarkdown, headingTokens } from './markdown.js';
+import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
+import { putPdf, getPdf, deletePdf } from './source-store.js';
 import 'katex/dist/katex.min.css';
 import './style.css';
+
+GlobalWorkerOptions.workerSrc = '/dist/pdf.worker.mjs';
 
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
@@ -69,6 +73,9 @@ function setAppearance(nextTheme = theme, nextColor = color) {
 applyAppearance();
 let lastSaved = JSON.stringify(state), dirty = false;
 let currentId = null, selectedId = null, selectedIds = new Set(), editingMarkdown = false, outlineOpen = false;
+let openSourceId = null, sourcePage = 1, sourceJump = null;
+const pdfDocuments = new Map();
+const pendingPdfDeletes = new Set();
 let selectedPassage = null, editGroup = null, view = { x: 0, y: 0, zoom: 1 };
 let viewTimer = null, toastTimer = null;
 
@@ -115,6 +122,11 @@ function persist(force = false) {
   try {
     saveState(state);
     lastSaved = serialized; dirty = false; saveError = null;
+    for (const id of pendingPdfDeletes) {
+      pendingPdfDeletes.delete(id);
+      pdfDocuments.delete(id);
+      deletePdf(id).catch(() => announce('A removed PDF could not be cleared from local storage.'));
+    }
     updateSaveControls();
     return true;
   } catch (error) {
@@ -241,26 +253,79 @@ function suggestedPosition(item, parentId, index = item.nodes.length) {
   return { x: side > 0 ? 760 : -380, y: 22 + sideCount * 154 };
 }
 
+function sourceTitle(name) { return name.replace(/\.pdf$/i, '').trim() || 'Untitled source'; }
+
+function pastedSource(title, text) {
+  return { id: crypto.randomUUID(), type: 'text', title: title.trim() || 'Pasted text', text, addedAt: new Date().toISOString() };
+}
+
+async function pdfSource(file, id = crypto.randomUUID(), expectedChecksum = null) {
+  if (!file || !/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') throw new Error('Choose a PDF file.');
+  if (file.size > 50 * 1024 * 1024) throw new Error('This PDF is over the 50 MB import limit.');
+  const bytes = await file.arrayBuffer();
+  const checksum = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  if (expectedChecksum && checksum !== expectedChecksum) throw new Error('This is a different PDF. Reattach the original file so saved passages stay accurate.');
+  const document = await getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
+  await putPdf(id, bytes);
+  pdfDocuments.set(id, document);
+  return { id, type: 'pdf', title: sourceTitle(file.name), fileName: file.name, byteLength: bytes.byteLength, checksum, pages: document.numPages, addedAt: new Date().toISOString() };
+}
+
+function startWorkspace(title, source = null) {
+  const item = createWorkspace(title, `# ${title.trim() || 'Untitled workspace'}\n\n## Working notes\n\n`);
+  if (source) item.sources.push(source);
+  state.workspaces.unshift(item); state.history[item.id] = [];
+  persist(); openWorkspace(item.id);
+  if (source) openSource(source.id);
+}
+
 function renderHome() {
   if (flushView()) persist();
-  currentId = null; selectedId = null; selectedIds.clear(); selectedPassage = null;
+  currentId = null; selectedId = null; selectedIds.clear(); selectedPassage = null; openSourceId = null;
   const header = el('header', { class: 'home-header' }, el('div', { class: 'brand' }, el('span', { class: 'brand-mark', text: '◈' }), el('span', { text: 'Learning Canvas' })), el('span', { class: 'home-tag', text: 'A space for understanding' }));
-  const form = el('form', { class: 'create-form' });
-  const input = el('input', { type: 'text', required: '', placeholder: 'What are you learning?', 'aria-label': 'Workspace topic' });
+  const form = el('form', { class: 'create-form entry-form' });
+  let entryMode = 'topic';
+  const tabs = el('div', { class: 'entry-tabs', role: 'tablist', 'aria-label': 'Start from' });
+  const input = el('input', { type: 'text', placeholder: 'What are you learning?', 'aria-label': 'Workspace title' });
+  const pasted = el('textarea', { class: 'entry-paste', placeholder: 'Paste the original text here. It stays separate from your article.', 'aria-label': 'Pasted source text' });
+  const pdf = el('input', { type: 'file', accept: '.pdf,application/pdf', class: 'entry-file', 'aria-label': 'Choose a local PDF' });
   const create = el('button', { type: 'submit', text: 'Create canvas  ↗' });
-  if (loadError) { input.disabled = true; create.disabled = true; }
-  form.append(input, create);
-  form.addEventListener('submit', (event) => {
+  const setMode = (mode) => {
+    entryMode = mode;
+    input.placeholder = mode === 'topic' ? 'What are you learning?' : mode === 'paste' ? 'Workspace title (optional)' : 'Workspace title (defaults to PDF name)';
+    pasted.hidden = mode !== 'paste'; pdf.hidden = mode !== 'pdf';
+    for (const tab of tabs.children) tab.setAttribute('aria-selected', String(tab.dataset.mode === mode));
+  };
+  for (const [mode, label] of [['topic', 'Topic'], ['paste', 'Pasted text'], ['pdf', 'Local PDF']]) tabs.append(button(label, () => setMode(mode), 'entry-tab', { role: 'tab', 'data-mode': mode, 'aria-selected': 'false' }));
+  if (loadError) { input.disabled = true; pasted.disabled = true; pdf.disabled = true; create.disabled = true; }
+  form.append(tabs, input, pasted, pdf, create);
+  setMode('topic');
+  form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const item = createWorkspace(input.value);
-    state.workspaces.unshift(item); state.history[item.id] = []; persist(); openWorkspace(item.id);
+    create.disabled = true;
+    try {
+      if (entryMode === 'topic') {
+        if (!input.value.trim()) return announce('Enter a topic first.');
+        startWorkspace(input.value);
+      } else if (entryMode === 'paste') {
+        if (!pasted.value.trim()) return announce('Paste some source text first.');
+        if (pasted.value.length > 500_000) return announce('Pasted text is over the 500,000 character limit. Use a PDF for longer material.');
+        const title = input.value.trim() || pasted.value.trim().split('\n')[0].slice(0, 80) || 'Pasted source';
+        startWorkspace(title, pastedSource(title, pasted.value));
+      } else {
+        if (!pdf.files?.[0]) return announce('Choose a PDF first.');
+        const source = await pdfSource(pdf.files[0]);
+        startWorkspace(input.value.trim() || source.title, source);
+      }
+    } catch (error) { announce(`Could not create workspace: ${error.message}`); }
+    finally { create.disabled = false; }
   });
   const cards = el('div', { class: 'workspace-list' });
   if (!state.workspaces.length) cards.append(el('p', { class: 'empty-home', text: 'Your canvas is ready. Start a topic or open the example below.' }));
   for (const item of [...state.workspaces].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) {
     const tile = el('div', { class: 'workspace-tile' });
     tile.append(button('', () => openWorkspace(item.id), 'workspace-open', { 'aria-label': `Open ${item.title}` }), button('×', () => deleteWorkspace(item.id), 'workspace-delete', { 'aria-label': `Delete ${item.title}`, title: `Delete ${item.title}` }));
-    tile.firstElementChild.append(el('span', { class: 'tile-glyph', text: '◈' }), el('span', {}, el('strong', { text: item.title }), el('small', { text: `${item.nodes.length} connected nodes` })), el('span', { class: 'tile-arrow', text: '↗' }));
+    tile.firstElementChild.append(el('span', { class: 'tile-glyph', text: '◈' }), el('span', {}, el('strong', { text: item.title }), el('small', { text: `${item.nodes.length} connected node${item.nodes.length === 1 ? '' : 's'}` })), el('span', { class: 'tile-arrow', text: '↗' }));
     cards.append(tile);
   }
   const exampleButton = button('Explore the Plate tectonics example', () => {
@@ -286,13 +351,14 @@ function renderHome() {
 function deleteWorkspace(id) {
   const item = state.workspaces.find((entry) => entry.id === id);
   if (!item || !window.confirm(`Delete “${item.title}” and all its connected nodes? This cannot be undone.`)) return;
+  for (const source of item.sources || []) if (source.type === 'pdf') pendingPdfDeletes.add(source.id);
   state.workspaces = state.workspaces.filter((entry) => entry.id !== id);
   delete state.history[id]; delete state.redo[id];
   persist(); renderHome();
 }
 
 function openWorkspace(id) {
-  currentId = id; selectedId = null; selectedIds.clear(); editingMarkdown = false; selectedPassage = null; editGroup = null;
+  currentId = id; selectedId = null; selectedIds.clear(); editingMarkdown = false; selectedPassage = null; editGroup = null; openSourceId = null;
   const item = work(); if (!item) return renderHome();
   const needsFit = !item.layout?.articleSize;
   if (attachExampleAnchors(item)) {
@@ -384,7 +450,8 @@ function renderWorkspace() {
     el('div', { class: 'header-left' },
       iconButton('M3 11 12 3l9 8v9a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z', 'Home', renderHome),
       iconButton('M4 5h16M4 10h11M4 15h16M4 20h11', outlineOpen ? 'Hide outline' : 'Open outline', () => { outlineOpen = !outlineOpen; saveView(); renderWorkspace(); }, outlineOpen),
-      el('span', { class: 'workspace-title', text: item.title })),
+      el('span', { class: 'workspace-title', text: item.title }),
+      button(`Sources${item.sources?.length ? ` ${item.sources.length}` : ''}`, () => openSource(openSourceId ? null : item.sources?.[0]?.id || 'library'), 'source-toggle', { 'aria-label': 'Open sources' })),
     el('div', { class: 'header-right' },
       saveControl(),
       appearanceControl(),
@@ -467,6 +534,7 @@ function renderCanvas(item) {
   } else if (selectedIds.size > 1) {
     shell.append(el('div', { class: 'selection-toolbar', role: 'status' }, el('span', { text: `${selectedIds.size} selected` }), button('Delete', () => removeNodes([...selectedIds]), 'selection-delete'), button('Clear', () => { selectedIds.clear(); renderWorkspace(); }, 'selection-clear')));
   }
+  if (openSourceId) shell.append(renderSourcesPanel(item));
   return shell;
 }
 
@@ -1201,6 +1269,14 @@ function renderDetails(node, item) {
   });
   markdown.addEventListener('blur', () => { editGroup = null; });
   panel.append(el('label', { text: 'TITLE' }), title, el('label', { text: 'CONTENT' }), markdown);
+  if (node.sourceRefs?.length) {
+    panel.append(el('label', { text: 'SOURCES' }));
+    for (const reference of node.sourceRefs) {
+      const source = item.sources?.find((entry) => entry.id === reference.sourceId);
+      const link = button(`${source?.title || 'Missing source'}${reference.page ? ` · p. ${reference.page}` : ''}\n“${reference.anchor.quote}”`, () => openSource(reference.sourceId, reference.page || 1, reference.anchor), 'source-ref', { title: 'Open original passage' });
+      panel.append(link);
+    }
+  }
   if (node.anchor) {
     panel.append(el('div', { class: `source-quote ${anchorRange ? '' : 'unresolved'}` }, el('span', { class: 'source-label', text: anchorRange ? 'LINKED PASSAGE' : 'PASSAGE NEEDS REPAIR' }), el('p', { text: node.anchor.quote })));
     panel.append(button(anchorRange ? '↗ Go to passage' : 'Reconnect selected passage', () => anchorRange ? goToPassage(node) : reconnect(node), 'panel-action'));
@@ -1209,6 +1285,180 @@ function renderDetails(node, item) {
   panel.append(actions);
   panel.append(button(item.nodes.some((entry) => entry.parentId === node.id) ? 'Delete node and its descendants' : 'Delete node', () => removeNode(node.id), 'remove-branch'));
   return panel;
+}
+
+function openSource(id, page = 1, anchor = null) {
+  openSourceId = id;
+  sourcePage = page;
+  sourceJump = anchor;
+  renderWorkspace();
+}
+
+function sourceReference(source, page, text, offsets) {
+  return { id: crypto.randomUUID(), sourceId: source.id, page: source.type === 'pdf' ? page : null, anchor: makeAnchor(source.id, text, offsets.start, offsets.end) };
+}
+
+function attachSourceReference(nodeId, reference) {
+  change((item) => { item.nodes.find((node) => node.id === nodeId).sourceRefs ||= []; item.nodes.find((node) => node.id === nodeId).sourceRefs.push(reference); });
+  announce('Source passage attached to node.');
+}
+
+function createNodeFromSource(reference) {
+  const item = work();
+  const node = { id: crypto.randomUUID(), title: shortTitle(reference.anchor.quote), document: { type: 'markdown', markdown: `> ${reference.anchor.quote.replace(/\n/g, '\n> ')}` }, parentId: null, anchor: null, sourceRefs: [reference], collapsed: false, provenance: 'source' };
+  const position = suggestedPosition(item, null);
+  change((entry) => { entry.nodes.push(node); entry.layout.positions[node.id] = position; });
+  openSourceId = null; sourceJump = null; selectedId = node.id; selectedPassage = null;
+  renderWorkspace(); focusNode(node.id);
+}
+
+function sourceSelectionActions(source, page, textRoot, actions) {
+  const offsets = selectionOffsets(textRoot);
+  if (!offsets || !textRoot.textContent.slice(offsets.start, offsets.end).trim()) return;
+  const reference = sourceReference(source, page, textRoot.textContent, offsets);
+  actions.replaceChildren(
+    el('span', { class: 'source-selection-quote', text: `“${shortTitle(reference.anchor.quote)}”` }),
+    button('Create node', () => createNodeFromSource(reference), 'panel-action'),
+  );
+  const nodes = work()?.nodes || [];
+  if (nodes.length) {
+    const chooser = el('select', { 'aria-label': 'Node to attach passage to' });
+    for (const node of nodes) chooser.append(el('option', { value: node.id, text: node.title }));
+    if (selectedId) chooser.value = selectedId;
+    actions.append(chooser, button('Attach passage', () => attachSourceReference(chooser.value, reference), 'panel-secondary'));
+  }
+}
+
+function textRangeAt(root, start, end) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const range = document.createRange();
+  let position = 0, startFound = false, node;
+  while ((node = walker.nextNode())) {
+    const next = position + node.length;
+    if (!startFound && start <= next) { range.setStart(node, Math.max(0, start - position)); startFound = true; }
+    if (startFound && end <= next) { range.setEnd(node, Math.max(0, end - position)); return range; }
+    position = next;
+  }
+  return null;
+}
+
+function showSourcePassage(textRoot, anchor, surface) {
+  const location = resolveAnchor(anchor, textRoot.textContent);
+  if (!location) return announce('Saved passage was not found in this source.');
+  const range = textRangeAt(textRoot, location.start, location.end);
+  if (!range) return;
+  const bounds = surface.getBoundingClientRect();
+  for (const rect of range.getClientRects()) {
+    if (!rect.width || !rect.height) continue;
+    const highlight = el('div', { class: 'source-passage-highlight', 'aria-hidden': 'true' });
+    Object.assign(highlight.style, { left: `${rect.left - bounds.left}px`, top: `${rect.top - bounds.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
+    surface.append(highlight);
+  }
+  const first = range.getClientRects()[0];
+  if (first) surface.parentElement.scrollTop += first.top - surface.parentElement.getBoundingClientRect().top - 90;
+  sourceJump = null;
+}
+
+function renderSourcesPanel(item) {
+  const panel = el('section', { class: 'sources-panel', 'aria-label': 'Sources' });
+  const sidebar = el('div', { class: 'sources-sidebar' }, el('div', { class: 'sources-heading' }, el('strong', { text: 'Sources' }), button('×', () => openSource(null), 'panel-close', { 'aria-label': 'Close sources' })));
+  for (const source of item.sources || []) sidebar.append(button(`${source.type === 'pdf' ? '▤' : '≡'}  ${source.title}`, () => openSource(source.id), `source-list-item ${source.id === openSourceId ? 'active' : ''}`));
+  const addText = el('div', { class: 'source-add-text' });
+  const textTitle = el('input', { placeholder: 'Source title', 'aria-label': 'Pasted source title' });
+  const textBody = el('textarea', { placeholder: 'Paste source text…', 'aria-label': 'Source text' });
+  addText.append(textTitle, textBody, button('Add pasted text', () => {
+    if (!textBody.value.trim()) return announce('Paste source text first.');
+    if (textBody.value.length > 500_000) return announce('Pasted text is over the 500,000 character limit.');
+    const source = pastedSource(textTitle.value || 'Pasted text', textBody.value);
+    change((entry) => { entry.sources ||= []; entry.sources.push(source); });
+    openSource(source.id);
+  }, 'panel-action'));
+  const addPdf = el('input', { type: 'file', accept: '.pdf,application/pdf', 'aria-label': 'Import PDF', class: 'source-file-input' });
+  addPdf.addEventListener('change', async () => {
+    if (!addPdf.files?.[0]) return;
+    try { const source = await pdfSource(addPdf.files[0]); change((entry) => { entry.sources ||= []; entry.sources.push(source); }); openSource(source.id); }
+    catch (error) { announce(`PDF import failed: ${error.message}`); }
+  });
+  sidebar.append(el('div', { class: 'source-add-heading', text: 'ADD SOURCE' }), addText, addPdf);
+  const body = el('div', { class: 'source-reader' });
+  const source = item.sources?.find((entry) => entry.id === openSourceId);
+  if (!source) body.append(el('div', { class: 'source-empty', text: 'Choose a source, paste text, or import a PDF. Original material stays separate from the article.' }));
+  else renderSourceContent(body, source);
+  panel.append(sidebar, body);
+  return panel;
+}
+
+function renderSourceContent(body, source) {
+  body.append(el('div', { class: 'source-reader-heading' }, el('strong', { text: source.title }), el('small', { text: source.type === 'pdf' ? `${source.pages} page PDF · stored locally` : 'Pasted text · stored locally' })));
+  const actions = el('div', { class: 'source-selection-actions', 'aria-live': 'polite' });
+  body.append(actions);
+  if (source.type === 'text') {
+    const scroll = el('div', { class: 'source-scroll' });
+    const surface = el('div', { class: 'source-text-surface' });
+    const textRoot = el('div', { class: 'source-text', text: source.text });
+    surface.append(textRoot); scroll.append(surface); body.append(scroll);
+    textRoot.addEventListener('mouseup', () => sourceSelectionActions(source, null, textRoot, actions));
+    textRoot.addEventListener('keyup', () => sourceSelectionActions(source, null, textRoot, actions));
+    if (sourceJump) queueMicrotask(() => showSourcePassage(textRoot, sourceJump, surface));
+    return;
+  }
+  const controls = el('div', { class: 'source-page-controls' });
+  const pageInput = el('input', { type: 'number', min: '1', max: String(source.pages), value: String(sourcePage), 'aria-label': 'PDF page number' });
+  const changePage = (page) => { sourcePage = clamp(Number(page) || 1, 1, source.pages); sourceJump = null; openSource(source.id, sourcePage); };
+  pageInput.addEventListener('change', () => changePage(pageInput.value));
+  controls.append(button('←', () => changePage(sourcePage - 1), '', { 'aria-label': 'Previous page', ...(sourcePage <= 1 ? { disabled: '' } : {}) }), el('span', { text: 'Page' }), pageInput, el('span', { text: `/ ${source.pages}` }), button('→', () => changePage(sourcePage + 1), '', { 'aria-label': 'Next page', ...(sourcePage >= source.pages ? { disabled: '' } : {}) }));
+  body.append(controls);
+  const scroll = el('div', { class: 'source-scroll' });
+  body.append(scroll);
+  queueMicrotask(() => drawPdfPage(source, sourcePage, scroll, actions));
+}
+
+async function drawPdfPage(source, number, scroll, actions) {
+  if (!scroll.isConnected) return;
+  try {
+    let document = pdfDocuments.get(source.id);
+    if (!document) {
+      const bytes = await getPdf(source.id);
+      if (!bytes) return showMissingPdf(source, scroll);
+      document = await getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
+      pdfDocuments.set(source.id, document);
+    }
+    if (!scroll.isConnected) return;
+    const page = await document.getPage(number);
+    const base = page.getViewport({ scale: 1 });
+    const viewport = page.getViewport({ scale: Math.min(1.5, 760 / base.width) });
+    const surface = el('div', { class: 'pdf-page-surface' });
+    surface.style.width = `${viewport.width}px`; surface.style.height = `${viewport.height}px`;
+    surface.style.setProperty('--total-scale-factor', String(viewport.scale));
+    surface.style.setProperty('--scale-factor', String(viewport.scale));
+    const canvas = el('canvas');
+    const ratio = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(viewport.width * ratio); canvas.height = Math.round(viewport.height * ratio);
+    canvas.style.width = `${viewport.width}px`; canvas.style.height = `${viewport.height}px`;
+    const context = canvas.getContext('2d');
+    const textRoot = el('div', { class: 'textLayer' });
+    surface.append(canvas, textRoot); scroll.replaceChildren(surface);
+    await page.render({ canvasContext: context, viewport, transform: ratio === 1 ? undefined : [ratio, 0, 0, ratio, 0, 0] }).promise;
+    await new TextLayer({ textContentSource: page.streamTextContent(), container: textRoot, viewport }).render();
+    if (!scroll.isConnected) return;
+    textRoot.addEventListener('mouseup', () => sourceSelectionActions(source, number, textRoot, actions));
+    textRoot.addEventListener('keyup', () => sourceSelectionActions(source, number, textRoot, actions));
+    if (sourceJump && sourcePage === number) showSourcePassage(textRoot, sourceJump, surface);
+    if (!textRoot.textContent.trim()) actions.append(el('span', { class: 'source-hint', text: 'No selectable text was found on this page. Scanned PDFs need OCR, which is not available yet.' }));
+  } catch (error) {
+    if (scroll.isConnected) scroll.replaceChildren(el('div', { class: 'source-error', text: `Could not read this PDF: ${error.message}` }));
+  }
+}
+
+function showMissingPdf(source, scroll) {
+  const file = el('input', { type: 'file', accept: '.pdf,application/pdf', 'aria-label': 'Reattach original PDF' });
+  const message = el('div', { class: 'source-error' }, el('strong', { text: 'PDF bytes are missing from this browser.' }), el('p', { text: `Reattach ${source.fileName}. Saved references will be kept and checked against the original file.` }), file);
+  scroll.replaceChildren(message);
+  file.addEventListener('change', async () => {
+    if (!file.files?.[0]) return;
+    try { await pdfSource(file.files[0], source.id, source.checksum); openSource(source.id, sourcePage, sourceJump); }
+    catch (error) { announce(`Could not reattach: ${error.message}`); }
+  });
 }
 
 function goToPassage(node) {

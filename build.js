@@ -1,4 +1,5 @@
 import { build } from 'esbuild';
+import { copyFile } from 'node:fs/promises';
 
 await build({
   entryPoints: ['src/app.js'],
@@ -10,3 +11,4 @@ await build({
   loader: { '.woff': 'file', '.woff2': 'file', '.ttf': 'file' },
   logLevel: 'info'
 });
+await copyFile('node_modules/pdfjs-dist/build/pdf.worker.mjs', 'dist/pdf.worker.mjs');
