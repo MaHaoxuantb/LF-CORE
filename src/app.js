@@ -4,6 +4,8 @@ import { renderMarkdown, headingTokens } from './markdown.js';
 import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
 import { putPdf, getPdf, deletePdf } from './source-store.js';
 import { connectionPort, crossConnectionRoute, nearestConnectionSide } from './cross-connection.js';
+import { loadModelSettings, saveModelSettings, encryptApiKey, unlockApiKey, getApiKey, lockApiKey } from './model-settings.js';
+import { generateArticle, askModel, proposeInsertion } from './ai.js';
 import 'katex/dist/katex.min.css';
 import './style.css';
 
@@ -80,6 +82,7 @@ const pdfDocuments = new Map();
 const pendingPdfDeletes = new Set();
 let selectedPassage = null, editGroup = null, view = { x: 0, y: 0, zoom: 1 };
 let viewTimer = null, toastTimer = null;
+let aiPanel = null;
 
 function el(tag, attrs = {}, ...children) {
   const node = ['svg', 'path', 'text', 'defs', 'marker', 'circle', 'linearGradient', 'stop'].includes(tag) ? document.createElementNS('http://www.w3.org/2000/svg', tag) : document.createElement(tag);
@@ -273,18 +276,19 @@ async function pdfSource(file, id = crypto.randomUUID(), expectedChecksum = null
   return { id, type: 'pdf', title: sourceTitle(file.name), fileName: file.name, byteLength: bytes.byteLength, checksum, pages: document.numPages, addedAt: new Date().toISOString() };
 }
 
-function startWorkspace(title, source = null) {
+function startWorkspace(title, source = null, generate = false) {
   const item = createWorkspace(title, `# ${title.trim() || 'Untitled workspace'}\n\n## Working notes\n\n`);
   if (source) item.sources.push(source);
   state.workspaces.unshift(item); state.history[item.id] = [];
   persist(); openWorkspace(item.id);
   if (source) openSource(source.id);
+  if (generate) openAiPanel({ kind: 'generate' });
 }
 
 function renderHome() {
   if (flushView()) persist();
   currentId = null; selectedId = null; selectedIds.clear(); selectedPassage = null; openSourceId = null;
-  const header = el('header', { class: 'home-header' }, el('div', { class: 'brand' }, el('span', { class: 'brand-mark', text: '◈' }), el('span', { text: 'Learning Canvas' })), el('span', { class: 'home-tag', text: 'A space for understanding' }));
+  const header = el('header', { class: 'home-header' }, el('div', { class: 'brand' }, el('span', { class: 'brand-mark', text: '◈' }), el('span', { text: 'Learning Canvas' })), button('Model settings', renderSettings, 'source-toggle'));
   const form = el('form', { class: 'create-form entry-form' });
   let entryMode = 'topic';
   const tabs = el('div', { class: 'entry-tabs', role: 'tablist', 'aria-label': 'Start from' });
@@ -308,7 +312,7 @@ function renderHome() {
     try {
       if (entryMode === 'topic') {
         if (!input.value.trim()) return announce('Enter a topic first.');
-        startWorkspace(input.value);
+        startWorkspace(input.value, null, true);
       } else if (entryMode === 'paste') {
         if (!pasted.value.trim()) return announce('Paste some source text first.');
         if (pasted.value.length > 500_000) return announce('Pasted text is over the 500,000 character limit. Use a PDF for longer material.');
@@ -360,7 +364,7 @@ function deleteWorkspace(id) {
 }
 
 function openWorkspace(id) {
-  currentId = id; selectedId = null; selectedIds.clear(); editingMarkdown = false; selectedPassage = null; editGroup = null; openSourceId = null;
+  currentId = id; aiPanel = null; selectedId = null; selectedIds.clear(); editingMarkdown = false; selectedPassage = null; editGroup = null; openSourceId = null;
   const item = work(); if (!item) return renderHome();
   const needsFit = !item.layout?.articleSize;
   if (attachExampleAnchors(item)) {
@@ -455,6 +459,9 @@ function renderWorkspace() {
       el('span', { class: 'workspace-title', text: item.title }),
       button(`Sources${item.sources?.length ? ` ${item.sources.length}` : ''}`, () => openSource(openSourceId ? null : item.sources?.[0]?.id || 'library'), 'source-toggle', { 'aria-label': 'Open sources' })),
     el('div', { class: 'header-right' },
+      button('Ask AI', () => openAiPanel({ kind: 'ask', targetId: selectedId || 'article' }), 'source-toggle'),
+      button(`AI history${item.proposals?.length ? ` ${item.proposals.length}` : ''}`, () => openAiPanel({ kind: 'history' }), 'source-toggle'),
+      button('Model settings', renderSettings, 'source-toggle'),
       saveControl(),
       appearanceControl(),
       historyButton('undo', undo, !!state.history[item.id]?.length),
@@ -470,6 +477,7 @@ function renderWorkspace() {
   document.querySelectorAll('.markdown-editor').forEach(resizeEditor);
   measurePaper();
   if (selectedPassage) renderPassageToolbar();
+  if (aiPanel) renderAiPanel();
 }
 
 function appearanceControl() {
@@ -656,6 +664,7 @@ function openContextMenu(target, x, y) {
     option('Delete selected nodes', () => removeNodes([...selectedIds]), true);
   } else if (node) {
     option('Open details', () => selectNode(node.id));
+    option('Ask about node', () => openAiPanel({ kind: 'ask', targetId: node.id }));
     option('Edit content on canvas', () => beginNodeMarkdownEdit(node.id));
     if (passage?.targetId === node.id) option('Create node from highlight', () => { selectedPassage = passage; createAnchoredNode(); });
     option('Add child', () => addNode(node.id));
@@ -664,6 +673,8 @@ function openContextMenu(target, x, y) {
     menu.append(el('div', { class: 'context-separator', role: 'separator' }));
     option('Delete node', () => removeNode(node.id), true);
   } else if (onPaper) {
+    option('Ask about article', () => openAiPanel({ kind: 'ask', targetId: 'article' }));
+    option('Generate article draft', () => openAiPanel({ kind: 'generate' }));
     if (passage?.targetId === 'article') option('Create node from highlight', () => { selectedPassage = passage; createAnchoredNode(); });
     option(editingMarkdown ? 'Done editing' : 'Edit document', () => { editingMarkdown = !editingMarkdown; selectedPassage = null; renderWorkspace(); if (editingMarkdown) document.querySelector('.markdown-editor')?.focus(); });
     option('Add node', () => addNode());
@@ -1396,6 +1407,7 @@ function renderDetails(node, item) {
   }
   const actions = el('div', { class: 'panel-actions' }, button('＋ Child', () => addNode(node.id), 'panel-action'), button('＋ Sibling', () => addNode(node.parentId), 'panel-secondary'));
   panel.append(actions);
+  panel.append(button('Ask about this node', () => openAiPanel({ kind: 'ask', targetId: node.id }), 'panel-secondary'));
   panel.append(button(item.nodes.some((entry) => entry.parentId === node.id) ? 'Delete node and its descendants' : 'Delete node', () => removeNode(node.id), 'remove-branch'));
   return panel;
 }
@@ -1599,7 +1611,7 @@ function renderPaper(item) {
   paper.style.left = `${ROOT.x}px`; paper.style.top = `${ROOT.y}px`;
   paper.style.width = `${item.layout.articleSize.width}px`;
   paper.style.minHeight = `${item.layout.articleSize.minHeight}px`;
-  paper.append(el('div', { class: 'paper-heading' }, el('span', { class: 'paper-label', text: 'master article' })));
+  paper.append(el('div', { class: 'paper-heading' }, el('span', { class: 'paper-label', text: 'master article' }), item.article.origins?.length ? button(`AI edits ${item.article.origins.length}`, () => openAiPanel({ kind: 'history' }), 'paper-ai-action', { title: 'Review accepted AI proposals and model provenance' }) : null, button('Generate draft', () => openAiPanel({ kind: 'generate' }), 'paper-ai-action')));
   const scroll = el('div', { class: 'paper-scroll' });
   if (editingMarkdown) {
     const editor = el('textarea', { class: 'markdown-editor', 'aria-label': 'Edit document', spellcheck: 'true' });
@@ -1774,7 +1786,7 @@ function centerOnElement(element) {
 function renderPassageToolbar() {
   document.querySelector('.passage-toolbar')?.remove();
   if (!selectedPassage) return;
-  const toolbar = el('div', { class: 'passage-toolbar' }, button('＋ Node', createAnchoredNode, 'passage-create', { 'aria-label': 'Create connected node' }), button('×', () => { selectedPassage = null; toolbar.remove(); }, 'passage-close', { 'aria-label': 'Dismiss selection action' }));
+  const toolbar = el('div', { class: 'passage-toolbar' }, button('＋ Node', createAnchoredNode, 'passage-create', { 'aria-label': 'Create connected node' }), button('Ask AI', () => openAiPanel({ kind: 'ask', targetId: selectedPassage.targetId, quote: sourcePlainText(work(), selectedPassage.targetId).slice(selectedPassage.start, selectedPassage.end) }), 'passage-create'), button('×', () => { selectedPassage = null; toolbar.remove(); }, 'passage-close', { 'aria-label': 'Dismiss selection action' }));
   toolbar.style.left = `${clamp(selectedPassage.x + 12, 12, window.innerWidth - 135)}px`;
   toolbar.style.top = `${clamp(selectedPassage.y - 48, 72, window.innerHeight - 58)}px`;
   document.querySelector('.workspace-shell')?.append(toolbar);
@@ -1787,6 +1799,148 @@ function createAnchoredNode() {
     addNode(parentId, makeAnchor(selection.targetId, sourcePlainText(work(), selection.targetId), selection.start, selection.end));
   }
   catch (error) { announce(error.message); }
+}
+
+function renderSettings() {
+  document.querySelector('.model-settings-overlay')?.remove();
+  const saved = loadModelSettings();
+  const overlay = el('div', { class: 'model-settings-overlay' });
+  const panel = el('section', { class: 'model-settings-card', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Model settings' });
+  const close = () => overlay.remove();
+  overlay.addEventListener('pointerdown', (event) => { if (event.target === overlay) close(); });
+  panel.append(el('div', { class: 'ai-heading' }, el('h2', { text: 'Model settings' }), button('×', close, 'panel-close', { 'aria-label': 'Close settings' })));
+  panel.append(el('p', { text: 'OpenAI compatible chat completions. Only the context shown before a request is sent to this endpoint. The key is encrypted locally with your passphrase and unlocked for this tab session.' }));
+  const endpoint = el('input', { type: 'url', value: saved.endpoint, 'aria-label': 'API endpoint', placeholder: 'https://api.openai.com/v1' });
+  const models = el('textarea', { 'aria-label': 'Models, one per line', placeholder: 'One model ID per line' }); models.value = saved.models.join('\n');
+  const selected = el('input', { value: saved.selectedModel, 'aria-label': 'Selected model', placeholder: 'First listed model is used by default' });
+  models.addEventListener('input', () => {
+    const ids = models.value.split(/\r?\n/).map((id) => id.trim()).filter(Boolean);
+    if (!ids.includes(selected.value.trim())) selected.value = ids[0] || '';
+  });
+  const apiKey = el('input', { type: 'password', autocomplete: 'new-password', 'aria-label': 'New API key', placeholder: saved.secret ? 'Stored encrypted; leave blank to keep' : 'Optional for a local endpoint' });
+  const passphrase = el('input', { type: 'password', autocomplete: 'new-password', 'aria-label': 'Encryption passphrase', placeholder: 'At least 12 characters to store or unlock a key' });
+  const status = el('p', { class: 'ai-status', role: 'status', text: saved.secret ? getApiKey() ? 'Key unlocked for this tab.' : 'Encrypted key is locked. Unlock before requesting.' : 'No stored key. Local endpoints may allow requests without one.' });
+  panel.append(el('label', { text: 'ENDPOINT' }), endpoint, el('label', { text: 'MODELS · ONE ID PER LINE' }), models, el('label', { text: 'ACTIVE MODEL' }), selected, el('label', { text: 'API KEY' }), apiKey, el('label', { text: 'PASSPHRASE' }), passphrase, status);
+  const controls = el('div', { class: 'ai-actions' });
+  controls.append(button('Save settings', async () => {
+    try {
+      const ids = models.value.split(/\r?\n/).map((id) => id.trim()).filter(Boolean);
+      if (!ids.length) throw new Error('Add at least one model ID.');
+      if (!selected.value.trim()) selected.value = ids[0];
+      if (!ids.includes(selected.value.trim())) throw new Error('Select a model from the list.');
+      let secret = loadModelSettings().secret;
+      if (apiKey.value) secret = await encryptApiKey(apiKey.value, passphrase.value);
+      saveModelSettings({ endpoint: endpoint.value, models: ids, selectedModel: selected.value.trim(), secret });
+      apiKey.value = ''; passphrase.value = '';
+      status.textContent = 'Settings saved locally.';
+      announce('Model settings saved.');
+    } catch (error) { status.textContent = error.message; }
+  }, 'panel-action'));
+  controls.append(button('Unlock key', async () => {
+    try { await unlockApiKey(loadModelSettings().secret, passphrase.value); passphrase.value = ''; status.textContent = 'Key unlocked for this tab.'; }
+    catch (error) { status.textContent = error.message; }
+  }, 'panel-secondary'));
+  controls.append(button('Lock key', () => { lockApiKey(); status.textContent = 'Key locked.'; }, 'panel-secondary'));
+  controls.append(button('Remove key', () => {
+    try { const next = loadModelSettings(); next.secret = null; saveModelSettings(next); lockApiKey(); apiKey.value = ''; status.textContent = 'Stored key removed.'; }
+    catch (error) { status.textContent = error.message; }
+  }, 'panel-secondary'));
+  panel.append(controls, el('p', { class: 'ai-muted', text: 'The endpoint and model IDs are stored in browser storage. Your key is stored only as AES-GCM ciphertext; losing the passphrase means replacing the key. Browser site data can be cleared to remove settings. Use a trusted endpoint that permits browser CORS requests.' }));
+  overlay.append(panel); document.body.append(overlay); endpoint.focus();
+}
+
+function openAiPanel(next) {
+  aiPanel = { ...next, proposalId: null, error: '', busy: false };
+  if (next.kind === 'ask' && !next.quote) {
+    const node = work()?.nodes.find((entry) => entry.id === next.targetId);
+    aiPanel.quote = node ? `${node.title}\n${node.document?.markdown || ''}` : '';
+  }
+  renderAiPanel();
+}
+
+function aiProposal(item) { return item.proposals?.find((proposal) => proposal.id === aiPanel?.proposalId); }
+
+function renderAiPanel() {
+  document.querySelector('.ai-panel')?.remove();
+  const item = work(); if (!item || !aiPanel) return;
+  const panel = el('aside', { class: 'ai-panel', 'aria-label': aiPanel.kind === 'generate' ? 'Article draft' : aiPanel.kind === 'history' ? 'AI history' : 'Ask AI' });
+  panel.append(el('div', { class: 'ai-heading' }, el('h2', { text: aiPanel.kind === 'generate' ? 'Generate article draft' : aiPanel.kind === 'history' ? 'AI history' : 'Ask AI' }), button('×', () => { aiPanel = null; panel.remove(); }, 'panel-close', { 'aria-label': 'Close AI panel' })));
+  if (aiPanel.kind === 'history') {
+    panel.append(el('p', { class: 'ai-muted', text: 'Saved proposals, requests, model origin, and acceptance status for this workspace.' }));
+    if (!item.proposals?.length) panel.append(el('p', { text: 'No AI proposals yet.' }));
+    for (const record of [...(item.proposals || [])].reverse()) panel.append(button(`${record.type === 'article-draft' ? 'Article draft' : 'Answer'} · ${record.status} · ${record.request.slice(0, 60)}`, () => { aiPanel = { kind: record.type === 'article-draft' ? 'generate' : 'ask', targetId: record.context?.targetId || 'article', quote: record.context?.quote || '', proposalId: record.id }; renderAiPanel(); }, 'ai-history-item'));
+    document.querySelector('.workspace-shell')?.append(panel);
+    return;
+  }
+  const settings = loadModelSettings();
+  const proposal = aiProposal(item);
+  if (!proposal && (!settings.models.length || (settings.secret && !getApiKey()))) {
+    panel.append(el('p', { class: 'ai-error', text: !settings.models.length ? 'Configure an endpoint and model before using AI.' : 'Unlock your encrypted API key in Model settings.' }), button('Open model settings', renderSettings, 'panel-action'));
+  }
+  if (!proposal) {
+    const context = aiPanel.kind === 'generate' ? `Topic: ${item.title}` : aiPanel.quote || (aiPanel.targetId === 'article' ? 'Article (first 6,000 characters)' : 'Node');
+    panel.append(el('p', { class: 'ai-muted', text: `Sent to ${settings.endpoint || 'your endpoint'} · ${settings.selectedModel || 'no model selected'}` }), el('p', { class: 'ai-context', text: context.slice(0, 700) }));
+    if (aiPanel.kind === 'ask') {
+      const input = el('textarea', { class: 'ai-question', 'aria-label': 'Your question', placeholder: 'What would you like to understand?' });
+      input.value = aiPanel.question || '';
+      input.addEventListener('input', () => { aiPanel.question = input.value; });
+      panel.append(input);
+      const suggestions = el('div', { class: 'ai-suggestions' });
+      for (const suggestion of ['Explain this step', 'Give an example', 'What is uncertain?']) suggestions.append(button(suggestion, () => { input.value = suggestion; aiPanel.question = suggestion; input.focus(); }, 'panel-secondary'));
+      panel.append(suggestions);
+    }
+    if (aiPanel.error) panel.append(el('p', { class: 'ai-error', role: 'alert', text: aiPanel.error }));
+    const request = button(aiPanel.busy ? 'Working…' : aiPanel.kind === 'generate' ? 'Generate draft' : 'Ask', async () => {
+      if (aiPanel.busy) return;
+      const scope = aiPanel, workspaceId = item.id;
+      const question = scope.question?.trim();
+      if (scope.kind === 'ask' && !question) { scope.error = 'Enter a question first.'; renderAiPanel(); return; }
+      const config = loadModelSettings();
+      if (!config.models.length || (config.secret && !getApiKey())) { scope.error = 'Configure a model and unlock your key first.'; renderAiPanel(); return; }
+      scope.busy = true; scope.error = ''; renderAiPanel();
+      try {
+        const context = scope.quote || (scope.targetId === 'article' ? item.article.markdown.slice(0, 6000) : '');
+        const output = scope.kind === 'generate' ? await generateArticle(config, getApiKey(), item.title) : await askModel(config, getApiKey(), question, { kind: scope.targetId === 'article' ? 'article excerpt' : 'node or selected passage', text: context });
+        if (currentId !== workspaceId || aiPanel !== scope) return;
+        const record = { id: crypto.randomUUID(), type: scope.kind === 'generate' ? 'article-draft' : 'answer', status: 'proposed', request: question || item.title, context: { targetId: scope.targetId || 'article', quote: context.slice(0, 6000) }, output, model: config.selectedModel, endpoint: config.endpoint, createdAt: new Date().toISOString(), provenance: 'ai', uncertainty: 'Model output has not been source verified.' };
+        change((entry) => { (entry.proposals ||= []).push(record); }, { rerender: false });
+        scope.proposalId = record.id; renderAiPanel();
+      } catch (error) { if (aiPanel === scope) { scope.error = error.message; renderAiPanel(); } }
+      finally { scope.busy = false; }
+    }, 'panel-action');
+    request.disabled = aiPanel.busy || !settings.models.length || !!(settings.secret && !getApiKey());
+    panel.append(request);
+  } else {
+    panel.append(el('p', { class: 'ai-muted', text: `${proposal.type === 'article-draft' ? 'Proposed article and outline' : 'Answer proposal'} · ${proposal.model} · ${new Date(proposal.createdAt).toLocaleString()} · ${proposal.status}` }), el('p', { class: 'ai-muted', text: proposal.uncertainty }));
+    const output = el('div', { class: 'ai-output markdown-preview' }); output.innerHTML = renderMarkdown(proposal.output); panel.append(output);
+    if (proposal.status === 'proposed') {
+      panel.append(button(proposal.type === 'article-draft' ? 'Preview article replacement' : 'Put this in the article', () => {
+        aiPanel.preview = proposal.type === 'article-draft' ? { before: work().article.markdown, after: proposal.output, location: 'Replace the full article' } : proposeInsertion(work().article.markdown, proposal.output, { kind: aiPanel.targetId === 'article' ? 'article' : 'node', quote: aiPanel.quote });
+        renderAiPanel();
+      }, 'panel-action'));
+      if (aiPanel.preview) {
+        const preview = aiPanel.preview;
+        panel.append(el('h3', { text: `Review change · ${preview.location}` }), el('p', { class: 'ai-muted', text: 'Before and after Markdown. You can edit the proposed text before accepting.' }));
+        const before = el('textarea', { class: 'ai-diff', readonly: '', 'aria-label': 'Article before change' }); before.value = preview.before;
+        const after = el('textarea', { class: 'ai-diff', 'aria-label': 'Proposed article Markdown' }); after.value = preview.after;
+        panel.append(before, after, button('Accept article change', () => {
+          if (work().article.markdown !== preview.before) { aiPanel.error = 'The article changed. Review the proposal again.'; aiPanel.preview = null; renderAiPanel(); return; }
+          if (!after.value.trim()) return;
+          change((entry) => {
+            entry.article.markdown = after.value;
+            entry.article.origins ||= [];
+            entry.article.origins.push({ kind: 'ai', proposalId: proposal.id, acceptedAt: new Date().toISOString(), model: proposal.model });
+            entry.proposals.find((candidate) => candidate.id === proposal.id).status = 'accepted';
+          }, { article: true });
+          aiPanel = null; renderWorkspace(); announce('Article updated. Undo is available.');
+        }, 'panel-action'));
+      }
+      if (aiPanel.error) panel.append(el('p', { class: 'ai-error', role: 'alert', text: aiPanel.error }));
+      panel.append(button('Discard proposal', () => { change((entry) => { entry.proposals.find((candidate) => candidate.id === proposal.id).status = 'discarded'; }); aiPanel = null; renderWorkspace(); }, 'panel-secondary'));
+    }
+    panel.append(button('New request', () => { aiPanel = { kind: aiPanel.kind, targetId: aiPanel.targetId, quote: aiPanel.quote, proposalId: null, busy: false, error: '' }; renderAiPanel(); }, 'panel-secondary'));
+  }
+  document.querySelector('.workspace-shell')?.append(panel);
 }
 
 document.addEventListener('keydown', (event) => {
