@@ -402,6 +402,8 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .connectors .edge-preview { pointer-events: none; }
 .connectors { --solid-connector-color: var(--accent); }
 .connectors path.cross-line { stroke: var(--solid-connector-color); stroke-opacity: .78; stroke-dasharray: 7 6; }
+/* One-way node connections use the same continuous treatment as highlight arrows. */
+.connectors path.cross-line.one-way { stroke: var(--accent); stroke-width: 1.8; stroke-opacity: .72; stroke-dasharray: none; }
 :root[data-dark='true'] .connectors { --solid-connector-color: color-mix(in srgb, var(--accent) 70%, white); }
 :root[data-dark='true'] .connectors path.cross-line { stroke: var(--solid-connector-color); stroke-opacity: .78; }
 .connection-handle { position: absolute; z-index: 7; width: 22px; height: 22px; padding: 0; border: 2px solid #fff; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 3px 9px #0005; transform: translate(-50%, -50%); cursor: grab; touch-action: none; }

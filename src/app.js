@@ -810,17 +810,28 @@ function updateRoute(path, from, to, fromY = null, side = 'auto') {
   path.setAttribute('d', route.d);
   if (path._hit) path._hit.setAttribute('d', route.d);
   const gradient = path._gradient || (path.dataset.gradient && document.getElementById(path.dataset.gradient));
-  if (gradient) for (const key of ['x1', 'y1', 'x2', 'y2']) gradient.setAttribute(key, route[key]);
+  if (gradient) {
+    const start = path._gradientReverse ? { x: route.x2, y: route.y2 } : { x: route.x1, y: route.y1 };
+    const end = path._gradientReverse ? { x: route.x1, y: route.y1 } : { x: route.x2, y: route.y2 };
+    gradient.setAttribute('x1', start.x); gradient.setAttribute('y1', start.y);
+    gradient.setAttribute('x2', end.x); gradient.setAttribute('y2', end.y);
+  }
 }
 
 function updateCrossRoute(path, from, to, fromSide = 'auto', toSide = 'auto') {
   const route = crossConnectionRoute(from, to, fromSide, toSide);
   path.setAttribute('d', route.d);
   path._hit?.setAttribute('d', route.d);
+  if (path._gradient) {
+    const start = path._gradientReverse ? { x: route.x2, y: route.y2 } : { x: route.x1, y: route.y1 };
+    const end = path._gradientReverse ? { x: route.x1, y: route.y1 } : { x: route.x2, y: route.y2 };
+    path._gradient.setAttribute('x1', start.x); path._gradient.setAttribute('y1', start.y);
+    path._gradient.setAttribute('x2', end.x); path._gradient.setAttribute('y2', end.y);
+  }
 }
 
 
-function makeConnector(svg, id, from, to, fromY, side, className, attrs, onClick, solid = false) {
+function makeConnector(svg, id, from, to, fromY, side, className, attrs, onClick, solid = false, reverseGradient = false) {
   const path = el('path', { ...attrs, class: className });
   if (!solid) {
     const gradientId = `line-${id}`;
@@ -829,6 +840,7 @@ function makeConnector(svg, id, from, to, fromY, side, className, attrs, onClick
     path.dataset.gradient = gradientId;
     path.style.stroke = `url(#${gradientId})`;
     path._gradient = gradient;
+    path._gradientReverse = reverseGradient;
   }
   updateRoute(path, from, to, fromY, side);
   const hit = el('path', { d: path.getAttribute('d'), class: 'connector-hit', 'aria-label': 'Edit connection endpoints', tabindex: '0', role: 'button' });
@@ -1061,7 +1073,9 @@ function renderConnectors(item) {
   for (const edge of item.edges) {
     const from = item.nodes.find((node) => node.id === edge.fromId), to = item.nodes.find((node) => node.id === edge.toId);
     if (!from || !to || !isVisible(item, from) || !isVisible(item, to)) continue;
-    const path = makeConnector(svg, edge.id, pointFor(item, from.id), pointFor(item, to.id), null, edge.toSide, 'cross-line', { 'data-edge': edge.id, ...edgeMarkerAttrs(edge) }, () => selectConnection('edge', edge.id), true);
+    const lineClass = `cross-line ${edgeDirection(edge) === 'both' ? '' : 'one-way'}`.trim();
+    const direction = edgeDirection(edge);
+    const path = makeConnector(svg, edge.id, pointFor(item, from.id), pointFor(item, to.id), null, edge.toSide, lineClass, { 'data-edge': edge.id, ...edgeMarkerAttrs(edge) }, () => selectConnection('edge', edge.id), direction === 'both', direction === 'reverse');
     updateCrossRoute(path, pointFor(item, from.id), pointFor(item, to.id), edge.fromSide, edge.toSide);
   }
   return svg;
