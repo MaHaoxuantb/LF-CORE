@@ -857,7 +857,16 @@ function connectionEnd(item, kind, id, end) {
   return { rect: pointFor(item, end === 'from' ? edge.fromId : edge.toId), side: edge[end === 'from' ? 'fromSide' : 'toSide'] || 'auto' };
 }
 
-function previewConnection(item, kind, id, end, side) {
+function nodeAtPointer(clientX, clientY) {
+  // The connector SVG and its hit paths sit above the canvas. Use all
+  // elements under the pointer rather than only the topmost one, otherwise
+  // dragging across a line can fail to discover the card underneath it.
+  return document.elementsFromPoint(clientX, clientY)
+    .map((entry) => entry.closest?.('.topic-card'))
+    .find((card) => card);
+}
+
+function previewConnection(item, kind, id, end, side, replacementId = null) {
   if (kind === 'node') {
     const node = item.nodes.find((entry) => entry.id === id);
     const source = node && sourceFor(item, node);
@@ -867,11 +876,19 @@ function previewConnection(item, kind, id, end, side) {
     const edge = item.edges.find((entry) => entry.id === id);
     const path = document.querySelector(`[data-edge="${id}"]`);
     if (!edge || !path) return;
+    // Keep the proposed endpoint in the rendered route. The data is only
+    // changed on pointerup, so using the edge's stored endpoint here makes
+    // dragging to another card appear not to preview the destination.
+    const fromId = end === 'from' && replacementId ? replacementId : edge.fromId;
+    const toId = end === 'to' && replacementId ? replacementId : edge.toId;
     const fromSide = end === 'from' ? side : edge.fromSide || 'auto';
     const toSide = end === 'to' ? side : edge.toSide || 'auto';
-    updateCrossRoute(path, pointFor(item, edge.fromId), pointFor(item, edge.toId), fromSide, toSide);
+    updateCrossRoute(path, pointFor(item, fromId), pointFor(item, toId), fromSide, toSide);
     const label = document.querySelector(`[data-edge-label="${id}"]`);
-    if (label) placeEdgeLabel(label, item, edge, fromSide, toSide);
+    if (label) {
+      const previewEdge = { ...edge, fromId, toId };
+      placeEdgeLabel(label, item, previewEdge, fromSide, toSide);
+    }
   }
 }
 
@@ -910,22 +927,25 @@ function renderConnectionHandles(scene, item) {
         const sceneRect = scene.getBoundingClientRect();
         const x = (next.clientX - sceneRect.left) / view.zoom;
         const y = (next.clientY - sceneRect.top) / view.zoom;
-        const hovered = next.clientX === undefined ? null : document.elementFromPoint(next.clientX, next.clientY)?.closest('.topic-card');
+        const hovered = next.clientX === undefined ? null : nodeAtPointer(next.clientX, next.clientY);
         const edge = kind === 'edge' ? item.edges.find((entry) => entry.id === id) : null;
         const candidateId = hovered?.dataset.node;
         const otherId = edge && end === 'from' ? edge.toId : edge?.fromId;
         replacementId = candidateId && candidateId !== otherId && candidateId !== id ? candidateId : null;
+        document.querySelectorAll('.topic-card.edge-target').forEach((card) => card.classList.remove('edge-target'));
+        if (replacementId) document.querySelector(`[data-node="${replacementId}"]`)?.classList.add('edge-target');
         const nextRect = replacementId ? pointFor(item, replacementId) : target.rect;
         nextSide = nearestConnectionSide(nextRect, x, y);
         const port = connectionPort(nextRect, nextSide, 8);
         handle.style.left = `${port.x}px`; handle.style.top = `${port.y}px`;
-        previewConnection(item, kind, id, end, nextSide);
+        previewConnection(item, kind, id, end, nextSide, replacementId);
       };
       const finish = (next) => {
         handle.removeEventListener('pointermove', move);
         handle.removeEventListener('pointerup', finish);
         handle.removeEventListener('pointercancel', finish);
         handle.classList.remove('dragging');
+        document.querySelectorAll('.topic-card.edge-target').forEach((card) => card.classList.remove('edge-target'));
         if (next.type === 'pointercancel') { renderWorkspace(); return; }
         if (!moved || (!replacementId && nextSide === side)) { renderWorkspace(); return; }
         change((entry) => {
