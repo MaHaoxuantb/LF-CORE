@@ -575,6 +575,9 @@ function renderCanvas(item) {
     const to = item.nodes.find((node) => node.id === edge.toId);
     if (from && to && isVisible(item, from) && isVisible(item, to)) scene.append(renderEdgeLabel(item, edge));
   }
+  for (const node of item.nodes) {
+    if (node.anchor && isVisible(item, node)) scene.append(renderAnchorLabel(item, node));
+  }
   renderConnectionHandles(scene, item);
   viewport.append(scene);
   attachPanAndZoom(viewport);
@@ -1027,6 +1030,42 @@ function edgeMarkerAttrs(edge) {
   };
 }
 
+function anchorDescription(node) { return node.anchor?.description ?? node.anchor?.label ?? null; }
+
+function placeAnchorLabel(label, item, node) {
+  const source = sourceFor(item, node);
+  const route = connectorRoute(source?.point || rootBounds, pointFor(item, node.id), source?.fromY, node.connectionSide);
+  label.style.left = `${(route.x1 + route.x2) / 2}px`;
+  label.style.top = `${(route.y1 + route.y2) / 2}px`;
+}
+
+function renderAnchorLabel(item, node) {
+  const selected = activeConnection?.kind === 'node' && activeConnection.id === node.id;
+  const description = anchorDescription(node);
+  const chip = el('div', { class: `edge-label-chip ${selected ? 'active' : ''}`, 'data-anchor-label': node.id });
+  placeAnchorLabel(chip, item, node);
+  const name = button(description || '', () => {
+    if (!selected) { selectConnection('node', node.id); return; }
+    const input = el('input', { class: 'edge-label-input', value: description || '', 'aria-label': 'Relationship description' });
+    let finished = false;
+    const finish = (save) => {
+      if (finished) return;
+      finished = true;
+      const value = input.value.trim() || null;
+      if (save && value !== description) change((entry) => { entry.nodes.find((entryNode) => entryNode.id === node.id).anchor.description = value; });
+      else { input.replaceWith(name); name.focus(); }
+    };
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+      if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+    });
+    input.addEventListener('blur', () => finish(true));
+    name.replaceWith(input); input.focus(); input.select();
+  }, 'edge-label-name', { 'aria-label': description ? 'Edit relationship description' : 'Add relationship description', title: description ? 'Edit relationship description' : 'Add relationship description' });
+  chip.append(name);
+  return chip;
+}
+
 function renderEdgeLabel(item, edge) {
   const selected = activeConnection?.kind === 'edge' && activeConnection.id === edge.id;
   const chip = el('div', { class: `edge-label-chip ${selected ? 'active' : ''}`, 'data-edge-label': edge.id });
@@ -1138,6 +1177,10 @@ function updateConnectors() {
     if (path) updateCrossRoute(path, pointFor(item, edge.fromId), pointFor(item, edge.toId), edge.fromSide, edge.toSide);
     const label = document.querySelector(`[data-edge-label="${edge.id}"]`);
     if (label) placeEdgeLabel(label, item, edge);
+  }
+  for (const node of item.nodes) {
+    const label = document.querySelector(`[data-anchor-label="${node.id}"]`);
+    if (label && node.anchor) placeAnchorLabel(label, item, node);
   }
   positionConnectionHandles(item);
 }
@@ -1763,8 +1806,8 @@ function reconnect(node) {
   try {
     const targetId = selectedPassage.targetId;
     if (targetId === node.id || isDescendant(work(), targetId, node.id)) return announce('Choose a passage outside this node and its descendants.');
-    const anchor = makeAnchor(targetId, sourcePlainText(work(), targetId), selectedPassage.start, selectedPassage.end);
-    change((entry) => { const target = entry.nodes.find((n) => n.id === node.id); target.anchor = anchor; target.parentId = targetId === 'article' ? null : targetId; });
+    const anchor = { ...makeAnchor(targetId, sourcePlainText(work(), targetId), selectedPassage.start, selectedPassage.end), description: null };
+    change((entry) => { const target = entry.nodes.find((n) => n.id === node.id); target.anchor = anchor; target.parentId = null; });
     selectedPassage = null; announce('Passage reconnected.');
   } catch (error) { announce(error.message); }
 }
@@ -1964,8 +2007,8 @@ function createAnchoredNode() {
   const selection = selectedPassage; if (!selection) return;
   try {
     const item = work();
-    const anchor = makeAnchor(selection.targetId, sourcePlainText(item, selection.targetId), selection.start, selection.end);
-    addNode(parentId, anchor, positionForPassage(item, selection.targetId));
+    const anchor = { ...makeAnchor(selection.targetId, sourcePlainText(item, selection.targetId), selection.start, selection.end), description: null };
+    addNode(null, anchor, positionForPassage(item, selection.targetId));
   }
   catch (error) { announce(error.message); }
 }
