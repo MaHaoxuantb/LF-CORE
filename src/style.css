@@ -17,11 +17,11 @@
 :root[data-theme='dark'] .anchor-mark { background: #514a8066; border-bottom-color: #9d94eb; }
 :root[data-theme='dark'] .node-markdown-editor, :root[data-theme='dark'] .markdown-editor { background: #1b1f28; color: #e7eaf0; }
 :root[data-theme='dark'] .workspace-chrome .header-left, :root[data-theme='dark'] .workspace-chrome .header-right, :root[data-theme='dark'] .passage-toolbar, :root[data-theme='dark'] .selection-toolbar { background: #20242df2; color: #e7eaf0; border-color: #3b4250; }
-:root[data-theme='dark'] .workspace-chrome .workspace-title { color: #e7eaf0; }
+:root[data-theme='dark'] .workspace-chrome .workspace-title, :root[data-theme='dark'] .brand-name, :root[data-theme='dark'] .workspace-brand { color: #e7eaf0; }
 :root[data-theme='dark'] .context-option, :root[data-theme='dark'] .save-menu-option { color: #dce2eb; }
 @media (prefers-color-scheme: dark) {
   :root[data-theme='auto'] .workspace-chrome .header-left, :root[data-theme='auto'] .workspace-chrome .header-right, :root[data-theme='auto'] .passage-toolbar, :root[data-theme='auto'] .selection-toolbar { background: #20242df2; color: #e7eaf0; border-color: #3b4250; }
-  :root[data-theme='auto'] .workspace-chrome .workspace-title { color: #e7eaf0; }
+  :root[data-theme='auto'] .workspace-chrome .workspace-title, :root[data-theme='auto'] .brand-name, :root[data-theme='auto'] .workspace-brand { color: #e7eaf0; }
   :root[data-theme='auto'] .context-option, :root[data-theme='auto'] .save-menu-option { color: #dce2eb; }
   :root[data-theme='auto'] .home, :root[data-theme='auto'] .canvas-viewport { background-color: #171a21; background-image: radial-gradient(#3c4554 1px, transparent 1px); }
   :root[data-theme='auto'] .paper-heading { background: linear-gradient(145deg, #292b45 0%, #252738 60%, #20242d 100%); border-color: #3b4250; }
@@ -42,9 +42,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .home { min-height: 100vh; background: radial-gradient(#dbe2eb 1px, transparent 1px) 0 0 / 24px 24px, #fbfcfe; }
 .home-header { height: 66px; background: #fff; border-bottom: 1px solid #e8ebf0; display: flex; align-items: center; justify-content: space-between; padding: 0 25px; position: relative; z-index: 20; }
-.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 1.05rem; letter-spacing: -.025em; }
-.brand-mark { color: #635fdb; font-size: 1.75rem; line-height: 1; }
+.brand { display: flex; align-items: baseline; gap: 8px; font-weight: 750; font-size: 1.05rem; letter-spacing: .04em; }
+.brand-mark { display: grid; place-items: center; width: 29px; height: 29px; border-radius: 8px; background: var(--accent); color: #fff; font-size: .72rem; letter-spacing: -.04em; line-height: 1; }
+.brand-name { color: #27303d; }
+.brand-company { color: #88929e; font-size: .68rem; font-weight: 600; letter-spacing: .01em; margin-left: 2px; }
 .home-tag { color: #88929e; font-size: .8rem; }
+.workspace-brand { display: inline-flex; align-items: baseline; gap: 3px; padding: 0 9px 0 6px; color: #333b49; font-size: .78rem; letter-spacing: .045em; white-space: nowrap; }
+.workspace-brand strong { color: var(--accent); font-size: .66rem; letter-spacing: -.03em; }
+.workspace-brand span { font-weight: 750; }
 .home-main { max-width: 920px; margin: 0 auto; padding: 92px 28px 90px; }
 .home-eyebrow, .panel-eyebrow { color: #6d6bb9; font-size: .68rem; font-weight: 800; letter-spacing: .16em; }
 .home h1 { font: 600 clamp(2.7rem, 6vw, 4.8rem)/1.06 Georgia, 'Times New Roman', serif; max-width: 720px; letter-spacing: -.055em; margin: 20px 0 18px; }

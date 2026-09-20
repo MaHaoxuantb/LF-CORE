@@ -2,7 +2,7 @@
 
 ## Product definition
 
-Learning Canvas helps an independent learner turn a subject or source into a coherent, revisitable body of knowledge. The **master article** is the primary artifact. A graph expands outward from passages in that article so the learner can investigate questions without losing the main narrative. Sources remain inspectable. AI helps explore and propose changes, while the learner chooses what becomes part of the article.
+LF CORE by LinecoFlow helps an independent learner turn a subject or source into a coherent, revisitable body of knowledge. The **master article** is the primary artifact. A graph expands outward from passages in that article so the learner can investigate questions without losing the main narrative. Sources remain inspectable. AI helps explore and propose changes, while the learner chooses what becomes part of the article.
 
 The product cycle is **explore → understand → consolidate → revisit**. A session succeeds when the article, its supporting material, or its open questions are clearer than at the start.
 

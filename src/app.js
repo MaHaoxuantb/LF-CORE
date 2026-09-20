@@ -298,7 +298,7 @@ function startWorkspace(title, source = null, generate = false) {
 function renderHome() {
   if (flushView()) persist();
   currentId = null; selectedId = null; selectedIds.clear(); selectedPassage = null; openSourceId = null;
-  const header = el('header', { class: 'home-header' }, el('div', { class: 'brand' }, el('span', { class: 'brand-mark', text: '◈' }), el('span', { text: 'Learning Canvas' })), button('Model settings', renderSettings, 'source-toggle'));
+  const header = el('header', { class: 'home-header' }, el('div', { class: 'brand' }, el('span', { class: 'brand-mark', text: 'LF' }), el('span', { class: 'brand-name', text: 'CORE' }), el('span', { class: 'brand-company', text: 'LinecoFlow' })), button('Model settings', renderSettings, 'source-toggle'));
   const form = el('form', { class: 'create-form entry-form' });
   let entryMode = 'topic';
   const tabs = el('div', { class: 'entry-tabs', role: 'tablist', 'aria-label': 'Start from' });
@@ -482,6 +482,7 @@ function renderWorkspace() {
   ensurePositions(item);
   const chrome = el('div', { class: 'workspace-chrome' },
     el('div', { class: 'header-left' },
+      el('span', { class: 'workspace-brand', 'aria-label': 'LF CORE by LinecoFlow' }, el('strong', { text: 'LF' }), el('span', { text: 'CORE' })),
       iconButton('M3 11 12 3l9 8v9a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z', 'Home', renderHome),
       iconButton('M4 5h16M4 10h11M4 15h16M4 20h11', outlineOpen ? 'Hide outline' : 'Open outline', () => { outlineOpen = !outlineOpen; saveView(); renderWorkspace(); }, outlineOpen),
       el('span', { class: 'workspace-title', text: item.title }),

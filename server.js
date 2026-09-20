@@ -18,4 +18,4 @@ createServer(async (request, response) => {
     response.writeHead(404);
     response.end('Not found');
   }
-}).listen(port, '127.0.0.1', () => console.log(`Learning Canvas: http://127.0.0.1:${port}`));
+}).listen(port, '127.0.0.1', () => console.log(`LF CORE · LinecoFlow: http://127.0.0.1:${port}`));
