@@ -468,7 +468,16 @@ function zoomTo(next, clientX, clientY) {
 function ensureUnifiedNodeEdges(item) {
   let changed = false;
   for (const node of item.nodes) {
-    const targetId = node.anchor?.targetId || node.parentId;
+    // An anchored node is connected by its passage mark. It must not also be
+    // treated as a structural child of the node containing that passage.
+    if (node.anchor) {
+      if (node.parentId !== null) { node.parentId = null; changed = true; }
+      const before = item.edges.length;
+      item.edges = item.edges.filter((edge) => !(edge.structural && edge.toId === node.id));
+      if (item.edges.length !== before) changed = true;
+      continue;
+    }
+    const targetId = node.parentId;
     if (!targetId || !item.nodes.some((candidate) => candidate.id === targetId)) continue;
     const existing = item.edges.find((edge) => edge.fromId === targetId && edge.toId === node.id);
     const exists = item.edges.some((edge) => edge.structural && edge.toId === node.id);
@@ -1954,7 +1963,6 @@ function renderPassageToolbar() {
 function createAnchoredNode() {
   const selection = selectedPassage; if (!selection) return;
   try {
-    const parentId = selection.targetId === 'article' ? null : selection.targetId;
     const item = work();
     const anchor = makeAnchor(selection.targetId, sourcePlainText(item, selection.targetId), selection.start, selection.end);
     addNode(parentId, anchor, positionForPassage(item, selection.targetId));
