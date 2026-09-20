@@ -74,6 +74,14 @@ function setAppearance(nextTheme = theme, nextColor = color) {
   applyAppearance(); renderWorkspace();
 }
 applyAppearance();
+const colorSchemeQuery = window.matchMedia?.('(prefers-color-scheme: dark)');
+const handleSystemAppearanceChange = () => {
+  if (theme !== 'auto') return;
+  applyAppearance();
+  renderWorkspace();
+};
+if (colorSchemeQuery?.addEventListener) colorSchemeQuery.addEventListener('change', handleSystemAppearanceChange);
+else if (colorSchemeQuery) colorSchemeQuery.addListener(handleSystemAppearanceChange);
 let lastSaved = JSON.stringify(state), dirty = false;
 let currentId = null, selectedId = null, selectedIds = new Set(), editingMarkdown = false, outlineOpen = false;
 let activeConnection = null;
@@ -467,7 +475,7 @@ function ensureUnifiedNodeEdges(item) {
     if (existing) {
       if (!existing.structural) { existing.structural = true; changed = true; }
     } else if (!exists) {
-      item.edges.push({ id: crypto.randomUUID(), fromId: targetId, toId: node.id, label: 'related', direction: 'forward', structural: true });
+      item.edges.push({ id: crypto.randomUUID(), fromId: targetId, toId: node.id, label: null, direction: 'forward', structural: true });
       changed = true;
     }
   }
@@ -1014,15 +1022,15 @@ function renderEdgeLabel(item, edge) {
   const selected = activeConnection?.kind === 'edge' && activeConnection.id === edge.id;
   const chip = el('div', { class: `edge-label-chip ${selected ? 'active' : ''}`, 'data-edge-label': edge.id });
   placeEdgeLabel(chip, item, edge);
-  const name = button(edge.label || 'related', () => {
+  const name = button(edge.label || '', () => {
     if (!selected) { selectConnection('edge', edge.id); return; }
-    const input = el('input', { class: 'edge-label-input', value: edge.label || '', 'aria-label': 'Relationship label' });
+    const input = el('input', { class: 'edge-label-input', value: edge.label || '', 'aria-label': 'Relationship description' });
     let finished = false;
     const finish = (save) => {
       if (finished) return;
       finished = true;
-      const value = input.value.trim() || 'related';
-      if (save && value !== (edge.label || 'related')) change((entry) => { entry.edges.find((link) => link.id === edge.id).label = value; });
+      const value = input.value.trim() || null;
+      if (save && value !== (edge.label ?? null)) change((entry) => { entry.edges.find((link) => link.id === edge.id).label = value; });
       else { input.replaceWith(name); name.focus(); }
     };
     input.addEventListener('keydown', (event) => {
@@ -1031,7 +1039,7 @@ function renderEdgeLabel(item, edge) {
     });
     input.addEventListener('blur', () => finish(true));
     name.replaceWith(input); input.focus(); input.select();
-  }, 'edge-label-name', { title: 'Edit relationship' });
+  }, 'edge-label-name', { 'aria-label': edge.label ? 'Edit relationship description' : 'Add relationship description', title: edge.label ? 'Edit relationship description' : 'Add relationship description' });
   if (selected) {
     const directions = { forward: '→', both: '↔', reverse: '←' };
     const type = button(directions[edgeDirection(edge)], () => {
@@ -1214,8 +1222,8 @@ function openLinkMenu(node, grip) {
   const menu = el('div', { class: 'context-menu', role: 'menu', 'aria-label': `Connect ${node.title}` });
   for (const candidate of available) menu.append(button(`Connect to ${candidate.title}`, () => {
     closeContextMenu();
-    change((entry) => { entry.edges.push({ id: crypto.randomUUID(), fromId: node.id, toId: candidate.id, label: 'related' }); });
-    announce('Nodes connected. Select the label on the line to rename it.');
+    change((entry) => { entry.edges.push({ id: crypto.randomUUID(), fromId: node.id, toId: candidate.id, label: null }); });
+    announce('Nodes connected. Select the relationship on the line to add a description.');
   }, 'context-option', { role: 'menuitem' }));
   document.querySelector('.workspace-shell')?.append(menu);
   const rect = grip.getBoundingClientRect();
@@ -1264,7 +1272,7 @@ function startEdgeDrag(event, node, grip, preserveClick = false) {
         entry.layout.positions[newId] = { x: destination.x - NODE.width / 2, y: destination.y - NODE.height / 2 };
       }
       const incoming = entry.edges.some((edge) => edge.toId === newId) || entry.nodes.some((candidate) => candidate.id === newId && candidate.parentId);
-      entry.edges.push({ id: crypto.randomUUID(), fromId: node.id, toId: newId, label: 'related', direction: incoming ? 'both' : 'forward' });
+      entry.edges.push({ id: crypto.randomUUID(), fromId: node.id, toId: newId, label: null, direction: incoming ? 'both' : 'forward' });
     });
     selectedId = target ? target : null;
     announce(target ? 'Nodes connected.' : 'Node created and connected.');
@@ -2003,7 +2011,7 @@ function renderSettings() {
 }
 
 function openAiPanel(next) {
-  aiPanel = { ...next, proposalId: null, error: '', busy: false };
+  aiPanel = { ...next, proposalId: null, error: '', busy: false, messages: [] };
   if (next.kind === 'ask' && !next.quote) {
     const node = work()?.nodes.find((entry) => entry.id === next.targetId);
     aiPanel.quote = node ? `${node.title}\n${node.document?.markdown || ''}` : '';
@@ -2021,12 +2029,77 @@ function renderAiPanel() {
   if (aiPanel.kind === 'history') {
     panel.append(el('p', { class: 'ai-muted', text: 'Saved proposals, requests, model origin, and acceptance status for this workspace.' }));
     if (!item.proposals?.length) panel.append(el('p', { text: 'No AI proposals yet.' }));
-    for (const record of [...(item.proposals || [])].reverse()) panel.append(button(`${record.type === 'article-draft' ? 'Article draft' : 'Answer'} · ${record.status} · ${record.request.slice(0, 60)}`, () => { aiPanel = { kind: record.type === 'article-draft' ? 'generate' : 'ask', targetId: record.context?.targetId || 'article', quote: record.context?.quote || '', proposalId: record.id }; renderAiPanel(); }, 'ai-history-item'));
+    for (const record of [...(item.proposals || [])].reverse()) panel.append(button(`${record.type === 'article-draft' ? 'Article draft' : 'Answer'} · ${record.status} · ${record.request.slice(0, 60)}`, () => { aiPanel = { kind: record.type === 'article-draft' ? 'generate' : 'ask', targetId: record.context?.targetId || 'article', quote: record.context?.quote || '', proposalId: record.id, messages: [], draft: '', error: '', busy: false }; renderAiPanel(); }, 'ai-history-item'));
     document.querySelector('.workspace-shell')?.append(panel);
     return;
   }
   const settings = loadModelSettings();
   const proposal = aiProposal(item);
+  if (aiPanel.kind === 'ask') {
+    const unavailable = !settings.models.length || (settings.secret && !getApiKey());
+    if (unavailable) panel.append(el('p', { class: 'ai-error', text: !settings.models.length ? 'Configure an endpoint and model before using AI.' : 'Unlock your encrypted API key in Model settings.' }), button('Open model settings', renderSettings, 'panel-action'));
+    const contextLabel = aiPanel.quote ? aiPanel.quote.slice(0, 180) : aiPanel.targetId === 'article' ? 'Article excerpt' : 'Selected node';
+    const chatToolbar = el('div', { class: 'ai-chat-toolbar' }, el('span', { class: 'ai-chat-context', text: `Working with · ${contextLabel}` }), button('New chat', () => { aiPanel.messages = []; aiPanel.proposalId = null; aiPanel.preview = null; aiPanel.error = ''; aiPanel.draft = ''; renderAiPanel(); }, 'ai-new-chat'));
+    panel.append(chatToolbar);
+    const transcript = el('div', { class: 'ai-chat-messages', 'aria-live': 'polite' });
+    const records = item.proposals || [];
+    const messages = aiPanel.messages.length ? aiPanel.messages : (proposal ? [{ role: 'user', content: proposal.request }, { role: 'assistant', content: proposal.output, proposalId: proposal.id }] : []);
+    if (!messages.length) transcript.append(el('div', { class: 'ai-chat-welcome' }, el('div', { class: 'ai-chat-welcome-mark', text: '✦' }), el('h3', { text: 'How can I help?' }), el('p', { text: 'Ask about the article, a selected passage, or one of your nodes.' })));
+    for (const message of messages) {
+      const bubble = el('div', { class: `ai-message ai-message-${message.role}` });
+      bubble.append(el('div', { class: 'ai-message-label', text: message.role === 'user' ? 'You' : 'AskAI' }));
+      if (message.role === 'assistant') {
+        const answer = el('div', { class: 'ai-output markdown-preview' }); answer.innerHTML = renderMarkdown(message.content); bubble.append(answer);
+        const answerProposal = records.find((record) => record.id === message.proposalId);
+        if (answerProposal?.status === 'proposed') bubble.append(button('Put this in the article', () => { aiPanel.proposalId = answerProposal.id; aiPanel.preview = proposeInsertion(work().article.markdown, answerProposal.output, { kind: aiPanel.targetId === 'article' ? 'article' : 'node', quote: aiPanel.quote }); renderAiPanel(); }, 'ai-chat-action'));
+        if (answerProposal?.status === 'accepted') bubble.append(el('span', { class: 'ai-message-status', text: 'Added to article' }));
+      } else bubble.append(el('p', { text: message.content }));
+      transcript.append(bubble);
+    }
+    if (aiPanel.busy) transcript.append(el('div', { class: 'ai-message ai-message-assistant ai-chat-thinking', text: 'AskAI is thinking…' }));
+    panel.append(transcript);
+    if (aiPanel.error) panel.append(el('p', { class: 'ai-error', role: 'alert', text: aiPanel.error }));
+    const composer = el('form', { class: 'ai-chat-composer' });
+    const input = el('textarea', { class: 'ai-question', 'aria-label': 'Your message', placeholder: 'Ask a question about this context…', rows: '2' });
+    input.value = aiPanel.draft || '';
+    input.addEventListener('input', () => { aiPanel.draft = input.value; });
+    input.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); composer.requestSubmit(); } });
+    const send = button(aiPanel.busy ? 'Working…' : 'Send', () => {}, 'panel-action');
+    send.type = 'submit'; send.disabled = unavailable || aiPanel.busy;
+    composer.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (aiPanel.busy) return;
+      const scope = aiPanel, workspaceId = item.id, question = input.value.trim();
+      if (!question) { scope.error = 'Enter a question first.'; renderAiPanel(); return; }
+      scope.messages.push({ role: 'user', content: question }); scope.draft = ''; scope.busy = true; scope.error = ''; renderAiPanel();
+      try {
+        const config = loadModelSettings();
+        const context = scope.quote || (scope.targetId === 'article' ? item.article.markdown.slice(0, 6000) : '');
+        const output = await askModel(config, getApiKey(), question, { kind: scope.targetId === 'article' ? 'article excerpt' : 'node or selected passage', text: context });
+        if (currentId !== workspaceId || aiPanel !== scope) return;
+        const record = { id: crypto.randomUUID(), type: 'answer', status: 'proposed', request: question, context: { targetId: scope.targetId || 'article', quote: context.slice(0, 6000) }, output, model: config.selectedModel, endpoint: config.endpoint, createdAt: new Date().toISOString(), provenance: 'ai', uncertainty: 'Model output has not been source verified.' };
+        change((entry) => { (entry.proposals ||= []).push(record); }, { rerender: false });
+        scope.messages.push({ role: 'assistant', content: output, proposalId: record.id });
+      } catch (error) { if (aiPanel === scope) scope.error = error.message; }
+      finally { if (aiPanel === scope) { scope.busy = false; renderAiPanel(); } }
+    });
+    composer.append(input, send, el('small', { class: 'ai-chat-composer-hint', text: 'Enter to send · Shift + Enter for a new line' })); panel.append(composer);
+    if (aiPanel.preview) {
+      const preview = aiPanel.preview, selectedProposal = records.find((record) => record.id === aiPanel.proposalId);
+      panel.append(el('h3', { text: `Review change · ${preview.location}` }), el('p', { class: 'ai-muted', text: 'Review the proposed Markdown before accepting it.' }));
+      const before = el('textarea', { class: 'ai-diff', readonly: '', 'aria-label': 'Article before change' }); before.value = preview.before;
+      const after = el('textarea', { class: 'ai-diff', 'aria-label': 'Proposed article Markdown' }); after.value = preview.after;
+      panel.append(before, after, button('Accept article change', () => {
+        if (work().article.markdown !== preview.before) { aiPanel.error = 'The article changed. Review the proposal again.'; aiPanel.preview = null; renderAiPanel(); return; }
+        if (!after.value.trim() || !selectedProposal) return;
+        change((entry) => { entry.article.markdown = after.value; entry.article.origins ||= []; entry.article.origins.push({ kind: 'ai', proposalId: selectedProposal.id, acceptedAt: new Date().toISOString(), model: selectedProposal.model }); entry.proposals.find((candidate) => candidate.id === selectedProposal.id).status = 'accepted'; }, { article: true });
+        aiPanel.preview = null; aiPanel.proposalId = null; renderWorkspace(); announce('Article updated. Undo is available.');
+      }, 'panel-action'), button('Cancel review', () => { aiPanel.preview = null; aiPanel.proposalId = null; renderAiPanel(); }, 'panel-secondary'));
+    }
+    document.querySelector('.workspace-shell')?.append(panel);
+    if (!aiPanel.busy) requestAnimationFrame(() => { transcript.scrollTop = transcript.scrollHeight; input.focus(); });
+    return;
+  }
   if (!proposal && (!settings.models.length || (settings.secret && !getApiKey()))) {
     panel.append(el('p', { class: 'ai-error', text: !settings.models.length ? 'Configure an endpoint and model before using AI.' : 'Unlock your encrypted API key in Model settings.' }), button('Open model settings', renderSettings, 'panel-action'));
   }
