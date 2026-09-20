@@ -25,9 +25,10 @@ export function crossConnectionRoute(from, to, fromSide = 'auto', toSide = 'auto
   const toMiddle = to.x + to.width / 2;
   const startSide = fromSide === 'auto' ? (toMiddle >= fromMiddle ? 'right' : 'left') : fromSide;
   const endSide = toSide === 'auto' ? (toMiddle >= fromMiddle ? 'left' : 'right') : toSide;
-  // Keep both arrowheads just outside the cards so neither is hidden by a card.
-  const start = connectionPort(from, startSide, 8);
-  const end = connectionPort(to, endSide, 8);
+  // Endpoints belong on the card borders. Keeping them outside leaves a visible
+  // gap for connections that do not originate at an article highlight.
+  const start = connectionPort(from, startSide);
+  const end = connectionPort(to, endSide);
   const bend = Math.min(140, Math.max(48, Math.hypot(end.x - start.x, end.y - start.y) * .38));
   const c1x = start.x + start.nx * bend;
   const c1y = start.y + start.ny * bend;
