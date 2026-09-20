@@ -405,6 +405,7 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .connectors .connector-hit { fill: none; stroke: transparent; stroke-width: 12; pointer-events: stroke; cursor: pointer; }
 .connectors .connector-hit:hover, .connectors .connector-hit:focus-visible { stroke: color-mix(in srgb, var(--accent) 20%, transparent); outline: none; }
 .connectors .edge-preview { pointer-events: none; }
+.connectors .edge-preview-port { fill: var(--accent); stroke: #fff; stroke-width: 2; pointer-events: none; }
 .connectors { --solid-connector-color: var(--accent); }
 .connectors path.cross-line { stroke: var(--solid-connector-color); stroke-opacity: .78; stroke-dasharray: 7 6; }
 /* One-way node connections use the same continuous treatment as highlight arrows. */
@@ -599,4 +600,3 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 :root[data-theme='dark'] .ai-chat-composer, :root[data-theme='auto'] .ai-chat-composer { border-color: #4a4844; background: #2c2b29; }
 :root[data-theme='dark'] .ai-chat-composer .panel-action, :root[data-theme='auto'] .ai-chat-composer .panel-action { background: #e8e5df; color: #272522; }
 @media (max-width: 620px) { .ai-panel { top: 62px; right: 8px; bottom: 8px; width: calc(100vw - 16px); } .ai-chat-messages { padding-left: 16px; padding-right: 16px; } .ai-panel > .ai-heading, .ai-panel > .ai-chat-toolbar { padding-left: 16px; padding-right: 16px; } }
-

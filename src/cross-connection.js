@@ -20,6 +20,15 @@ export function nearestConnectionSide(rect, x, y) {
   }, { side: 'left', distance: Infinity }).side;
 }
 
+export function snappedConnectionSides(from, to, dropPoint = null) {
+  const fromCenter = { x: from.x + from.width / 2, y: from.y + from.height / 2 };
+  const toCenter = { x: to.x + to.width / 2, y: to.y + to.height / 2 };
+  return {
+    fromSide: from.width && from.height ? nearestConnectionSide(from, toCenter.x, toCenter.y) : 'auto',
+    toSide: to.width && to.height ? nearestConnectionSide(to, dropPoint?.x ?? fromCenter.x, dropPoint?.y ?? fromCenter.y) : 'auto',
+  };
+}
+
 export function crossConnectionRoute(from, to, fromSide = 'auto', toSide = 'auto') {
   const fromMiddle = from.x + from.width / 2;
   const toMiddle = to.x + to.width / 2;

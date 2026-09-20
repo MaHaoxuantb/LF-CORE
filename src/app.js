@@ -3,7 +3,7 @@ import { createWorkspace, emptyState, loadSaveMode, loadState, saveSaveMode, sav
 import { renderMarkdown, headingTokens } from './markdown.js';
 import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
 import { putPdf, getPdf, deletePdf } from './source-store.js';
-import { connectionPort, crossConnectionRoute, nearestConnectionSide } from './cross-connection.js';
+import { connectionPort, crossConnectionRoute, nearestConnectionSide, snappedConnectionSides } from './cross-connection.js';
 import { loadModelSettings, saveModelSettings, encryptApiKey, unlockApiKey, getApiKey, lockApiKey } from './model-settings.js';
 import { generateArticle, askModel, proposeInsertion } from './ai.js';
 import 'katex/dist/katex.min.css';
@@ -467,10 +467,19 @@ function zoomTo(next, clientX, clientY) {
 
 function ensureUnifiedNodeEdges(item) {
   let changed = false;
+  item.highlights ||= [];
   for (const node of item.nodes) {
-    // An anchored node is connected by its passage mark. It must not also be
-    // treated as a structural child of the node containing that passage.
+    // Bring older passage links into the same edge collection as card links.
     if (node.anchor) {
+      if (!node.anchor.id) { node.anchor.id = crypto.randomUUID(); changed = true; }
+      if (!item.highlights.some((highlight) => highlight.id === node.anchor.id)) {
+        item.highlights.push({ ...node.anchor }); changed = true;
+      }
+      const highlightId = `h:${node.anchor.id}`;
+      if (!item.edges.some((edge) => edge.fromId === highlightId && edge.toId === node.id)) {
+        item.edges.push({ id: crypto.randomUUID(), fromId: highlightId, toId: node.id, label: node.anchor.description ?? node.anchor.label ?? null, direction: node.anchor.direction || 'forward' });
+        changed = true;
+      }
       if (node.parentId !== null) { node.parentId = null; changed = true; }
       const before = item.edges.length;
       item.edges = item.edges.filter((edge) => !(edge.structural && edge.toId === node.id));
@@ -489,6 +498,38 @@ function ensureUnifiedNodeEdges(item) {
     }
   }
   if (changed) persist();
+}
+
+const isHighlightId = (id) => typeof id === 'string' && id.startsWith('h:');
+const highlightFor = (item, id) => item.highlights?.find((entry) => entry.id === id?.slice(2));
+const endpointExists = (item, id) => isHighlightId(id) ? !!highlightFor(item, id) : item.nodes.some((node) => node.id === id);
+const endpointVisible = (item, id) => isHighlightId(id)
+  ? (highlightFor(item, id)?.targetId === 'article' || !!item.nodes.find((node) => node.id === highlightFor(item, id)?.targetId && isVisible(item, node)))
+  : !!item.nodes.find((node) => node.id === id && isVisible(item, node));
+
+function endpointPoint(item, id, toward = null) {
+  if (!isHighlightId(id)) return endpointExists(item, id) ? pointFor(item, id) : null;
+  const highlight = highlightFor(item, id);
+  if (!highlight) return null;
+  const marks = [...document.querySelectorAll(`.anchor-mark[data-highlight="${highlight.id}"]`)];
+  const scene = document.querySelector('.scene');
+  if (!marks.length || !scene) return null;
+  const origin = highlight.targetId === 'article' ? rootBounds : pointFor(item, highlight.targetId);
+  const right = !toward || toward.x + toward.width / 2 >= origin.x + origin.width / 2;
+  const rects = marks.flatMap((mark) => {
+    const visible = mark.closest('.node-content')?.getBoundingClientRect();
+    return [...mark.getClientRects()].filter((rect) => rect.width && rect.height && (!visible || (rect.bottom > visible.top && rect.top < visible.bottom)));
+  });
+  const line = rects.sort((a, b) => right ? b.right - a.right : a.left - b.left)[0];
+  if (!line) return null;
+  const bounds = scene.getBoundingClientRect();
+  return { x: ((right ? line.right : line.left) - bounds.left) / view.zoom, y: (line.top + line.height / 2 - bounds.top) / view.zoom, width: 0, height: 0 };
+}
+
+function edgePoints(item, edge) {
+  const fromBase = isHighlightId(edge.fromId) ? null : endpointPoint(item, edge.fromId);
+  const toBase = isHighlightId(edge.toId) ? null : endpointPoint(item, edge.toId);
+  return { from: fromBase || endpointPoint(item, edge.fromId, toBase), to: toBase || endpointPoint(item, edge.toId, fromBase) };
 }
 
 function renderWorkspace() {
@@ -517,11 +558,12 @@ function renderWorkspace() {
   applyView();
   for (const preview of document.querySelectorAll('.markdown-preview')) {
     const targetId = preview.dataset.documentId;
-    markAnchors(preview, item.nodes.filter((node) => node.anchor?.targetId === targetId));
+    markAnchors(preview, item.highlights.filter((highlight) => highlight.targetId === targetId));
   }
   document.querySelectorAll('.topic-card').forEach(updateCardOverflow);
   document.querySelectorAll('.markdown-editor').forEach(resizeEditor);
   measurePaper();
+  renderConnectionHandles(document.querySelector('.scene'), item);
   if (selectedPassage) renderPassageToolbar();
   if (aiPanel) renderAiPanel();
 }
@@ -567,18 +609,11 @@ function renderCanvas(item) {
   scene.append(renderPaper(item));
   scene.append(renderConnectors(item));
   for (const node of item.nodes) if (isVisible(item, node)) scene.append(renderNode(node, item));
-  // Anchored branch lines must sit above the source card: their origin is a
-  // highlighted passage inside that card, not its boundary.
+  // Lines that meet passage marks sit above the document and cards.
   scene.append(renderAnchorConnectors(item));
   for (const edge of item.edges) {
-    const from = item.nodes.find((node) => node.id === edge.fromId);
-    const to = item.nodes.find((node) => node.id === edge.toId);
-    if (from && to && isVisible(item, from) && isVisible(item, to)) scene.append(renderEdgeLabel(item, edge));
+    if (endpointVisible(item, edge.fromId) && endpointVisible(item, edge.toId)) scene.append(renderEdgeLabel(item, edge));
   }
-  for (const node of item.nodes) {
-    if (node.anchor && isVisible(item, node)) scene.append(renderAnchorLabel(item, node));
-  }
-  renderConnectionHandles(scene, item);
   viewport.append(scene);
   attachPanAndZoom(viewport);
   const presets = el('div', { class: 'zoom-presets', role: 'menu', 'aria-label': 'Zoom presets' });
@@ -775,7 +810,7 @@ function pointFor(item, id) {
 
 function sourceFor(item, node) {
   if (!node.anchor && node.parentId) return { point: pointFor(item, node.parentId), fromY: null, anchored: false };
-  const marks = [...document.querySelectorAll(`.anchor-mark[data-anchor-node="${node.id}"]`)];
+  const marks = [...document.querySelectorAll(`.anchor-mark[data-highlight="${node.anchor?.id}"]`)];
   const scene = document.querySelector('.scene');
   if (marks.length && scene && view.zoom) {
     const to = pointFor(item, node.id);
@@ -820,10 +855,6 @@ function connectorRoute(from, to, fromY = null, side = 'auto') {
   const c1x = x1 + (dx ? -dx * bend : 0), c1y = y1 + (dy ? -dy * bend : 0);
   const c2x = x2 + dx * bend, c2y = y2 + dy * bend;
   return { d: `M ${x1} ${y1} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${x2} ${y2}`, x1, y1, x2, y2 };
-}
-
-function curve(from, to, fromY = null, side = 'auto') {
-  return connectorRoute(from, to, fromY, side).d;
 }
 
 function updateRoute(path, from, to, fromY = null, side = 'auto') {
@@ -880,32 +911,25 @@ function selectConnection(kind, id) {
   document.querySelector('.connection-handle')?.focus({ preventScroll: true });
 }
 
-function connectionEnd(item, kind, id, end) {
-  if (kind === 'node') {
-    const node = item.nodes.find((entry) => entry.id === id);
-    return node ? { rect: pointFor(item, node.id), side: node.connectionSide || 'auto' } : null;
-  }
+function connectionEnd(item, id, end) {
   const edge = item.edges.find((entry) => entry.id === id);
   if (!edge) return null;
-  return { rect: pointFor(item, end === 'from' ? edge.fromId : edge.toId), side: edge[end === 'from' ? 'fromSide' : 'toSide'] || 'auto' };
+  const endpointId = end === 'from' ? edge.fromId : edge.toId;
+  return { rect: edgePoints(item, edge)[end], side: edge[end === 'from' ? 'fromSide' : 'toSide'] || 'auto', endpointId };
 }
 
-function nodeAtPointer(clientX, clientY) {
+function endpointAtPointer(clientX, clientY) {
   // The connector SVG and its hit paths sit above the canvas. Use all
   // elements under the pointer rather than only the topmost one, otherwise
   // dragging across a line can fail to discover the card underneath it.
-  return document.elementsFromPoint(clientX, clientY)
-    .map((entry) => entry.closest?.('.topic-card'))
-    .find((card) => card);
+  const elements = document.elementsFromPoint(clientX, clientY);
+  const mark = elements.map((entry) => entry.closest?.('.anchor-mark')).find(Boolean);
+  if (mark) return `h:${mark.dataset.highlight}`;
+  const card = elements.map((entry) => entry.closest?.('.topic-card')).find(Boolean);
+  return card?.dataset.node || null;
 }
 
-function previewConnection(item, kind, id, end, side, replacementId = null) {
-  if (kind === 'node') {
-    const node = item.nodes.find((entry) => entry.id === id);
-    const source = node && sourceFor(item, node);
-    const path = document.querySelector(`[data-to="${id}"]`);
-    if (source && path) updateRoute(path, source.point, pointFor(item, id), source.fromY, side);
-  } else {
+function previewConnection(item, id, end, side, replacementId = null) {
     const edge = item.edges.find((entry) => entry.id === id);
     const path = document.querySelector(`[data-edge="${id}"]`);
     if (!edge || !path) return;
@@ -916,35 +940,32 @@ function previewConnection(item, kind, id, end, side, replacementId = null) {
     const toId = end === 'to' && replacementId ? replacementId : edge.toId;
     const fromSide = end === 'from' ? side : edge.fromSide || 'auto';
     const toSide = end === 'to' ? side : edge.toSide || 'auto';
-    updateCrossRoute(path, pointFor(item, fromId), pointFor(item, toId), fromSide, toSide);
+    const previewEdge = { ...edge, fromId, toId };
+    const { from, to } = edgePoints(item, previewEdge);
+    if (from && to) updateCrossRoute(path, from, to, fromSide, toSide);
     const label = document.querySelector(`[data-edge-label="${id}"]`);
     if (label) {
-      const previewEdge = { ...edge, fromId, toId };
       placeEdgeLabel(label, item, previewEdge, fromSide, toSide);
     }
-  }
 }
 
 function renderConnectionHandles(scene, item) {
   if (!activeConnection) return;
-  const { kind, id } = activeConnection;
-  const ends = kind === 'edge' ? ['from', 'to'] : ['to'];
+  const { id } = activeConnection;
+  const ends = ['from', 'to'];
   for (const end of ends) {
-    const target = connectionEnd(item, kind, id, end);
-    if (!target) continue;
+    const target = connectionEnd(item, id, end);
+    if (!target?.rect) continue;
     let side = target.side;
-    if (side === 'auto' && kind === 'node') {
-      const node = item.nodes.find((entry) => entry.id === id);
-      const source = sourceFor(item, node)?.point || rootBounds;
-      side = target.rect.x >= source.x + source.width / 2 ? 'left' : 'right';
-    } else if (side === 'auto') {
+    if (side === 'auto') {
       const edge = item.edges.find((entry) => entry.id === id);
-      const route = crossConnectionRoute(pointFor(item, edge.fromId), pointFor(item, edge.toId), edge.fromSide, edge.toSide);
+      const points = edgePoints(item, edge);
+      const route = crossConnectionRoute(points.from, points.to, edge.fromSide, edge.toSide);
       side = route[end === 'from' ? 'fromSide' : 'toSide'];
     }
-    const handle = button('', () => {}, 'connection-handle', { 'aria-label': `Drag ${end === 'from' ? 'first' : 'second'} endpoint to another node or side; arrow keys adjust, Home resets`, title: 'Drag to another node or side of this node' });
+    const handle = button('', () => {}, 'connection-handle', { 'aria-label': `Drag ${end === 'from' ? 'first' : 'second'} endpoint to another node or highlight; arrow keys adjust node side`, title: 'Drag to a node or highlight' });
     handle.dataset.end = end;
-    const position = connectionPort(target.rect, side, 8);
+    const position = connectionPort(target.rect, side, isHighlightId(target.endpointId) ? 0 : 8);
     handle.style.left = `${position.x}px`; handle.style.top = `${position.y}px`;
     handle.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return;
@@ -960,18 +981,19 @@ function renderConnectionHandles(scene, item) {
         const sceneRect = scene.getBoundingClientRect();
         const x = (next.clientX - sceneRect.left) / view.zoom;
         const y = (next.clientY - sceneRect.top) / view.zoom;
-        const hovered = next.clientX === undefined ? null : nodeAtPointer(next.clientX, next.clientY);
-        const edge = kind === 'edge' ? item.edges.find((entry) => entry.id === id) : null;
-        const candidateId = hovered?.dataset.node;
+        const candidateId = next.clientX === undefined ? null : endpointAtPointer(next.clientX, next.clientY);
+        const edge = item.edges.find((entry) => entry.id === id);
         const otherId = edge && end === 'from' ? edge.toId : edge?.fromId;
-        replacementId = candidateId && candidateId !== otherId && candidateId !== id ? candidateId : null;
+        replacementId = candidateId && candidateId !== otherId && candidateId !== target.endpointId &&
+          !item.edges.some((candidate) => candidate.id !== id && ((candidate.fromId === candidateId && candidate.toId === otherId) || (candidate.toId === candidateId && candidate.fromId === otherId))) ? candidateId : null;
         document.querySelectorAll('.topic-card.edge-target').forEach((card) => card.classList.remove('edge-target'));
-        if (replacementId) document.querySelector(`[data-node="${replacementId}"]`)?.classList.add('edge-target');
-        const nextRect = replacementId ? pointFor(item, replacementId) : target.rect;
-        nextSide = nearestConnectionSide(nextRect, x, y);
-        const port = connectionPort(nextRect, nextSide, 8);
+        if (replacementId && !isHighlightId(replacementId)) document.querySelector(`[data-node="${replacementId}"]`)?.classList.add('edge-target');
+        const nextRect = replacementId ? endpointPoint(item, replacementId) : target.rect;
+        if (!nextRect) return;
+        nextSide = isHighlightId(replacementId || target.endpointId) ? 'auto' : nearestConnectionSide(nextRect, x, y);
+        const port = connectionPort(nextRect, nextSide === 'auto' ? 'right' : nextSide, isHighlightId(replacementId || target.endpointId) ? 0 : 8);
         handle.style.left = `${port.x}px`; handle.style.top = `${port.y}px`;
-        previewConnection(item, kind, id, end, nextSide, replacementId);
+        previewConnection(item, id, end, nextSide, replacementId);
       };
       const finish = (next) => {
         handle.removeEventListener('pointermove', move);
@@ -982,13 +1004,22 @@ function renderConnectionHandles(scene, item) {
         if (next.type === 'pointercancel') { renderWorkspace(); return; }
         if (!moved || (!replacementId && nextSide === side)) { renderWorkspace(); return; }
         change((entry) => {
-          if (kind === 'node') entry.nodes.find((node) => node.id === id).connectionSide = nextSide;
-          else {
             const edge = entry.edges.find((entry) => entry.id === id);
-            if (replacementId) edge[end === 'from' ? 'fromId' : 'toId'] = replacementId;
+            if (replacementId) {
+              const oldToId = edge.toId;
+              const oldFromId = edge.fromId;
+              edge[end === 'from' ? 'fromId' : 'toId'] = replacementId;
+              const oldChild = entry.nodes.find((node) => node.id === oldToId);
+              if (oldChild?.anchor?.id && oldFromId === `h:${oldChild.anchor.id}`) oldChild.anchor = null;
+              const newChild = entry.nodes.find((node) => node.id === edge.toId);
+              if (newChild && isHighlightId(edge.fromId) && !newChild.anchor) newChild.anchor = { ...highlightFor(entry, edge.fromId) };
+              if (edge.structural) {
+                if (oldChild?.parentId === oldFromId) oldChild.parentId = null;
+                if (newChild && !isHighlightId(edge.fromId)) newChild.parentId = edge.fromId;
+                else edge.structural = false;
+              }
+            }
             edge[end === 'from' ? 'fromSide' : 'toSide'] = nextSide;
-            if (edge.structural && end === 'from') entry.nodes.find((node) => node.id === edge.toId).parentId = replacementId;
-          }
         });
       };
       handle.addEventListener('pointermove', move);
@@ -999,9 +1030,9 @@ function renderConnectionHandles(scene, item) {
       const nextSide = { ArrowLeft: 'left', ArrowUp: 'top', ArrowRight: 'right', ArrowDown: 'bottom', Home: 'auto' }[event.key];
       if (!nextSide) return;
       event.preventDefault(); event.stopPropagation();
+      if (isHighlightId(target.endpointId)) return;
       change((entry) => {
-        if (kind === 'node') entry.nodes.find((node) => node.id === id).connectionSide = nextSide;
-        else entry.edges.find((edge) => edge.id === id)[end === 'from' ? 'fromSide' : 'toSide'] = nextSide;
+        entry.edges.find((edge) => edge.id === id)[end === 'from' ? 'fromSide' : 'toSide'] = nextSide;
       });
       document.querySelector(`.connection-handle[data-end="${end}"]`)?.focus({ preventScroll: true });
     });
@@ -1015,7 +1046,10 @@ function edgeMidpoint(from, to, fromSide = 'auto', toSide = 'auto') {
 }
 
 function placeEdgeLabel(label, item, edge, fromSide = edge.fromSide, toSide = edge.toSide) {
-  const middle = edgeMidpoint(pointFor(item, edge.fromId), pointFor(item, edge.toId), fromSide, toSide);
+  const { from, to } = edgePoints(item, edge);
+  if (!from || !to) { label.style.display = 'none'; return; }
+  label.style.display = '';
+  const middle = edgeMidpoint(from, to, fromSide, toSide);
   label.style.left = `${middle.x}px`;
   label.style.top = `${middle.y}px`;
 }
@@ -1028,42 +1062,6 @@ function edgeMarkerAttrs(edge) {
     ...(direction === 'forward' || direction === 'both' ? { 'marker-end': 'url(#arrow-forward)' } : {}),
     ...(direction === 'reverse' || direction === 'both' ? { 'marker-start': 'url(#arrow-reverse)' } : {}),
   };
-}
-
-function anchorDescription(node) { return node.anchor?.description ?? node.anchor?.label ?? null; }
-
-function placeAnchorLabel(label, item, node) {
-  const source = sourceFor(item, node);
-  const route = connectorRoute(source?.point || rootBounds, pointFor(item, node.id), source?.fromY, node.connectionSide);
-  label.style.left = `${(route.x1 + route.x2) / 2}px`;
-  label.style.top = `${(route.y1 + route.y2) / 2}px`;
-}
-
-function renderAnchorLabel(item, node) {
-  const selected = activeConnection?.kind === 'node' && activeConnection.id === node.id;
-  const description = anchorDescription(node);
-  const chip = el('div', { class: `edge-label-chip ${selected ? 'active' : ''}`, 'data-anchor-label': node.id });
-  placeAnchorLabel(chip, item, node);
-  const name = button(description || '', () => {
-    if (!selected) { selectConnection('node', node.id); return; }
-    const input = el('input', { class: 'edge-label-input', value: description || '', 'aria-label': 'Relationship description' });
-    let finished = false;
-    const finish = (save) => {
-      if (finished) return;
-      finished = true;
-      const value = input.value.trim() || null;
-      if (save && value !== description) change((entry) => { entry.nodes.find((entryNode) => entryNode.id === node.id).anchor.description = value; });
-      else { input.replaceWith(name); name.focus(); }
-    };
-    input.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') { event.preventDefault(); finish(true); }
-      if (event.key === 'Escape') { event.preventDefault(); finish(false); }
-    });
-    input.addEventListener('blur', () => finish(true));
-    name.replaceWith(input); input.focus(); input.select();
-  }, 'edge-label-name', { 'aria-label': description ? 'Edit relationship description' : 'Add relationship description', title: description ? 'Edit relationship description' : 'Add relationship description' });
-  chip.append(name);
-  return chip;
 }
 
 function renderEdgeLabel(item, edge) {
@@ -1100,6 +1098,8 @@ function renderEdgeLabel(item, edge) {
         const child = entry.nodes.find((node) => node.id === removed.toId);
         if (child) { child.parentId = null; if (child.anchor?.targetId === removed.fromId) child.anchor = null; }
       }
+      const child = entry.nodes.find((node) => node.id === removed?.toId);
+      if (child?.anchor?.id && removed?.fromId === `h:${child.anchor.id}`) child.anchor = null;
       entry.edges = entry.edges.filter((link) => link.id !== edge.id);
     }), 'edge-label-remove', { 'aria-label': 'Remove relationship' });
     chip.append(type, name, remove);
@@ -1111,23 +1111,12 @@ function renderConnectors(item) {
   const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#514fc1';
   const svg = el('svg', { class: 'connectors', viewBox: '-4000 -4000 8000 8000', role: 'group', 'aria-label': 'Node connections' });
   const defs = el('defs');
-  for (const [id, color, orient] of [['arrow-primary', accent, 'auto'], ['arrow-forward', accent, 'auto'], ['arrow-reverse', accent, 'auto-start-reverse']]) {
+  for (const [id, color, orient] of [['arrow-forward', accent, 'auto'], ['arrow-reverse', accent, 'auto-start-reverse']]) {
     defs.append(el('marker', { id, markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient, markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: color, style: `stroke: ${color}`, 'stroke-width': '1.6', 'stroke-opacity': '.78', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
   }
   svg.append(defs);
-  for (const node of item.nodes) {
-    if (!isVisible(item, node) || node.anchor) continue;
-    if (!node.parentId || item.edges.some((edge) => edge.structural && edge.toId === node.id)) continue;
-    const source = sourceFor(item, node);
-    const path = makeConnector(svg, node.id, source?.point || rootBounds, pointFor(item, node.id), source?.fromY, node.connectionSide, 'branch-line', { 'data-to': node.id, 'marker-end': 'url(#arrow-primary)' }, () => selectConnection('node', node.id));
-    if (!source) { path.style.display = 'none'; path._hit.style.display = 'none'; }
-    if (node.anchor) {
-      const dot = el('circle', { class: 'origin-dot', 'data-origin': node.id, cx: source?.point.x ?? 0, cy: source?.point.y ?? 0, r: '3' });
-      if (!source) dot.style.display = 'none';
-      svg.append(dot);
-    }
-  }
   for (const edge of item.edges) {
+    if (isHighlightId(edge.fromId) || isHighlightId(edge.toId)) continue;
     const from = item.nodes.find((node) => node.id === edge.fromId), to = item.nodes.find((node) => node.id === edge.toId);
     if (!from || !to || !isVisible(item, from) || !isVisible(item, to)) continue;
     const lineClass = `cross-line ${edgeDirection(edge) === 'both' ? '' : 'one-way'}`.trim();
@@ -1139,69 +1128,52 @@ function renderConnectors(item) {
 }
 
 function renderAnchorConnectors(item) {
-  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#514fc1';
   const svg = el('svg', { class: 'connectors anchor-connectors', viewBox: '-4000 -4000 8000 8000', role: 'group', 'aria-label': 'Passage connections' });
-  const defs = el('defs');
-  defs.append(el('marker', { id: 'arrow-anchor', markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient: 'auto', markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: accent, style: `stroke: ${accent}`, 'stroke-width': '1.6', 'stroke-opacity': '.72', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
-  svg.append(defs);
-  for (const node of item.nodes) {
-    if (!isVisible(item, node) || !node.anchor) continue;
-    const source = sourceFor(item, node);
-    const path = makeConnector(svg, node.id, source?.point || rootBounds, pointFor(item, node.id), source?.fromY, node.connectionSide, 'branch-line', { 'data-to': node.id, 'marker-end': 'url(#arrow-anchor)' }, () => selectConnection('node', node.id));
-    if (!source) { path.style.display = 'none'; path._hit.style.display = 'none'; }
-    const dot = el('circle', { class: 'origin-dot', 'data-origin': node.id, cx: source?.point.x ?? 0, cy: source?.point.y ?? 0, r: '3' });
-    if (!source) dot.style.display = 'none';
-    svg.append(dot);
+  svg.append(el('defs'));
+  for (const edge of item.edges) {
+    if (!isHighlightId(edge.fromId) && !isHighlightId(edge.toId)) continue;
+    if (!endpointVisible(item, edge.fromId) || !endpointVisible(item, edge.toId)) continue;
+    const { from, to } = edgePoints(item, edge);
+    const direction = edgeDirection(edge);
+    const lineClass = `cross-line ${direction === 'both' ? '' : 'one-way'}`.trim();
+    const path = makeConnector(svg, edge.id, from || rootBounds, to || rootBounds, null, edge.toSide, lineClass, { 'data-edge': edge.id, ...edgeMarkerAttrs(edge) }, () => selectConnection('edge', edge.id), direction === 'both', direction === 'reverse');
+    if (!from || !to) { path.style.display = 'none'; path._hit.style.display = 'none'; }
+    else updateCrossRoute(path, from, to, edge.fromSide, edge.toSide);
   }
   return svg;
 }
 
 function updateConnectors() {
   const item = work(); if (!item) return;
-  for (const node of item.nodes) {
-    const path = document.querySelector(`[data-to="${node.id}"]`);
-    const source = sourceFor(item, node);
-    if (path) {
-      path.style.display = source ? '' : 'none';
-      if (path._hit) path._hit.style.display = source ? '' : 'none';
-      if (source) updateRoute(path, source.point, pointFor(item, node.id), source.fromY, node.connectionSide);
-    }
-    const dot = document.querySelector(`[data-origin="${node.id}"]`);
-    if (dot) {
-      dot.style.display = source?.anchored ? '' : 'none';
-      if (source?.anchored) { dot.setAttribute('cx', source.point.x); dot.setAttribute('cy', source.point.y); }
-    }
-  }
   for (const edge of item.edges) {
     const path = document.querySelector(`[data-edge="${edge.id}"]`);
-    if (path) updateCrossRoute(path, pointFor(item, edge.fromId), pointFor(item, edge.toId), edge.fromSide, edge.toSide);
+    const { from, to } = edgePoints(item, edge);
+    if (path) {
+      path.style.display = from && to ? '' : 'none';
+      path._hit.style.display = from && to ? '' : 'none';
+      if (from && to) updateCrossRoute(path, from, to, edge.fromSide, edge.toSide);
+    }
     const label = document.querySelector(`[data-edge-label="${edge.id}"]`);
     if (label) placeEdgeLabel(label, item, edge);
-  }
-  for (const node of item.nodes) {
-    const label = document.querySelector(`[data-anchor-label="${node.id}"]`);
-    if (label && node.anchor) placeAnchorLabel(label, item, node);
   }
   positionConnectionHandles(item);
 }
 
 function positionConnectionHandles(item) {
   if (!activeConnection) return;
-  const { kind, id } = activeConnection;
+  const { id } = activeConnection;
   for (const handle of document.querySelectorAll('.connection-handle:not(.dragging)')) {
     const end = handle.dataset.end;
-    const target = connectionEnd(item, kind, id, end);
-    if (!target) continue;
+    const target = connectionEnd(item, id, end);
+    if (!target?.rect) continue;
     let side = target.side;
-    if (side === 'auto' && kind === 'node') {
-      const source = sourceFor(item, item.nodes.find((node) => node.id === id))?.point || rootBounds;
-      side = target.rect.x >= source.x + source.width / 2 ? 'left' : 'right';
-    } else if (side === 'auto') {
+    if (side === 'auto') {
       const edge = item.edges.find((entry) => entry.id === id);
-      const route = crossConnectionRoute(pointFor(item, edge.fromId), pointFor(item, edge.toId), edge.fromSide, edge.toSide);
+      const points = edgePoints(item, edge);
+      const route = crossConnectionRoute(points.from, points.to, edge.fromSide, edge.toSide);
       side = route[end === 'from' ? 'fromSide' : 'toSide'];
     }
-    const port = connectionPort(target.rect, side, 8);
+    const port = connectionPort(target.rect, side, isHighlightId(target.endpointId) ? 0 : 8);
     handle.style.left = `${port.x}px`; handle.style.top = `${port.y}px`;
   }
 }
@@ -1247,7 +1219,7 @@ function renderNode(node, item) {
   link.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
     event.preventDefault(); event.stopPropagation();
-    openLinkMenu(node, link);
+    openLinkMenu(node.id, link);
   });
   resize.addEventListener('pointerdown', (event) => startNodeResize(event, node, card, resize));
   resize.addEventListener('keydown', (event) => resizeNodeWithKeys(event, node));
@@ -1265,18 +1237,35 @@ function renderNode(node, item) {
   return card;
 }
 
-function openLinkMenu(node, grip) {
+function openLinkMenu(sourceId, grip) {
   closeContextMenu();
   const item = work();
-  const available = item.nodes.filter((candidate) => candidate.id !== node.id &&
-    !item.edges.some((edge) => (edge.fromId === node.id && edge.toId === candidate.id) || (edge.toId === node.id && edge.fromId === candidate.id)));
-  if (!available.length) return announce('No unconnected nodes are available.');
-  const menu = el('div', { class: 'context-menu', role: 'menu', 'aria-label': `Connect ${node.title}` });
+  const candidates = [
+    ...item.nodes.map((node) => ({ id: node.id, title: node.title })),
+    ...item.highlights.map((highlight) => ({ id: `h:${highlight.id}`, title: `“${shortTitle(highlight.quote)}”` })),
+  ];
+  const available = candidates.filter((candidate) => candidate.id !== sourceId &&
+    !item.edges.some((edge) => (edge.fromId === sourceId && edge.toId === candidate.id) || (edge.toId === sourceId && edge.fromId === candidate.id)));
+  if (!available.length && !isHighlightId(sourceId)) return announce('No unconnected endpoints are available.');
+  const menu = el('div', { class: 'context-menu', role: 'menu', 'aria-label': 'Connect endpoint' });
   for (const candidate of available) menu.append(button(`Connect to ${candidate.title}`, () => {
     closeContextMenu();
-    change((entry) => { entry.edges.push({ id: crypto.randomUUID(), fromId: node.id, toId: candidate.id, label: null }); });
-    announce('Nodes connected. Select the relationship on the line to add a description.');
+    const points = edgePoints(item, { fromId: sourceId, toId: candidate.id });
+    const sides = points.from && points.to ? snappedConnectionSides(points.from, points.to) : {};
+    change((entry) => { entry.edges.push({ id: crypto.randomUUID(), fromId: sourceId, toId: candidate.id, label: null, direction: 'forward', ...sides }); });
+    announce('Connected. Select the line to edit its relationship.');
   }, 'context-option', { role: 'menuitem' }));
+  if (isHighlightId(sourceId)) {
+    menu.append(el('div', { class: 'context-separator', role: 'separator' }));
+    menu.append(button('Remove highlight', () => {
+      closeContextMenu();
+      change((entry) => {
+        entry.highlights = entry.highlights.filter((highlight) => `h:${highlight.id}` !== sourceId);
+        entry.edges = entry.edges.filter((edge) => edge.fromId !== sourceId && edge.toId !== sourceId);
+        for (const node of entry.nodes) if (node.anchor?.id && `h:${node.anchor.id}` === sourceId) node.anchor = null;
+      });
+    }, 'context-option destructive', { role: 'menuitem' }));
+  }
   document.querySelector('.workspace-shell')?.append(menu);
   const rect = grip.getBoundingClientRect();
   menu.style.left = `${clamp(rect.left, 8, window.innerWidth - menu.offsetWidth - 8)}px`;
@@ -1290,44 +1279,58 @@ function startEdgeDrag(event, node, grip, preserveClick = false) {
   event.stopPropagation();
   closeContextMenu();
   const scene = document.querySelector('.scene');
+  const sourceId = typeof node === 'string' ? node : node.id;
+  const layer = document.querySelector(isHighlightId(sourceId) ? '.anchor-connectors' : '.connectors');
   const preview = el('path', { class: 'edge-preview', 'marker-end': 'url(#arrow-forward)' });
-  document.querySelector('.connectors').append(preview);
+  const snapPort = el('circle', { class: 'edge-preview-port', r: '5' });
+  layer.append(preview, snapPort);
   grip.setPointerCapture?.(event.pointerId);
-  let target = null, destination = null, moved = false;
+  let target = null, destination = null, moved = false, sides = {};
   const move = (next) => {
     if (!moved && Math.hypot(next.clientX - event.clientX, next.clientY - event.clientY) < 5) return;
     moved = true;
     const rect = scene.getBoundingClientRect();
     destination = { x: (next.clientX - rect.left) / view.zoom, y: (next.clientY - rect.top) / view.zoom, width: 0, height: 0 };
-    preview.setAttribute('d', curve(pointFor(work(), node.id), destination));
-    const hovered = document.elementFromPoint(next.clientX, next.clientY)?.closest('.topic-card');
-    const nextId = hovered?.dataset.node === node.id ? null : hovered?.dataset.node || null;
+    const hoveredId = endpointAtPointer(next.clientX, next.clientY);
+    const nextId = hoveredId === sourceId ? null : hoveredId;
     if (target !== nextId) {
-      document.querySelector(`[data-node="${target}"]`)?.classList.remove('edge-target');
+      if (target && !isHighlightId(target)) document.querySelector(`[data-node="${target}"]`)?.classList.remove('edge-target');
       target = nextId;
-      hovered?.classList.toggle('edge-target', !!target);
+      if (target && !isHighlightId(target)) document.querySelector(`[data-node="${target}"]`)?.classList.add('edge-target');
     }
+    const item = work();
+    const points = target ? edgePoints(item, { fromId: sourceId, toId: target }) : { from: endpointPoint(item, sourceId, destination), to: destination };
+    if (!points.from || !points.to) return;
+    sides = snappedConnectionSides(points.from, points.to, target && !isHighlightId(target) ? destination : null);
+    const route = crossConnectionRoute(points.from, points.to, sides.fromSide, sides.toSide);
+    preview.setAttribute('d', route.d);
+    snapPort.setAttribute('cx', route.x2); snapPort.setAttribute('cy', route.y2);
   };
   const finish = (next) => {
     window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', finish); window.removeEventListener('pointercancel', finish);
-    document.querySelector(`[data-node="${target}"]`)?.classList.remove('edge-target'); preview.remove();
+    if (target && !isHighlightId(target)) document.querySelector(`[data-node="${target}"]`)?.classList.remove('edge-target');
+    preview.remove(); snapPort.remove();
     if (grip.hasPointerCapture?.(event.pointerId)) grip.releasePointerCapture(event.pointerId);
     if (next.type !== 'pointerup' || !destination || !moved) return;
     const item = work();
-    if (target && item.edges.some((edge) => (edge.fromId === node.id && edge.toId === target) || (edge.fromId === target && edge.toId === node.id))) return announce('These nodes are already connected.');
+    if (target && item.edges.some((edge) => (edge.fromId === sourceId && edge.toId === target) || (edge.fromId === target && edge.toId === sourceId))) return announce('These endpoints are already connected.');
+    if (!target) {
+      const newRect = { x: destination.x - NODE.width / 2, y: destination.y - NODE.height / 2, ...NODE };
+      const from = endpointPoint(item, sourceId, newRect);
+      if (from) sides = snappedConnectionSides(from, newRect);
+    }
     change((entry) => {
       let newId = target;
       if (!newId) {
         newId = crypto.randomUUID();
-        const anchor = node.anchor ? { ...node.anchor, id: crypto.randomUUID() } : null;
-        entry.nodes.push({ id: newId, parentId: null, title: anchor ? shortTitle(anchor.quote) : 'Untitled', document: { type: 'markdown', markdown: '' }, anchor, collapsed: false, provenance: 'learner' });
+        entry.nodes.push({ id: newId, parentId: null, title: 'Untitled', document: { type: 'markdown', markdown: '' }, anchor: null, collapsed: false, provenance: 'learner' });
         entry.layout.positions[newId] = { x: destination.x - NODE.width / 2, y: destination.y - NODE.height / 2 };
       }
       const incoming = entry.edges.some((edge) => edge.toId === newId) || entry.nodes.some((candidate) => candidate.id === newId && candidate.parentId);
-      entry.edges.push({ id: crypto.randomUUID(), fromId: node.id, toId: newId, label: null, direction: incoming ? 'both' : 'forward' });
+      entry.edges.push({ id: crypto.randomUUID(), fromId: sourceId, toId: newId, label: null, direction: incoming ? 'both' : 'forward', ...sides });
     });
-    selectedId = target ? target : null;
-    announce(target ? 'Nodes connected.' : 'Node created and connected.');
+    selectedId = target && !isHighlightId(target) ? target : null;
+    announce(target ? 'Endpoints connected.' : 'Node created and connected.');
   };
   window.addEventListener('pointermove', move); window.addEventListener('pointerup', finish); window.addEventListener('pointercancel', finish); move(event);
 }
@@ -1569,7 +1572,9 @@ function removeNodes(ids) {
   }
   change((entry) => {
     entry.nodes = entry.nodes.filter((node) => !removed.has(node.id));
-    entry.edges = entry.edges.filter((edge) => !removed.has(edge.fromId) && !removed.has(edge.toId));
+    const removedHighlights = new Set(entry.highlights.filter((highlight) => removed.has(highlight.targetId)).map((highlight) => `h:${highlight.id}`));
+    entry.highlights = entry.highlights.filter((highlight) => !removedHighlights.has(`h:${highlight.id}`));
+    entry.edges = entry.edges.filter((edge) => !removed.has(edge.fromId) && !removed.has(edge.toId) && !removedHighlights.has(edge.fromId) && !removedHighlights.has(edge.toId));
     for (const nodeId of removed) { delete entry.layout.positions[nodeId]; delete entry.layout.sizes[nodeId]; }
   });
   selectedId = roots.length === 1 && !removed.has(roots[0].parentId) ? roots[0].parentId : null;
@@ -1592,7 +1597,7 @@ function renderDetails(node, item) {
     const preview = document.querySelector(`[data-node="${node.id}"] .node-content`);
     if (preview) {
       preview.innerHTML = renderMarkdown(markdown.value);
-      markAnchors(preview, work().nodes.filter((entry) => entry.anchor?.targetId === node.id));
+      markAnchors(preview, work().highlights.filter((entry) => entry.targetId === node.id));
       updateCardOverflow(preview.closest('.topic-card'));
       updateConnectors();
     }
@@ -1794,7 +1799,7 @@ function showMissingPdf(source, scroll) {
 
 function goToPassage(node) {
   selectedId = null; editingMarkdown = false; selectedPassage = null; renderWorkspace();
-  const mark = document.querySelector(`.anchor-mark[data-anchor-node="${node.id}"]`);
+  const mark = document.querySelector(`.anchor-mark[data-highlight="${node.anchor?.id}"]`);
   if (!mark) return announce('The linked passage could not be found.');
   centerOnElement(mark);
   mark.classList.add('arrived'); setTimeout(() => mark.classList.remove('arrived'), 1700);
@@ -1806,8 +1811,14 @@ function reconnect(node) {
   try {
     const targetId = selectedPassage.targetId;
     if (targetId === node.id || isDescendant(work(), targetId, node.id)) return announce('Choose a passage outside this node and its descendants.');
-    const anchor = { ...makeAnchor(targetId, sourcePlainText(work(), targetId), selectedPassage.start, selectedPassage.end), description: null };
-    change((entry) => { const target = entry.nodes.find((n) => n.id === node.id); target.anchor = anchor; target.parentId = null; });
+    const anchor = { ...makeAnchor(targetId, sourcePlainText(work(), targetId), selectedPassage.start, selectedPassage.end), id: node.anchor?.id || crypto.randomUUID() };
+    change((entry) => {
+      const target = entry.nodes.find((n) => n.id === node.id);
+      target.anchor = anchor; target.parentId = null;
+      const index = entry.highlights.findIndex((highlight) => highlight.id === anchor.id);
+      if (index >= 0) entry.highlights[index] = { ...anchor };
+      else entry.highlights.push({ ...anchor });
+    });
     selectedPassage = null; announce('Passage reconnected.');
   } catch (error) { announce(error.message); }
 }
@@ -1924,9 +1935,9 @@ function isDescendant(item, candidateId, ancestorId) {
   return false;
 }
 
-function markAnchors(preview, nodes) {
+function markAnchors(preview, highlights) {
   const allText = textOf(preview);
-  const links = nodes.map((node) => ({ node, range: resolveAnchor(node.anchor, allText) })).filter((entry) => entry.range);
+  const links = highlights.map((highlight) => ({ highlight, range: resolveAnchor(highlight, allText) })).filter((entry) => entry.range);
   if (!links.length) return;
   const walker = document.createTreeWalker(preview, NodeFilter.SHOW_TEXT);
   const textNodes = []; while (walker.nextNode()) textNodes.push(walker.currentNode);
@@ -1943,21 +1954,29 @@ function markAnchors(preview, nodes) {
       const match = links.find((link) => link.range.start <= a && link.range.end >= b);
       if (!match) fragment.append(document.createTextNode(text));
       else {
-        const mark = el('span', { class: 'anchor-mark', tabindex: '0', role: 'button', 'data-anchor-node': match.node.id, title: 'Open connected node', text });
+        const item = work();
+        const link = item.edges.find((edge) => edge.fromId === `h:${match.highlight.id}` || edge.toId === `h:${match.highlight.id}`);
+        const linkedNode = item.nodes.find((node) => node.anchor?.id === match.highlight.id);
+        const mark = el('span', { class: 'anchor-mark', tabindex: '0', role: 'button', 'data-highlight': match.highlight.id, ...(linkedNode ? { 'data-anchor-node': linkedNode.id } : {}), title: 'Drag to connect; click to edit connections', text });
         mark.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--accent-soft').trim();
         mark.style.borderBottomColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
         const open = (event) => {
           if (event.type === 'click' && !window.getSelection()?.isCollapsed) return;
-          event.stopPropagation(); selectedId = match.node.id; selectedPassage = null;
-          renderWorkspace(); focusSourceAndNode(selectedId);
+          event.stopPropagation(); selectedPassage = null;
+          if (link) selectConnection('edge', link.id);
+          else openLinkMenu(`h:${match.highlight.id}`, mark);
         };
         mark.addEventListener('click', open);
         mark.addEventListener('pointerdown', (event) => {
           if (event.button !== 0) return;
           event.preventDefault(); event.stopPropagation();
-          startEdgeDrag(event, match.node, mark, true);
+          startEdgeDrag(event, `h:${match.highlight.id}`, mark, true);
         });
-        mark.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); open(event); } });
+        mark.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') { event.preventDefault(); open(event); }
+          if (event.key === ' ') { event.preventDefault(); openLinkMenu(`h:${match.highlight.id}`, mark); }
+        });
+        mark.addEventListener('contextmenu', (event) => { event.preventDefault(); event.stopPropagation(); openLinkMenu(`h:${match.highlight.id}`, mark); });
         fragment.append(mark);
       }
     }
@@ -1997,7 +2016,7 @@ function centerOnElement(element) {
 function renderPassageToolbar() {
   document.querySelector('.passage-toolbar')?.remove();
   if (!selectedPassage) return;
-  const toolbar = el('div', { class: 'passage-toolbar' }, button('＋ Node', createAnchoredNode, 'passage-create', { 'aria-label': 'Create connected node' }), button('Ask AI', () => openAiPanel({ kind: 'ask', targetId: selectedPassage.targetId, quote: sourcePlainText(work(), selectedPassage.targetId).slice(selectedPassage.start, selectedPassage.end) }), 'passage-create'), button('×', () => { selectedPassage = null; toolbar.remove(); }, 'passage-close', { 'aria-label': 'Dismiss selection action' }));
+  const toolbar = el('div', { class: 'passage-toolbar' }, button('＋ Node', createAnchoredNode, 'passage-create', { 'aria-label': 'Create connected node' }), button('Highlight', createHighlight, 'passage-create', { 'aria-label': 'Save highlight for connections' }), button('Ask AI', () => openAiPanel({ kind: 'ask', targetId: selectedPassage.targetId, quote: sourcePlainText(work(), selectedPassage.targetId).slice(selectedPassage.start, selectedPassage.end) }), 'passage-create'), button('×', () => { selectedPassage = null; toolbar.remove(); }, 'passage-close', { 'aria-label': 'Dismiss selection action' }));
   toolbar.style.left = `${clamp(selectedPassage.x + 12, 12, window.innerWidth - 135)}px`;
   toolbar.style.top = `${clamp(selectedPassage.y - 48, 72, window.innerHeight - 58)}px`;
   document.querySelector('.workspace-shell')?.append(toolbar);
@@ -2007,10 +2026,24 @@ function createAnchoredNode() {
   const selection = selectedPassage; if (!selection) return;
   try {
     const item = work();
-    const anchor = { ...makeAnchor(selection.targetId, sourcePlainText(item, selection.targetId), selection.start, selection.end), description: null };
+    const existing = item.highlights.find((highlight) => highlight.targetId === selection.targetId && highlight.start === selection.start && highlight.end === selection.end);
+    const anchor = { ...(existing || makeAnchor(selection.targetId, sourcePlainText(item, selection.targetId), selection.start, selection.end)) };
     addNode(null, anchor, positionForPassage(item, selection.targetId));
   }
   catch (error) { announce(error.message); }
+}
+
+function createHighlight() {
+  const selection = selectedPassage; if (!selection) return;
+  try {
+    const item = work();
+    const existing = item.highlights.find((highlight) => highlight.targetId === selection.targetId && highlight.start === selection.start && highlight.end === selection.end);
+    if (existing) { selectedPassage = null; renderWorkspace(); return announce('This passage is already highlighted. Drag its highlight to connect it.'); }
+    const anchor = makeAnchor(selection.targetId, sourcePlainText(item, selection.targetId), selection.start, selection.end);
+    selectedPassage = null;
+    change((entry) => { (entry.highlights ||= []).push(anchor); });
+    announce('Highlight saved. Drag it to a node or another highlight to connect.');
+  } catch (error) { announce(error.message); }
 }
 
 function renderSettings() {

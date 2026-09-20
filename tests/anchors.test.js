@@ -126,16 +126,34 @@ test('source records and exact page references persist apart from article text',
   assert.equal(JSON.stringify(reopened).includes('%PDF'), false);
 });
 
-test('old saved workspaces gain empty source collections without losing nodes', () => {
+test('highlight endpoints and their relationship settings survive reopening', () => {
+  const memory = new Map();
+  const storage = { getItem: (key) => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value) };
+  const workspace = createWorkspace('Connections', '# Connections\n\nAlpha and beta.');
+  const text = 'Connections Alpha and beta.';
+  const first = makeAnchor('article', text, 12, 17);
+  const second = makeAnchor('article', text, 22, 26);
+  workspace.highlights.push(first, second);
+  workspace.edges.push({ id: 'edge-1', fromId: `h:${first.id}`, toId: `h:${second.id}`, label: 'compares', direction: 'reverse' });
+  const state = emptyState(); state.workspaces.push(workspace);
+  saveState(state, storage);
+  const reopened = loadState(storage).workspaces[0];
+  assert.deepEqual(reopened.highlights, [first, second]);
+  assert.deepEqual(reopened.edges, workspace.edges);
+});
+
+test('old saved workspaces gain empty source and highlight collections without losing nodes', () => {
   const memory = new Map();
   const storage = { getItem: (key) => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value) };
   const workspace = createWorkspace('Old');
   delete workspace.sources;
+  delete workspace.highlights;
   workspace.nodes.push({ id: 'n', title: 'Existing node' });
   const state = emptyState(); state.workspaces.push(workspace);
   saveState(state, storage);
   const reopened = loadState(storage).workspaces[0];
   assert.deepEqual(reopened.sources, []);
+  assert.deepEqual(reopened.highlights, []);
   assert.deepEqual(reopened.nodes[0].sourceRefs, []);
 });
 
