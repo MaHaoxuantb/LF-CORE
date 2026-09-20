@@ -247,8 +247,12 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .topic-card.edge-target { border-color: #746dcb; box-shadow: 0 0 0 3px #aca3e6; }
 .link-grip { position: absolute; z-index: 5; right: -13px; top: 50%; transform: translateY(-50%); width: 25px; height: 25px; display: grid; place-items: center; border: 1px solid #c9c5e9; border-radius: 50%; background: #fff; color: #7069ba; font-size: .9rem; line-height: 1; box-shadow: 0 2px 7px #26364f20; opacity: 0; cursor: crosshair; touch-action: none; }
 .topic-card:hover .link-grip, .topic-card.selected .link-grip, .link-grip:focus-visible { opacity: 1; }
-.edge-label-chip { position: absolute; z-index: 5; display: inline-flex; align-items: center; transform: translate(-50%, -50%); padding: 1px 3px; border: 1px solid #e1e4eb; border-radius: 7px; background: #fffffff2; box-shadow: 0 2px 8px #28324b0d; white-space: nowrap; }
+.edge-label-chip { position: absolute; z-index: 5; display: inline-flex; align-items: center; transform: translate(-50%, -50%); padding: 1px 3px; border: 1px solid transparent; border-radius: 7px; background: transparent; white-space: nowrap; }
 .edge-label-chip button { border: 0; background: transparent; color: #6d7585; }
+.edge-label-chip:not(.active) { opacity: .32; pointer-events: none; }
+.edge-label-chip.active { border-color: var(--accent); background: #fffffff2; box-shadow: 0 2px 8px #28324b20; opacity: 1; pointer-events: auto; }
+.edge-type-button { padding: 3px 4px; font-size: .82rem; line-height: 1; font-weight: 700; color: var(--accent) !important; }
+.edge-type-button:hover, .edge-type-button:focus-visible { background: var(--accent-soft); border-radius: 4px; }
 .edge-label-name { padding: 3px 5px; font-size: .7rem; font-weight: 650; }
 .edge-label-name:hover { color: #514db4; }
 .edge-label-remove { padding: 0 3px; font-size: .9rem; opacity: 0; }
@@ -397,7 +401,7 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .connectors .connector-hit:hover, .connectors .connector-hit:focus-visible { stroke: color-mix(in srgb, var(--accent) 20%, transparent); outline: none; }
 .connectors .edge-preview { pointer-events: none; }
 .connectors { --solid-connector-color: var(--accent); }
-.connectors path.cross-line { stroke: var(--solid-connector-color); stroke-opacity: .78; }
+.connectors path.cross-line { stroke: var(--solid-connector-color); stroke-opacity: .78; stroke-dasharray: 7 6; }
 :root[data-dark='true'] .connectors { --solid-connector-color: color-mix(in srgb, var(--accent) 70%, white); }
 :root[data-dark='true'] .connectors path.cross-line { stroke: var(--solid-connector-color); stroke-opacity: .78; }
 .connection-handle { position: absolute; z-index: 7; width: 22px; height: 22px; padding: 0; border: 2px solid #fff; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 3px 9px #0005; transform: translate(-50%, -50%); cursor: grab; touch-action: none; }

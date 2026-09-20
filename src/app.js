@@ -258,6 +258,16 @@ function suggestedPosition(item, parentId, index = item.nodes.length) {
   return { x: side > 0 ? 760 : -380, y: 22 + sideCount * 154 };
 }
 
+function positionAtCanvasPoint(clientX, clientY) {
+  const scene = document.querySelector('.scene');
+  if (!scene || !view.zoom) return null;
+  const rect = scene.getBoundingClientRect();
+  return {
+    x: (clientX - rect.left) / view.zoom - NODE.width / 2,
+    y: (clientY - rect.top) / view.zoom - NODE.height / 2
+  };
+}
+
 function sourceTitle(name) { return name.replace(/\.pdf$/i, '').trim() || 'Untitled source'; }
 
 function pastedSource(title, text) {
@@ -447,8 +457,26 @@ function zoomTo(next, clientX, clientY) {
   applyView(); saveView();
 }
 
+function ensureUnifiedNodeEdges(item) {
+  let changed = false;
+  for (const node of item.nodes) {
+    const targetId = node.anchor?.targetId || node.parentId;
+    if (!targetId || !item.nodes.some((candidate) => candidate.id === targetId)) continue;
+    const existing = item.edges.find((edge) => edge.fromId === targetId && edge.toId === node.id);
+    const exists = item.edges.some((edge) => edge.structural && edge.toId === node.id);
+    if (existing) {
+      if (!existing.structural) { existing.structural = true; changed = true; }
+    } else if (!exists) {
+      item.edges.push({ id: crypto.randomUUID(), fromId: targetId, toId: node.id, label: 'related', direction: 'forward', structural: true });
+      changed = true;
+    }
+  }
+  if (changed) persist();
+}
+
 function renderWorkspace() {
   const item = work(); if (!item) return renderHome();
+  ensureUnifiedNodeEdges(item);
   if (selectedId) selectedIds.clear();
   else selectedIds = new Set([...selectedIds].filter((id) => item.nodes.some((node) => node.id === id && isVisible(item, node))));
   ensurePositions(item);
@@ -655,6 +683,7 @@ function openContextMenu(target, x, y) {
   const onPaper = !!target.closest('.paper');
   const group = selectedIds.size > 1 && !onPaper && (!node || selectedIds.has(node.id));
   const passage = selectedPassage;
+  const floatingPosition = positionAtCanvasPoint(x, y);
   if (!group && !node && (selectedId || selectedIds.size)) { selectedId = null; selectedIds.clear(); renderWorkspace(); }
   const menu = el('div', { class: 'context-menu', role: 'menu', 'aria-label': group ? 'Selection options' : node ? `${node.title} options` : onPaper ? 'Document options' : 'Canvas options' });
   const option = (label, action, destructive = false) => menu.append(button(label, () => { closeContextMenu(); action(); }, `context-option ${destructive ? 'destructive' : ''}`, { role: 'menuitem' }));
@@ -677,10 +706,10 @@ function openContextMenu(target, x, y) {
     option('Generate article draft', () => openAiPanel({ kind: 'generate' }));
     if (passage?.targetId === 'article') option('Create node from highlight', () => { selectedPassage = passage; createAnchoredNode(); });
     option(editingMarkdown ? 'Done editing' : 'Edit document', () => { editingMarkdown = !editingMarkdown; selectedPassage = null; renderWorkspace(); if (editingMarkdown) document.querySelector('.markdown-editor')?.focus(); });
-    option('Add node', () => addNode());
+    option('Add node', () => addNode(null, null, floatingPosition));
     option('Fit canvas', fitCanvas);
   } else {
-    option('Add node', () => addNode());
+    option('Add node', () => addNode(null, null, floatingPosition));
     option('Fit canvas', fitCanvas);
     option('Zoom in', () => zoomTo(view.zoom + .15, x, y));
     option('Zoom out', () => zoomTo(view.zoom - .15, x, y));
@@ -790,6 +819,7 @@ function updateCrossRoute(path, from, to, fromSide = 'auto', toSide = 'auto') {
   path._hit?.setAttribute('d', route.d);
 }
 
+
 function makeConnector(svg, id, from, to, fromY, side, className, attrs, onClick, solid = false) {
   const path = el('path', { ...attrs, class: className });
   if (!solid) {
@@ -862,7 +892,7 @@ function renderConnectionHandles(scene, item) {
       const route = crossConnectionRoute(pointFor(item, edge.fromId), pointFor(item, edge.toId), edge.fromSide, edge.toSide);
       side = route[end === 'from' ? 'fromSide' : 'toSide'];
     }
-    const handle = button('', () => {}, 'connection-handle', { 'aria-label': `Drag ${end === 'from' ? 'first' : 'second'} endpoint to a side of its node; arrow keys adjust, Home resets`, title: 'Drag to another side of this node' });
+    const handle = button('', () => {}, 'connection-handle', { 'aria-label': `Drag ${end === 'from' ? 'first' : 'second'} endpoint to another node or side; arrow keys adjust, Home resets`, title: 'Drag to another node or side of this node' });
     handle.dataset.end = end;
     const position = connectionPort(target.rect, side, 8);
     handle.style.left = `${position.x}px`; handle.style.top = `${position.y}px`;
@@ -873,14 +903,21 @@ function renderConnectionHandles(scene, item) {
       handle.classList.add('dragging');
       let nextSide = side;
       let moved = false;
+      let replacementId = null;
       const move = (next) => {
         if (!moved && Math.hypot(next.clientX - event.clientX, next.clientY - event.clientY) < 5) return;
         moved = true;
         const sceneRect = scene.getBoundingClientRect();
         const x = (next.clientX - sceneRect.left) / view.zoom;
         const y = (next.clientY - sceneRect.top) / view.zoom;
-        nextSide = nearestConnectionSide(target.rect, x, y);
-        const port = connectionPort(target.rect, nextSide, 8);
+        const hovered = next.clientX === undefined ? null : document.elementFromPoint(next.clientX, next.clientY)?.closest('.topic-card');
+        const edge = kind === 'edge' ? item.edges.find((entry) => entry.id === id) : null;
+        const candidateId = hovered?.dataset.node;
+        const otherId = edge && end === 'from' ? edge.toId : edge?.fromId;
+        replacementId = candidateId && candidateId !== otherId && candidateId !== id ? candidateId : null;
+        const nextRect = replacementId ? pointFor(item, replacementId) : target.rect;
+        nextSide = nearestConnectionSide(nextRect, x, y);
+        const port = connectionPort(nextRect, nextSide, 8);
         handle.style.left = `${port.x}px`; handle.style.top = `${port.y}px`;
         previewConnection(item, kind, id, end, nextSide);
       };
@@ -890,10 +927,15 @@ function renderConnectionHandles(scene, item) {
         handle.removeEventListener('pointercancel', finish);
         handle.classList.remove('dragging');
         if (next.type === 'pointercancel') { renderWorkspace(); return; }
-        if (!moved || nextSide === side) { renderWorkspace(); return; }
+        if (!moved || (!replacementId && nextSide === side)) { renderWorkspace(); return; }
         change((entry) => {
           if (kind === 'node') entry.nodes.find((node) => node.id === id).connectionSide = nextSide;
-          else entry.edges.find((edge) => edge.id === id)[end === 'from' ? 'fromSide' : 'toSide'] = nextSide;
+          else {
+            const edge = entry.edges.find((entry) => entry.id === id);
+            if (replacementId) edge[end === 'from' ? 'fromId' : 'toId'] = replacementId;
+            edge[end === 'from' ? 'fromSide' : 'toSide'] = nextSide;
+            if (edge.structural && end === 'from') entry.nodes.find((node) => node.id === edge.toId).parentId = replacementId;
+          }
         });
       };
       handle.addEventListener('pointermove', move);
@@ -925,10 +967,22 @@ function placeEdgeLabel(label, item, edge, fromSide = edge.fromSide, toSide = ed
   label.style.top = `${middle.y}px`;
 }
 
+function edgeDirection(edge) { return ['forward', 'reverse', 'both'].includes(edge.direction) ? edge.direction : 'both'; }
+
+function edgeMarkerAttrs(edge) {
+  const direction = edgeDirection(edge);
+  return {
+    ...(direction === 'forward' || direction === 'both' ? { 'marker-end': 'url(#arrow-forward)' } : {}),
+    ...(direction === 'reverse' || direction === 'both' ? { 'marker-start': 'url(#arrow-reverse)' } : {}),
+  };
+}
+
 function renderEdgeLabel(item, edge) {
-  const chip = el('div', { class: 'edge-label-chip', 'data-edge-label': edge.id });
+  const selected = activeConnection?.kind === 'edge' && activeConnection.id === edge.id;
+  const chip = el('div', { class: `edge-label-chip ${selected ? 'active' : ''}`, 'data-edge-label': edge.id });
   placeEdgeLabel(chip, item, edge);
   const name = button(edge.label || 'related', () => {
+    if (!selected) { selectConnection('edge', edge.id); return; }
     const input = el('input', { class: 'edge-label-input', value: edge.label || '', 'aria-label': 'Relationship label' });
     let finished = false;
     const finish = (save) => {
@@ -945,8 +999,22 @@ function renderEdgeLabel(item, edge) {
     input.addEventListener('blur', () => finish(true));
     name.replaceWith(input); input.focus(); input.select();
   }, 'edge-label-name', { title: 'Edit relationship' });
-  const remove = button('×', () => change((entry) => { entry.edges = entry.edges.filter((link) => link.id !== edge.id); }), 'edge-label-remove', { 'aria-label': 'Remove relationship' });
-  chip.append(name, remove);
+  if (selected) {
+    const directions = { forward: '→', both: '↔', reverse: '←' };
+    const type = button(directions[edgeDirection(edge)], () => {
+      const next = { forward: 'both', both: 'reverse', reverse: 'forward' }[edgeDirection(edge)];
+      change((entry) => { entry.edges.find((link) => link.id === edge.id).direction = next; });
+    }, 'edge-type-button', { 'aria-label': `Connection type: ${edgeDirection(edge)}. Click to change`, title: 'Change connection type' });
+    const remove = button('×', () => change((entry) => {
+      const removed = entry.edges.find((link) => link.id === edge.id);
+      if (removed?.structural) {
+        const child = entry.nodes.find((node) => node.id === removed.toId);
+        if (child) { child.parentId = null; if (child.anchor?.targetId === removed.fromId) child.anchor = null; }
+      }
+      entry.edges = entry.edges.filter((link) => link.id !== edge.id);
+    }), 'edge-label-remove', { 'aria-label': 'Remove relationship' });
+    chip.append(type, name, remove);
+  } else chip.append(name);
   return chip;
 }
 
@@ -954,13 +1022,13 @@ function renderConnectors(item) {
   const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#514fc1';
   const svg = el('svg', { class: 'connectors', viewBox: '-4000 -4000 8000 8000', role: 'group', 'aria-label': 'Node connections' });
   const defs = el('defs');
-  for (const [id, color] of [['arrow-primary', accent], ['arrow-cross', accent]]) {
-    defs.append(el('marker', { id, markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient: id === 'arrow-cross' ? 'auto-start-reverse' : 'auto', markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: color, style: `stroke: ${id === 'arrow-cross' ? 'var(--solid-connector-color)' : color}`, 'stroke-width': '1.6', 'stroke-opacity': id === 'arrow-cross' ? '.78' : '.72', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
+  for (const [id, color, orient] of [['arrow-primary', accent, 'auto'], ['arrow-forward', accent, 'auto'], ['arrow-reverse', accent, 'auto-start-reverse']]) {
+    defs.append(el('marker', { id, markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient, markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: color, style: `stroke: ${color}`, 'stroke-width': '1.6', 'stroke-opacity': '.78', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
   }
   svg.append(defs);
   for (const node of item.nodes) {
     if (!isVisible(item, node) || node.anchor) continue;
-    if (!node.parentId) continue;
+    if (!node.parentId || item.edges.some((edge) => edge.structural && edge.toId === node.id)) continue;
     const source = sourceFor(item, node);
     const path = makeConnector(svg, node.id, source?.point || rootBounds, pointFor(item, node.id), source?.fromY, node.connectionSide, 'branch-line', { 'data-to': node.id, 'marker-end': 'url(#arrow-primary)' }, () => selectConnection('node', node.id));
     if (!source) { path.style.display = 'none'; path._hit.style.display = 'none'; }
@@ -973,7 +1041,7 @@ function renderConnectors(item) {
   for (const edge of item.edges) {
     const from = item.nodes.find((node) => node.id === edge.fromId), to = item.nodes.find((node) => node.id === edge.toId);
     if (!from || !to || !isVisible(item, from) || !isVisible(item, to)) continue;
-    const path = makeConnector(svg, edge.id, pointFor(item, from.id), pointFor(item, to.id), null, edge.toSide, 'cross-line', { 'data-edge': edge.id, 'marker-start': 'url(#arrow-cross)', 'marker-end': 'url(#arrow-cross)' }, () => selectConnection('edge', edge.id), true);
+    const path = makeConnector(svg, edge.id, pointFor(item, from.id), pointFor(item, to.id), null, edge.toSide, 'cross-line', { 'data-edge': edge.id, ...edgeMarkerAttrs(edge) }, () => selectConnection('edge', edge.id), true);
     updateCrossRoute(path, pointFor(item, from.id), pointFor(item, to.id), edge.fromSide, edge.toSide);
   }
   return svg;
@@ -1079,7 +1147,7 @@ function renderNode(node, item) {
   const count = item.nodes.filter((entry) => entry.parentId === node.id).length;
   const footer = count ? el('div', { class: 'topic-footer' }, button(node.collapsed ? `＋ ${count}` : `− ${count}`, (event) => { event.stopPropagation(); change((entry) => { entry.nodes.find((n) => n.id === node.id).collapsed = !node.collapsed; }); }, 'collapse-button', { 'aria-label': node.collapsed ? 'Expand children' : 'Collapse children' })) : null;
   const resize = button('', () => {}, 'resize-grip node-resize', { 'aria-label': `Resize ${node.title}`, title: 'Drag to resize; arrow keys also work' });
-  const link = button('↔', () => {}, 'link-grip', { 'aria-label': `Connect ${node.title} to another node`, title: 'Drag to another node to connect' });
+  const link = button('↔', () => {}, 'link-grip', { 'aria-label': `Connect ${node.title} to another node or create one`, title: 'Drag to a node to connect, or empty space to create a node' });
   link.addEventListener('pointerdown', (event) => startEdgeDrag(event, node, link));
   link.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -1121,18 +1189,21 @@ function openLinkMenu(node, grip) {
   menu.querySelector('button')?.focus();
 }
 
-function startEdgeDrag(event, node, grip) {
+function startEdgeDrag(event, node, grip, preserveClick = false) {
   if (event.button !== 0) return;
-  event.preventDefault(); event.stopPropagation();
+  if (!preserveClick) event.preventDefault();
+  event.stopPropagation();
   closeContextMenu();
   const scene = document.querySelector('.scene');
-  const preview = el('path', { class: 'edge-preview', 'marker-start': 'url(#arrow-cross)', 'marker-end': 'url(#arrow-cross)' });
+  const preview = el('path', { class: 'edge-preview', 'marker-end': 'url(#arrow-forward)' });
   document.querySelector('.connectors').append(preview);
-  grip.setPointerCapture(event.pointerId);
-  let target = null;
+  grip.setPointerCapture?.(event.pointerId);
+  let target = null, destination = null, moved = false;
   const move = (next) => {
+    if (!moved && Math.hypot(next.clientX - event.clientX, next.clientY - event.clientY) < 5) return;
+    moved = true;
     const rect = scene.getBoundingClientRect();
-    const destination = { x: (next.clientX - rect.left) / view.zoom, y: (next.clientY - rect.top) / view.zoom, width: 0, height: 0 };
+    destination = { x: (next.clientX - rect.left) / view.zoom, y: (next.clientY - rect.top) / view.zoom, width: 0, height: 0 };
     preview.setAttribute('d', curve(pointFor(work(), node.id), destination));
     const hovered = document.elementFromPoint(next.clientX, next.clientY)?.closest('.topic-card');
     const nextId = hovered?.dataset.node === node.id ? null : hovered?.dataset.node || null;
@@ -1143,22 +1214,27 @@ function startEdgeDrag(event, node, grip) {
     }
   };
   const finish = (next) => {
-    window.removeEventListener('pointermove', move);
-    window.removeEventListener('pointerup', finish);
-    window.removeEventListener('pointercancel', finish);
-    document.querySelector(`[data-node="${target}"]`)?.classList.remove('edge-target');
-    preview.remove();
-    if (grip.hasPointerCapture(event.pointerId)) grip.releasePointerCapture(event.pointerId);
-    if (next.type !== 'pointerup' || !target) return;
-    const exists = work().edges.some((edge) => (edge.fromId === node.id && edge.toId === target) || (edge.fromId === target && edge.toId === node.id));
-    if (exists) return announce('These nodes are already connected.');
-    change((item) => { item.edges.push({ id: crypto.randomUUID(), fromId: node.id, toId: target, label: 'related' }); });
-    announce('Nodes connected. Select the label on the line to rename it.');
+    window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', finish); window.removeEventListener('pointercancel', finish);
+    document.querySelector(`[data-node="${target}"]`)?.classList.remove('edge-target'); preview.remove();
+    if (grip.hasPointerCapture?.(event.pointerId)) grip.releasePointerCapture(event.pointerId);
+    if (next.type !== 'pointerup' || !destination || !moved) return;
+    const item = work();
+    if (target && item.edges.some((edge) => (edge.fromId === node.id && edge.toId === target) || (edge.fromId === target && edge.toId === node.id))) return announce('These nodes are already connected.');
+    change((entry) => {
+      let newId = target;
+      if (!newId) {
+        newId = crypto.randomUUID();
+        const anchor = node.anchor ? { ...node.anchor, id: crypto.randomUUID() } : null;
+        entry.nodes.push({ id: newId, parentId: null, title: anchor ? shortTitle(anchor.quote) : 'Untitled', document: { type: 'markdown', markdown: '' }, anchor, collapsed: false, provenance: 'learner' });
+        entry.layout.positions[newId] = { x: destination.x - NODE.width / 2, y: destination.y - NODE.height / 2 };
+      }
+      const incoming = entry.edges.some((edge) => edge.toId === newId) || entry.nodes.some((candidate) => candidate.id === newId && candidate.parentId);
+      entry.edges.push({ id: crypto.randomUUID(), fromId: node.id, toId: newId, label: 'related', direction: incoming ? 'both' : 'forward' });
+    });
+    selectedId = target ? target : null;
+    announce(target ? 'Nodes connected.' : 'Node created and connected.');
   };
-  window.addEventListener('pointermove', move);
-  window.addEventListener('pointerup', finish);
-  window.addEventListener('pointercancel', finish);
-  move(event);
+  window.addEventListener('pointermove', move); window.addEventListener('pointerup', finish); window.addEventListener('pointercancel', finish); move(event);
 }
 
 function applyNodeSizeClass(card, width, height) {
@@ -1781,6 +1857,11 @@ function markAnchors(preview, nodes) {
           renderWorkspace(); focusSourceAndNode(selectedId);
         };
         mark.addEventListener('click', open);
+        mark.addEventListener('pointerdown', (event) => {
+          if (event.button !== 0) return;
+          event.preventDefault(); event.stopPropagation();
+          startEdgeDrag(event, match.node, mark, true);
+        });
         mark.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); open(event); } });
         fragment.append(mark);
       }
