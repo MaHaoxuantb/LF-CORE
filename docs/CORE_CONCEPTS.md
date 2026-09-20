@@ -18,7 +18,7 @@ The product cycle is **explore → understand → consolidate → revisit**. A s
 | Object | Purpose | Key behavior |
 | --- | --- | --- |
 | Workspace | One learning subject | Opens to the master article and remembers reading position |
-| Master article | Coherent current understanding | One Markdown document with LaTeX formulas and a heading outline; AI changes are previewed before application |
+| Master article | Coherent current understanding | One Markdown document with LaTeX formulas and a heading outline; AI changes are previewed before application; PDF is not an article format |
 | Graph node | One idea, explanation, or research lead | Can anchor to an article passage, a source passage, or another node; questions are handled by the later chat interface |
 | Link | Relationship between two items | May have a short label such as “supports,” “contradicts,” or “extends” |
 | Source | Imported PDF or pasted material | Original content stays separate from generated content |
@@ -43,7 +43,7 @@ The graph is the workspace surface. The article remains fully visible on it, so 
 3. **Selection provides context, language provides intent.** A request may apply to a passage, heading, node, link, source excerpt, or multiple selected items. Common prompts are discoverable shortcuts.
 4. **Provenance survives editing.** Original source, learner writing, and AI-generated text have distinct records. An accepted AI edit retains its origin even when the visible article reads naturally.
 5. **No invented citations.** A generated article can contain unsourced sections; they must remain identifiable. A citation is attached only when the referenced source and location exist.
-6. **Every connection is navigable.** From a graph node, the learner can return to its article or source anchor; from an anchored passage, they can find its nodes.
+6. **Every connection is navigable and directly editable.** From a graph node, the learner can return to its article or source anchor; from an anchored passage, they can find its nodes. Clicking a connection exposes on-canvas handles; moving either end changes where it meets its node. Bidirectional links must work symmetrically at both ends, without a side-selection menu.
 7. **Local work remains usable.** Reading and editing saved workspaces works without network access. AI actions can report that a configured model is unavailable.
 8. **Revisiting is a first-class task.** On return, show the current article and a short list of open questions or recent changes, not a conversation transcript.
 
@@ -77,7 +77,7 @@ For article edits, present the target passage or heading, proposed text, and dif
 
 ## Files, folders, and portability
 
-Do not require learners to manage a file tree. The initial library shows workspaces and sources. Internally, use separate records and imported source files so a large PDF does not sit inside one ever-growing document. Provide a single portable workspace export later if it proves useful. The export format is independent of the internal storage model.
+Do not require learners to manage a file tree. The initial library shows workspaces and sources. Internally, use separate records and imported source files so a large PDF does not sit inside one ever-growing document. The master article's editable and portable format is Markdown (`.md`); do not offer PDF as a master article format or export. A separate portable workspace export may be added later if it proves useful. Its format is independent of the article format and internal storage model.
 
 ## Success signals
 

@@ -73,7 +73,7 @@ Resolve through the Phase 0 spike, not by assumption:
 - **Article generation depth:** how long an initial article should be before it becomes repetitive or hard to verify. Test with learners.
 - **Source support:** whether textbook PDFs need chapter navigation, OCR, or just standard text-based PDF handling in the first release.
 - **Graph layout:** automatic layout for new branches versus manual placement; preserve user positions either way.
-- **Export:** decide format after storage is stable and users demonstrate a backup or sharing need.
+- **Workspace export:** decide the format after storage is stable and users demonstrate a backup or sharing need. The master article itself is Markdown (`.md`), never PDF.
 
 ## Verification and release discipline
 

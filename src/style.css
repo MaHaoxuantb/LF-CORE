@@ -330,6 +330,9 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 :root[data-dark='true'] .appearance-option:hover,
 :root[data-dark='true'] .context-option:hover,
 :root[data-dark='true'] .save-menu-option:hover { background: #33313e; color: #f2efff; }
+/* The temporary heading marker must remain readable on the dark canvas. */
+:root[data-dark='true'] .markdown-preview .arrived,
+:root[data-dark='true'] .anchor-mark.arrived { background: var(--accent-soft); box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent-soft) 80%, transparent); }
 :root[data-dark='true'] .source-quote { background: color-mix(in srgb, var(--accent) 16%, #222); border-left-color: var(--accent); }
 :root[data-dark='true'] .source-quote.unresolved { background: #342a23; border-left-color: #dfa75e; }
 :root[data-dark='true'] .source-quote p { color: #d5d2df; }
@@ -393,8 +396,13 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .connectors .connector-hit { fill: none; stroke: transparent; stroke-width: 12; pointer-events: stroke; cursor: pointer; }
 .connectors .connector-hit:hover, .connectors .connector-hit:focus-visible { stroke: color-mix(in srgb, var(--accent) 20%, transparent); outline: none; }
 .connectors .edge-preview { pointer-events: none; }
-.arrow-menu-heading { padding: 8px 10px 5px; color: #7b8392; font-size: .67rem; font-weight: 750; letter-spacing: .04em; }
-:root[data-dark='true'] .arrow-menu-heading { color: #aeb0bb; }
+.connectors { --solid-connector-color: var(--accent); }
+.connectors path.cross-line { stroke: var(--solid-connector-color); stroke-opacity: .78; }
+:root[data-dark='true'] .connectors { --solid-connector-color: color-mix(in srgb, var(--accent) 70%, white); }
+:root[data-dark='true'] .connectors path.cross-line { stroke: var(--solid-connector-color); stroke-opacity: .78; }
+.connection-handle { position: absolute; z-index: 7; width: 22px; height: 22px; padding: 0; border: 2px solid #fff; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 3px 9px #0005; transform: translate(-50%, -50%); cursor: grab; touch-action: none; }
+.connection-handle:hover, .connection-handle:focus-visible, .connection-handle.dragging { outline: none; box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 30%, transparent), 0 3px 9px #0005; }
+.connection-handle.dragging { cursor: grabbing; }
 
 /* Phase 2 entry points and local source reader. */
 .entry-form { flex-direction: column; gap: 10px; }

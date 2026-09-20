@@ -3,6 +3,7 @@ import { createWorkspace, emptyState, loadSaveMode, loadState, saveSaveMode, sav
 import { renderMarkdown, headingTokens } from './markdown.js';
 import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
 import { putPdf, getPdf, deletePdf } from './source-store.js';
+import { connectionPort, crossConnectionRoute, nearestConnectionSide } from './cross-connection.js';
 import 'katex/dist/katex.min.css';
 import './style.css';
 
@@ -73,6 +74,7 @@ function setAppearance(nextTheme = theme, nextColor = color) {
 applyAppearance();
 let lastSaved = JSON.stringify(state), dirty = false;
 let currentId = null, selectedId = null, selectedIds = new Set(), editingMarkdown = false, outlineOpen = false;
+let activeConnection = null;
 let openSourceId = null, sourcePage = 1, sourceJump = null;
 const pdfDocuments = new Map();
 const pendingPdfDeletes = new Set();
@@ -519,6 +521,7 @@ function renderCanvas(item) {
     const to = item.nodes.find((node) => node.id === edge.toId);
     if (from && to && isVisible(item, from) && isVisible(item, to)) scene.append(renderEdgeLabel(item, edge));
   }
+  renderConnectionHandles(scene, item);
   viewport.append(scene);
   attachPanAndZoom(viewport);
   const presets = el('div', { class: 'zoom-presets', role: 'menu', 'aria-label': 'Zoom presets' });
@@ -541,7 +544,7 @@ function renderCanvas(item) {
 function attachPanAndZoom(viewport) {
   let suppressCanvasClick = false;
   viewport.addEventListener('pointerdown', (event) => {
-    if (event.button === 0 && !event.target.closest('.paper, .topic-card, .edge-label-chip, .connector-hit')) {
+    if (event.button === 0 && !event.target.closest('.paper, .topic-card, .edge-label-chip, .connector-hit, .connection-handle')) {
       event.preventDefault();
       closeContextMenu();
       const start = { x: event.clientX, y: event.clientY, moved: false };
@@ -576,7 +579,7 @@ function attachPanAndZoom(viewport) {
           setTimeout(() => { suppressCanvasClick = false; }, 0);
           renderWorkspace();
         } else if (next.type === 'pointerup') {
-          selectedId = null; selectedIds.clear(); selectedPassage = null;
+          selectedId = null; selectedIds.clear(); selectedPassage = null; activeConnection = null;
           renderWorkspace();
         } else {
           rectangle.remove();
@@ -766,19 +769,28 @@ function updateRoute(path, from, to, fromY = null, side = 'auto') {
   const route = connectorRoute(from, to, fromY, side);
   path.setAttribute('d', route.d);
   if (path._hit) path._hit.setAttribute('d', route.d);
-  const gradient = path._gradient || document.getElementById(path.dataset.gradient);
+  const gradient = path._gradient || (path.dataset.gradient && document.getElementById(path.dataset.gradient));
   if (gradient) for (const key of ['x1', 'y1', 'x2', 'y2']) gradient.setAttribute(key, route[key]);
 }
 
-function makeConnector(svg, id, from, to, fromY, side, className, attrs, onClick) {
-  const gradientId = `line-${id}`;
-  const gradient = el('linearGradient', { id: gradientId, gradientUnits: 'userSpaceOnUse' }, el('stop', { offset: '0%', class: 'line-start' }), el('stop', { offset: '100%', class: 'line-end' }));
-  svg.querySelector('defs').append(gradient);
-  const path = el('path', { ...attrs, class: className, 'data-gradient': gradientId });
-  path.style.stroke = `url(#${gradientId})`;
-  path._gradient = gradient;
+function updateCrossRoute(path, from, to, fromSide = 'auto', toSide = 'auto') {
+  const route = crossConnectionRoute(from, to, fromSide, toSide);
+  path.setAttribute('d', route.d);
+  path._hit?.setAttribute('d', route.d);
+}
+
+function makeConnector(svg, id, from, to, fromY, side, className, attrs, onClick, solid = false) {
+  const path = el('path', { ...attrs, class: className });
+  if (!solid) {
+    const gradientId = `line-${id}`;
+    const gradient = el('linearGradient', { id: gradientId, gradientUnits: 'userSpaceOnUse' }, el('stop', { offset: '0%', class: 'line-start' }), el('stop', { offset: '100%', class: 'line-end' }));
+    svg.querySelector('defs').append(gradient);
+    path.dataset.gradient = gradientId;
+    path.style.stroke = `url(#${gradientId})`;
+    path._gradient = gradient;
+  }
   updateRoute(path, from, to, fromY, side);
-  const hit = el('path', { d: path.getAttribute('d'), class: 'connector-hit', 'aria-label': 'Arrow options', tabindex: '0', role: 'button' });
+  const hit = el('path', { d: path.getAttribute('d'), class: 'connector-hit', 'aria-label': 'Edit connection endpoints', tabindex: '0', role: 'button' });
   const activate = (event) => { event.stopPropagation(); onClick(event); };
   hit.addEventListener('click', activate);
   hit.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(event); } });
@@ -787,39 +799,117 @@ function makeConnector(svg, id, from, to, fromY, side, className, attrs, onClick
   return path;
 }
 
-function openArrowMenu(event, kind, id) {
+function selectConnection(kind, id) {
   closeContextMenu();
-  const item = work();
-  const target = kind === 'node' ? item.nodes.find((node) => node.id === id) : item.edges.find((edge) => edge.id === id);
-  if (!target) return;
-  const menu = el('div', { class: 'context-menu arrow-menu', role: 'menu', 'aria-label': 'Arrow endpoint position' });
-  menu.append(el('div', { class: 'arrow-menu-heading', text: 'Arrow enters node from' }));
-  const current = kind === 'node' ? target.connectionSide || 'auto' : target.toSide || 'auto';
-  for (const side of ['auto', 'left', 'top', 'right', 'bottom']) {
-    menu.append(button(`${current === side ? '✓ ' : '　'}${side === 'auto' ? 'Automatic' : side[0].toUpperCase() + side.slice(1)}`, () => {
-      closeContextMenu();
-      change((entry) => {
-        const connection = kind === 'node' ? entry.nodes.find((node) => node.id === id) : entry.edges.find((edge) => edge.id === id);
-        if (kind === 'node') connection.connectionSide = side;
-        else connection.toSide = side;
-      });
-    }, 'context-option', { role: 'menuitem' }));
-  }
-  document.querySelector('.workspace-shell')?.append(menu);
-  const rect = event.currentTarget?.getBoundingClientRect();
-  const x = event.clientX || rect?.left || 10, y = event.clientY || rect?.top || 80;
-  menu.style.left = `${clamp(x, 8, window.innerWidth - menu.offsetWidth - 8)}px`;
-  menu.style.top = `${clamp(y, 8, window.innerHeight - menu.offsetHeight - 8)}px`;
-  menu.querySelector('button')?.focus();
+  activeConnection = { kind, id };
+  renderWorkspace();
+  document.querySelector('.connection-handle')?.focus({ preventScroll: true });
 }
 
-function edgeMidpoint(from, to, side = 'auto') {
-  const route = connectorRoute(from, to, null, side);
+function connectionEnd(item, kind, id, end) {
+  if (kind === 'node') {
+    const node = item.nodes.find((entry) => entry.id === id);
+    return node ? { rect: pointFor(item, node.id), side: node.connectionSide || 'auto' } : null;
+  }
+  const edge = item.edges.find((entry) => entry.id === id);
+  if (!edge) return null;
+  return { rect: pointFor(item, end === 'from' ? edge.fromId : edge.toId), side: edge[end === 'from' ? 'fromSide' : 'toSide'] || 'auto' };
+}
+
+function previewConnection(item, kind, id, end, side) {
+  if (kind === 'node') {
+    const node = item.nodes.find((entry) => entry.id === id);
+    const source = node && sourceFor(item, node);
+    const path = document.querySelector(`[data-to="${id}"]`);
+    if (source && path) updateRoute(path, source.point, pointFor(item, id), source.fromY, side);
+  } else {
+    const edge = item.edges.find((entry) => entry.id === id);
+    const path = document.querySelector(`[data-edge="${id}"]`);
+    if (!edge || !path) return;
+    const fromSide = end === 'from' ? side : edge.fromSide || 'auto';
+    const toSide = end === 'to' ? side : edge.toSide || 'auto';
+    updateCrossRoute(path, pointFor(item, edge.fromId), pointFor(item, edge.toId), fromSide, toSide);
+    const label = document.querySelector(`[data-edge-label="${id}"]`);
+    if (label) placeEdgeLabel(label, item, edge, fromSide, toSide);
+  }
+}
+
+function renderConnectionHandles(scene, item) {
+  if (!activeConnection) return;
+  const { kind, id } = activeConnection;
+  const ends = kind === 'edge' ? ['from', 'to'] : ['to'];
+  for (const end of ends) {
+    const target = connectionEnd(item, kind, id, end);
+    if (!target) continue;
+    let side = target.side;
+    if (side === 'auto' && kind === 'node') {
+      const node = item.nodes.find((entry) => entry.id === id);
+      const source = sourceFor(item, node)?.point || rootBounds;
+      side = target.rect.x >= source.x + source.width / 2 ? 'left' : 'right';
+    } else if (side === 'auto') {
+      const edge = item.edges.find((entry) => entry.id === id);
+      const route = crossConnectionRoute(pointFor(item, edge.fromId), pointFor(item, edge.toId), edge.fromSide, edge.toSide);
+      side = route[end === 'from' ? 'fromSide' : 'toSide'];
+    }
+    const handle = button('', () => {}, 'connection-handle', { 'aria-label': `Drag ${end === 'from' ? 'first' : 'second'} endpoint to a side of its node; arrow keys adjust, Home resets`, title: 'Drag to another side of this node' });
+    handle.dataset.end = end;
+    const position = connectionPort(target.rect, side, 8);
+    handle.style.left = `${position.x}px`; handle.style.top = `${position.y}px`;
+    handle.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault(); event.stopPropagation();
+      handle.setPointerCapture(event.pointerId);
+      handle.classList.add('dragging');
+      let nextSide = side;
+      let moved = false;
+      const move = (next) => {
+        if (!moved && Math.hypot(next.clientX - event.clientX, next.clientY - event.clientY) < 5) return;
+        moved = true;
+        const sceneRect = scene.getBoundingClientRect();
+        const x = (next.clientX - sceneRect.left) / view.zoom;
+        const y = (next.clientY - sceneRect.top) / view.zoom;
+        nextSide = nearestConnectionSide(target.rect, x, y);
+        const port = connectionPort(target.rect, nextSide, 8);
+        handle.style.left = `${port.x}px`; handle.style.top = `${port.y}px`;
+        previewConnection(item, kind, id, end, nextSide);
+      };
+      const finish = (next) => {
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', finish);
+        handle.removeEventListener('pointercancel', finish);
+        handle.classList.remove('dragging');
+        if (next.type === 'pointercancel') { renderWorkspace(); return; }
+        if (!moved || nextSide === side) { renderWorkspace(); return; }
+        change((entry) => {
+          if (kind === 'node') entry.nodes.find((node) => node.id === id).connectionSide = nextSide;
+          else entry.edges.find((edge) => edge.id === id)[end === 'from' ? 'fromSide' : 'toSide'] = nextSide;
+        });
+      };
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', finish);
+      handle.addEventListener('pointercancel', finish);
+    });
+    handle.addEventListener('keydown', (event) => {
+      const nextSide = { ArrowLeft: 'left', ArrowUp: 'top', ArrowRight: 'right', ArrowDown: 'bottom', Home: 'auto' }[event.key];
+      if (!nextSide) return;
+      event.preventDefault(); event.stopPropagation();
+      change((entry) => {
+        if (kind === 'node') entry.nodes.find((node) => node.id === id).connectionSide = nextSide;
+        else entry.edges.find((edge) => edge.id === id)[end === 'from' ? 'fromSide' : 'toSide'] = nextSide;
+      });
+      document.querySelector(`.connection-handle[data-end="${end}"]`)?.focus({ preventScroll: true });
+    });
+    scene.append(handle);
+  }
+}
+
+function edgeMidpoint(from, to, fromSide = 'auto', toSide = 'auto') {
+  const route = crossConnectionRoute(from, to, fromSide, toSide);
   return { x: (route.x1 + route.x2) / 2, y: (route.y1 + route.y2) / 2 };
 }
 
-function placeEdgeLabel(label, item, edge) {
-  const middle = edgeMidpoint(pointFor(item, edge.fromId), pointFor(item, edge.toId), edge.toSide);
+function placeEdgeLabel(label, item, edge, fromSide = edge.fromSide, toSide = edge.toSide) {
+  const middle = edgeMidpoint(pointFor(item, edge.fromId), pointFor(item, edge.toId), fromSide, toSide);
   label.style.left = `${middle.x}px`;
   label.style.top = `${middle.y}px`;
 }
@@ -854,14 +944,14 @@ function renderConnectors(item) {
   const svg = el('svg', { class: 'connectors', viewBox: '-4000 -4000 8000 8000', role: 'group', 'aria-label': 'Node connections' });
   const defs = el('defs');
   for (const [id, color] of [['arrow-primary', accent], ['arrow-cross', accent]]) {
-    defs.append(el('marker', { id, markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient: id === 'arrow-cross' ? 'auto-start-reverse' : 'auto', markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: color, style: `stroke: ${color}`, 'stroke-width': '1.6', 'stroke-opacity': '.72', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
+    defs.append(el('marker', { id, markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient: id === 'arrow-cross' ? 'auto-start-reverse' : 'auto', markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: color, style: `stroke: ${id === 'arrow-cross' ? 'var(--solid-connector-color)' : color}`, 'stroke-width': '1.6', 'stroke-opacity': id === 'arrow-cross' ? '.78' : '.72', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
   }
   svg.append(defs);
   for (const node of item.nodes) {
     if (!isVisible(item, node) || node.anchor) continue;
     if (!node.parentId) continue;
     const source = sourceFor(item, node);
-    const path = makeConnector(svg, node.id, source?.point || rootBounds, pointFor(item, node.id), source?.fromY, node.connectionSide, 'branch-line', { 'data-to': node.id, 'marker-end': 'url(#arrow-primary)' }, (event) => openArrowMenu(event, 'node', node.id));
+    const path = makeConnector(svg, node.id, source?.point || rootBounds, pointFor(item, node.id), source?.fromY, node.connectionSide, 'branch-line', { 'data-to': node.id, 'marker-end': 'url(#arrow-primary)' }, () => selectConnection('node', node.id));
     if (!source) { path.style.display = 'none'; path._hit.style.display = 'none'; }
     if (node.anchor) {
       const dot = el('circle', { class: 'origin-dot', 'data-origin': node.id, cx: source?.point.x ?? 0, cy: source?.point.y ?? 0, r: '3' });
@@ -872,7 +962,8 @@ function renderConnectors(item) {
   for (const edge of item.edges) {
     const from = item.nodes.find((node) => node.id === edge.fromId), to = item.nodes.find((node) => node.id === edge.toId);
     if (!from || !to || !isVisible(item, from) || !isVisible(item, to)) continue;
-    makeConnector(svg, edge.id, pointFor(item, from.id), pointFor(item, to.id), null, edge.toSide, 'cross-line', { 'data-edge': edge.id, 'marker-start': 'url(#arrow-cross)', 'marker-end': 'url(#arrow-cross)' }, (event) => openArrowMenu(event, 'edge', edge.id));
+    const path = makeConnector(svg, edge.id, pointFor(item, from.id), pointFor(item, to.id), null, edge.toSide, 'cross-line', { 'data-edge': edge.id, 'marker-start': 'url(#arrow-cross)', 'marker-end': 'url(#arrow-cross)' }, () => selectConnection('edge', edge.id), true);
+    updateCrossRoute(path, pointFor(item, from.id), pointFor(item, to.id), edge.fromSide, edge.toSide);
   }
   return svg;
 }
@@ -886,7 +977,7 @@ function renderAnchorConnectors(item) {
   for (const node of item.nodes) {
     if (!isVisible(item, node) || !node.anchor) continue;
     const source = sourceFor(item, node);
-    const path = makeConnector(svg, node.id, source?.point || rootBounds, pointFor(item, node.id), source?.fromY, node.connectionSide, 'branch-line', { 'data-to': node.id, 'marker-end': 'url(#arrow-anchor)' }, (event) => openArrowMenu(event, 'node', node.id));
+    const path = makeConnector(svg, node.id, source?.point || rootBounds, pointFor(item, node.id), source?.fromY, node.connectionSide, 'branch-line', { 'data-to': node.id, 'marker-end': 'url(#arrow-anchor)' }, () => selectConnection('node', node.id));
     if (!source) { path.style.display = 'none'; path._hit.style.display = 'none'; }
     const dot = el('circle', { class: 'origin-dot', 'data-origin': node.id, cx: source?.point.x ?? 0, cy: source?.point.y ?? 0, r: '3' });
     if (!source) dot.style.display = 'none';
@@ -913,9 +1004,31 @@ function updateConnectors() {
   }
   for (const edge of item.edges) {
     const path = document.querySelector(`[data-edge="${edge.id}"]`);
-    if (path) updateRoute(path, pointFor(item, edge.fromId), pointFor(item, edge.toId), null, edge.toSide);
+    if (path) updateCrossRoute(path, pointFor(item, edge.fromId), pointFor(item, edge.toId), edge.fromSide, edge.toSide);
     const label = document.querySelector(`[data-edge-label="${edge.id}"]`);
     if (label) placeEdgeLabel(label, item, edge);
+  }
+  positionConnectionHandles(item);
+}
+
+function positionConnectionHandles(item) {
+  if (!activeConnection) return;
+  const { kind, id } = activeConnection;
+  for (const handle of document.querySelectorAll('.connection-handle:not(.dragging)')) {
+    const end = handle.dataset.end;
+    const target = connectionEnd(item, kind, id, end);
+    if (!target) continue;
+    let side = target.side;
+    if (side === 'auto' && kind === 'node') {
+      const source = sourceFor(item, item.nodes.find((node) => node.id === id))?.point || rootBounds;
+      side = target.rect.x >= source.x + source.width / 2 ? 'left' : 'right';
+    } else if (side === 'auto') {
+      const edge = item.edges.find((entry) => entry.id === id);
+      const route = crossConnectionRoute(pointFor(item, edge.fromId), pointFor(item, edge.toId), edge.fromSide, edge.toSide);
+      side = route[end === 'from' ? 'fromSide' : 'toSide'];
+    }
+    const port = connectionPort(target.rect, side, 8);
+    handle.style.left = `${port.x}px`; handle.style.top = `${port.y}px`;
   }
 }
 

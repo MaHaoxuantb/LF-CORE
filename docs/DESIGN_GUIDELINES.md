@@ -15,7 +15,7 @@ Aim for a modern, Apple-like experience in **clarity, typography, responsiveness
 ## Interaction rules
 
 1. **One primary action at a time.** Keep reading surfaces quiet; reveal tools when text or a node is selected.
-2. **Direct manipulation with an alternative.** Selecting a passage shows creation at the selection point; its directed line begins at the highlight. Enlarging a card reveals notes. Provide button and keyboard routes for movement and resizing. Dragging must not be required for precision.
+2. **Direct manipulation with an alternative.** Selecting a passage shows creation at the selection point; its directed line begins at the highlight. Enlarging a card reveals notes. Clicking a connection reveals its endpoint handles on the canvas; dragging a handle to a side of its node previews and sets the attachment. A bidirectional connection has an independent handle at each end and equally visible arrowheads. Do not use a detached side-selection menu for this spatial task. Arrow keys move a focused handle to a side, and Home restores automatic placement, so dragging is not required for precision.
 3. **Preserve place.** Opening a node, source, or AI answer should not reset article scroll or selection.
 4. **Show where a change will land.** An AI article edit names the target passage or heading and previews additions and removals before acceptance.
 5. **Make origin available without visual noise.** Use subtle markers for source and AI provenance; reveal details on click or hover. Never use color alone to convey origin.
