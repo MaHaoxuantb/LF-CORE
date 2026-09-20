@@ -1312,10 +1312,10 @@ function beginRename(id) {
   input.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); input.blur(); } if (event.key === 'Escape') { input.value = node.title; input.blur(); } });
 }
 
-function addNode(parentId = null, anchor = null) {
+function addNode(parentId = null, anchor = null, preferredPosition = null) {
   const item = work(); if (!item) return;
   const node = { id: crypto.randomUUID(), parentId, title: anchor ? shortTitle(anchor.quote) : 'Untitled', document: { type: 'markdown', markdown: '' }, anchor, collapsed: false, provenance: 'learner' };
-  const position = suggestedPosition(item, parentId);
+  const position = preferredPosition || suggestedPosition(item, parentId);
   change((entry) => { entry.nodes.push(node); entry.layout.positions[node.id] = position; });
   selectedPassage = null; selectedId = node.id; editingMarkdown = false; renderWorkspace();
   if (anchor) focusSourceAndNode(node.id);
@@ -1324,6 +1324,27 @@ function addNode(parentId = null, anchor = null) {
 }
 
 function shortTitle(text) { const clean = text.replace(/\s+/g, ' ').trim(); return clean.length > 58 ? `${clean.slice(0, 55)}…` : clean; }
+
+function positionForPassage(item, targetId) {
+  const selection = selectedPassage;
+  const scene = document.querySelector('.scene');
+  if (!selection || !scene || !view.zoom) return null;
+  const source = targetId === 'article' ? rootBounds : pointFor(item, targetId);
+  const sceneRect = scene.getBoundingClientRect();
+  const browserSelection = window.getSelection();
+  const rangeRect = browserSelection?.rangeCount ? browserSelection.getRangeAt(0).getBoundingClientRect() : null;
+  const screenY = rangeRect ? rangeRect.top + rangeRect.height / 2 : selection.y;
+  const passageY = (screenY - sceneRect.top) / view.zoom;
+  const bottom = source.y + source.height - NODE.height - 16;
+  if (bottom < source.y + 16) return null;
+  // An anchored node belongs beside the passage that created it. Keep it on
+  // the source's right edge and align its vertical centre with the highlight,
+  // rather than falling back to the generic top-level layout position.
+  return {
+    x: source.x + source.width + 90,
+    y: clamp(passageY - NODE.height / 2, source.y + 16, bottom)
+  };
+}
 
 function focusNode(id) {
   const viewport = document.querySelector('.canvas-viewport'), point = work()?.layout.positions[id];
@@ -1338,14 +1359,28 @@ function focusSourceAndNode(id) {
   const viewport = document.querySelector('.canvas-viewport'), item = work();
   if (!viewport || !item) return;
   const target = item.nodes.find((entry) => entry.id === id);
-  const node = pointFor(item, id), source = target?.anchor?.targetId === 'article' ? rootBounds : pointFor(item, target?.anchor?.targetId);
-  const minX = Math.min(source.x, node.x), maxX = Math.max(source.x + source.width, node.x + node.width);
-  const minY = Math.min(source.y, node.y), maxY = Math.max(source.y + source.height, node.y + node.height);
+  const node = pointFor(item, id);
+  // The old implementation used the complete article bounds here. That made
+  // a long article force the whole canvas to zoom out just to show one branch.
+  // The anchor mark is the thing being navigated to, so use its actual line.
+  const source = target && sourceFor(item, target)?.point;
+  const from = source || node;
+  const minX = Math.min(from.x, node.x), maxX = Math.max(from.x + (from.width || 0), node.x + node.width);
+  const minY = Math.min(from.y, node.y), maxY = Math.max(from.y + (from.height || 0), node.y + node.height);
   const left = outlineOpen ? 280 : 32, right = selectedId ? 358 : 32, top = 80, bottom = 65;
   const width = Math.max(220, viewport.clientWidth - left - right), height = Math.max(220, viewport.clientHeight - top - bottom);
-  view.zoom = clamp(Math.min(width / (maxX - minX + 100), height / (maxY - minY + 100), 1.15), .22, 1.15);
-  view.x = left + width / 2 - ((minX + maxX) / 2) * view.zoom;
-  view.y = top + height / 2 - ((minY + maxY) / 2) * view.zoom;
+  const padding = 24;
+  // Reveal the relationship with the smallest possible pan. Keeping the
+  // current zoom means adding a branch feels like placing a nearby object,
+  // not like changing the user's scale to fit the entire document.
+  let dx = 0, dy = 0;
+  const screenLeft = minX * view.zoom + view.x, screenRight = maxX * view.zoom + view.x;
+  const screenTop = minY * view.zoom + view.y, screenBottom = maxY * view.zoom + view.y;
+  if (screenRight > left + width - padding) dx = left + width - padding - screenRight;
+  if (screenLeft + dx < left + padding) dx = left + padding - screenLeft;
+  if (screenBottom > top + height - padding) dy = top + height - padding - screenBottom;
+  if (screenTop + dy < top + padding) dy = top + padding - screenTop;
+  view.x += dx; view.y += dy;
   applyView(); saveView();
 }
 
@@ -1796,7 +1831,9 @@ function createAnchoredNode() {
   const selection = selectedPassage; if (!selection) return;
   try {
     const parentId = selection.targetId === 'article' ? null : selection.targetId;
-    addNode(parentId, makeAnchor(selection.targetId, sourcePlainText(work(), selection.targetId), selection.start, selection.end));
+    const item = work();
+    const anchor = makeAnchor(selection.targetId, sourcePlainText(item, selection.targetId), selection.start, selection.end);
+    addNode(parentId, anchor, positionForPassage(item, selection.targetId));
   }
   catch (error) { announce(error.message); }
 }
