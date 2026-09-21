@@ -9,6 +9,7 @@ import { loadModelSettings, saveModelSettings, encryptApiKey, unlockApiKey, getA
 import { chatModel } from './ai.js';
 import { contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, proposalStatus } from './chat.js';
 import { normalizeGraphFocusPreferences, relatedNodeIds } from './graph-focus.js';
+import { siblingPredecessor } from './siblings.js';
 import { parseProject, projectFileName, serializeProject, PROJECT_EXTENSION } from './project.js';
 import { attachSourceToQuestion, compareIdeas, createResearchProposal, createResearchQuestion, discoverSources, normalizeResearch, recordCloseout, verifiedSourceFromResult } from './research.js';
 import 'katex/dist/katex.min.css';
@@ -1121,7 +1122,7 @@ function openContextMenu(target, x, y) {
       option('Edit content on canvas', () => beginNodeMarkdownEdit(node.id));
       if (passage?.targetId === node.id) option('Create node from highlight', () => { selectedPassage = passage; createAnchoredNode(); });
       option('Add child', () => addNode(node.id));
-      option('Add sibling', () => addSibling(node));
+      if (siblingPredecessor(item, node.id)) option('Add sibling', () => addSibling(node));
       menu.append(el('div', { class: 'context-separator', role: 'separator' }));
       option('Delete node', () => removeNode(node.id), true);
     }
@@ -1632,11 +1633,12 @@ function renderNode(node, item) {
 
 function renderNodeActions(node, item) {
   const toolbar = el('div', { class: 'node-actions', role: 'toolbar', 'aria-label': `${nodeLabel(node)} actions` });
+  const canAddSibling = !!siblingPredecessor(item, node.id);
   const primary = el('div', { class: 'node-actions-row' },
     ...(graphIsReadOnly() ? [] : [
       button('Edit', () => beginNodeMarkdownEdit(node.id), 'node-action primary', { title: 'Edit Markdown on the card' }),
       button('＋ Child', () => addNode(node.id), 'node-action'),
-      button('＋ Sibling', () => addSibling(node), 'node-action'),
+      ...(canAddSibling ? [button('＋ Sibling', () => addSibling(node), 'node-action')] : []),
     ]),
     button('Chat', () => openAiPanel({ targetId: node.id }), 'node-action'));
   toolbar.append(primary);
@@ -1947,16 +1949,50 @@ function addSibling(node) {
   if (graphIsReadOnly()) return;
   const item = work();
   if (!item || !node) return;
-  // Highlight-created nodes are root nodes with an anchor instead of a
-  // parent. A sibling must retain that anchor so it gets its own edge from
-  // the same highlight; otherwise it becomes an unconnected root node.
-  const highlightEdge = item.edges.find((edge) => edge.toId === node.id && isHighlightId(edge.fromId));
-  const sharedAnchor = node.anchor || (highlightEdge ? highlightFor(item, highlightEdge.fromId) : null);
-  const position = sharedAnchor && item.layout.positions[node.id]
-    ? { x: item.layout.positions[node.id].x, y: item.layout.positions[node.id].y + (item.layout.sizes[node.id]?.height || NODE.height) + 24 }
-    : null;
-  const anchor = sharedAnchor ? { ...sharedAnchor } : null;
-  addNode(node.parentId ?? null, anchor, position);
+  const predecessor = siblingPredecessor(item, node.id);
+  if (!predecessor) return announce('A sibling needs exactly one one-way connection leading into this node.');
+
+  const { edge, predecessorId } = predecessor;
+  const sourceHighlight = isHighlightId(predecessorId) ? highlightFor(item, predecessorId) : null;
+  const anchor = sourceHighlight ? { ...sourceHighlight } : null;
+  const structural = !!edge.structural && !sourceHighlight;
+  const currentPosition = item.layout.positions[node.id];
+  const position = currentPosition
+    ? { x: currentPosition.x, y: currentPosition.y + (item.layout.sizes[node.id]?.height || NODE.height) + 24 }
+    : suggestedPosition(item, structural ? predecessorId : null);
+  const newNode = {
+    id: crypto.randomUUID(),
+    parentId: structural ? predecessorId : null,
+    document: { type: 'markdown', markdown: anchor ? `# ${shortTitle(anchor.quote)}` : '' },
+    anchor,
+    collapsed: false,
+    provenance: 'learner'
+  };
+
+  change((entry) => {
+    if (anchor) {
+      markAnchorInMarkdown(entry, anchor);
+      entry.highlights ||= [];
+      if (!entry.highlights.some((highlight) => highlight.id === anchor.id)) entry.highlights.push({ ...anchor });
+    }
+    entry.nodes.push(newNode);
+    entry.layout.positions[newNode.id] = position;
+    const points = edgePoints(entry, { fromId: predecessorId, toId: newNode.id });
+    const sides = points.from && points.to ? snappedConnectionSides(points.from, points.to) : {};
+    entry.edges.push({
+      id: crypto.randomUUID(),
+      fromId: predecessorId,
+      toId: newNode.id,
+      label: edge.label ?? null,
+      direction: 'forward',
+      ...(structural ? { structural: true } : {}),
+      ...sides
+    });
+  });
+  selectedPassage = null; selectedId = newNode.id; editingMarkdown = false; renderWorkspace();
+  if (anchor) focusSourceAndNode(newNode.id);
+  else focusNode(newNode.id);
+  beginNodeMarkdownEdit(newNode.id);
 }
 
 function addNode(parentId = null, anchor = null, preferredPosition = null) {
