@@ -2701,7 +2701,6 @@ function renderChatTranscript(panel, item, chat) {
       bubble.append(el('p', { text: message.content }));
       if (message.contextSnapshot) bubble.append(el('small', { class: 'chat-message-context', text: `Context: ${message.contextSnapshot.targets.map((target) => target.title).join(', ') || 'none'}` }));
     } else {
-      bubble.append(el('div', { class: 'ai-message-label', text: 'AI' }));
       if (message.content) {
         const answer = el('div', { class: 'ai-output markdown-preview' });
         answer.innerHTML = renderMarkdown(message.content);

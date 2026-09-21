@@ -72,15 +72,13 @@ export function unwrapMarkdownHighlight(source, quote, expectedStart = 0) {
   return `${source.slice(0, start)}${source.slice(match.start, match.end)}${source.slice(end)}`;
 }
 
-DOMPurify.addHook('afterSanitizeAttributes', (node) => {
-  if (node.tagName !== 'A') return;
-  node.setAttribute('target', '_blank');
-  node.setAttribute('rel', 'noopener noreferrer');
-});
-
 export function renderMarkdown(source) {
   const html = marked.parse(source || '');
-  return DOMPurify.sanitize(html, { USE_PROFILES: { html: true, mathMl: true } });
+  const sanitized = DOMPurify.sanitize(html, { USE_PROFILES: { html: true, mathMl: true } });
+  return sanitized.replace(/<a\b([^>]*)>/gi, (_, attributes) => {
+    const withoutWindowing = attributes.replace(/\s+(?:target|rel)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+    return `<a${withoutWindowing} target="_blank" rel="noopener noreferrer">`;
+  });
 }
 
 export function headingTokens(source) {
