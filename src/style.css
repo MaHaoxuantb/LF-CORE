@@ -354,7 +354,7 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .graph-focus-depth input { width: 48px; padding: 0 4px 0 7px; }
 .graph-focus-exit { width: 29px; height: 29px; border: 0; border-radius: 6px; background: transparent; color: #747c89; font-size: 1rem; }
 .graph-focus-exit:hover, .graph-focus-exit:focus-visible { background: #f1f0fb; color: var(--accent); }
-.graph-focus-active .topic-card, .graph-focus-active .paper, .graph-focus-active .connectors path, .graph-focus-active .edge-label-chip { transition: opacity .16s ease; }
+.graph-focus-active .topic-card, .graph-focus-active .paper, .graph-focus-active .connectors path, .graph-focus-active .edge-label-chip { transition: opacity .36s cubic-bezier(.22, 1, .36, 1); }
 .graph-focus-active .focus-muted { opacity: .1 !important; pointer-events: none !important; }
 .graph-focus-active .topic-card.focus-related { z-index: 7; opacity: 1; }
 .graph-focus-active .connectors path.focus-related, .graph-focus-active .edge-label-chip.focus-related { opacity: 1; }
@@ -366,8 +366,15 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .workspace-shell.graph-focus-active .sources-panel,
 .workspace-shell.graph-focus-active .ai-panel,
 .workspace-shell.graph-focus-active .passage-toolbar,
-.workspace-shell.graph-focus-active .selection-toolbar { opacity: .1; pointer-events: none; transition: opacity .16s ease; }
+.workspace-shell.graph-focus-active .selection-toolbar { opacity: .1; pointer-events: none; transition: opacity .36s cubic-bezier(.22, 1, .36, 1); }
 .workspace-shell.graph-focus-active .graph-focus-toolbar { opacity: 1; pointer-events: auto; }
+@media (prefers-reduced-motion: reduce) {
+  .graph-focus-active .topic-card, .graph-focus-active .paper, .graph-focus-active .connectors path, .graph-focus-active .edge-label-chip,
+  .workspace-shell.graph-focus-active > .workspace-chrome, .workspace-shell.graph-focus-active .zoom-controls,
+  .workspace-shell.graph-focus-active .outline-panel, .workspace-shell.graph-focus-active .details-panel,
+  .workspace-shell.graph-focus-active .sources-panel, .workspace-shell.graph-focus-active .ai-panel,
+  .workspace-shell.graph-focus-active .passage-toolbar, .workspace-shell.graph-focus-active .selection-toolbar { transition: none; }
+}
 :root[data-dark='true'] .graph-focus-toolbar { background: rgb(27 27 27 / 92%); color: #e7eaf0; border-color: #444; }
 :root[data-dark='true'] .graph-focus-toolbar select, :root[data-dark='true'] .graph-focus-toolbar input { background: #242424; color: #e7eaf0; border-color: #4b4b4b; }
 @media (prefers-color-scheme: dark) {
