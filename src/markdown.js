@@ -9,11 +9,11 @@ marked.use({
     level: 'inline',
     start(source) { return source.indexOf('=='); },
     tokenizer(source) {
-      const match = /^==(?=\S)([\s\S]*?\S)==/.exec(source);
+      const match = /^==([^\S\r\n]*)(?=\S)([\s\S]*?\S)([^\S\r\n]*)==/.exec(source);
       if (!match) return undefined;
-      return { type: 'highlight', raw: match[0], text: match[1], tokens: this.lexer.inlineTokens(match[1]) };
+      return { type: 'highlight', raw: match[0], leading: match[1], text: match[2], trailing: match[3], tokens: this.lexer.inlineTokens(match[2]) };
     },
-    renderer(token) { return `<mark class="markdown-highlight">${this.parser.parseInline(token.tokens)}</mark>`; }
+    renderer(token) { return `${token.leading}<mark class="markdown-highlight">${this.parser.parseInline(token.tokens)}</mark>${token.trailing}`; }
   }]
 });
 
@@ -71,6 +71,12 @@ export function unwrapMarkdownHighlight(source, quote, expectedStart = 0) {
   const match = matches[0], start = match.start - 2, end = match.end + 2;
   return `${source.slice(0, start)}${source.slice(match.start, match.end)}${source.slice(end)}`;
 }
+
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  if (node.tagName !== 'A') return;
+  node.setAttribute('target', '_blank');
+  node.setAttribute('rel', 'noopener noreferrer');
+});
 
 export function renderMarkdown(source) {
   const html = marked.parse(source || '');

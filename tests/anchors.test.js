@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { marked } from 'marked';
 import { makeAnchor, resolveAnchor } from '../src/anchors.js';
 import { createWorkspace, emptyState, loadSaveMode, loadState, saveSaveMode, saveState } from '../src/storage.js';
 import { headingTokens, wrapMarkdownHighlight, unwrapMarkdownHighlight } from '../src/markdown.js';
@@ -14,10 +15,10 @@ test('node labels are derived from Markdown, not a separate title', () => {
 test('Markdown highlights use == marks without changing visible anchor text', () => {
   const source = '# Motion\n\nThe plate moves slowly. The plate moves quickly.';
   const quote = 'The plate moves quickly.';
-  const marked = wrapMarkdownHighlight(source, quote, source.lastIndexOf(quote));
-  assert.equal(marked, '# Motion\n\nThe plate moves slowly. ==The plate moves quickly.==');
-  assert.equal(wrapMarkdownHighlight(marked, quote, source.lastIndexOf(quote)), marked);
-  assert.equal(unwrapMarkdownHighlight(marked, quote, source.lastIndexOf(quote)), source);
+  const highlightedMarkdown = wrapMarkdownHighlight(source, quote, source.lastIndexOf(quote));
+  assert.equal(highlightedMarkdown, '# Motion\n\nThe plate moves slowly. ==The plate moves quickly.==');
+  assert.equal(wrapMarkdownHighlight(highlightedMarkdown, quote, source.lastIndexOf(quote)), highlightedMarkdown);
+  assert.equal(unwrapMarkdownHighlight(highlightedMarkdown, quote, source.lastIndexOf(quote)), source);
   assert.equal(
     wrapMarkdownHighlight('A **fast plate** moves.', 'fast plate moves.', 2),
     'A ==**fast plate** moves.=='
@@ -25,6 +26,9 @@ test('Markdown highlights use == marks without changing visible anchor text', ()
   assert.deepEqual(headingTokens('# ==Marked heading=='), [{ level: 1, title: 'Marked heading' }]);
   assert.deepEqual(headingTokens('# ==X=='), [{ level: 1, title: 'X' }]);
   assert.equal(nodeLabel({ document: { markdown: '# ==Marked node==' } }), 'Marked node');
+  const heading = marked.parse('## 3.== Installing and using Lean==');
+  assert.match(heading, /3\. <mark class="markdown-highlight">Installing and using Lean<\/mark>/);
+  assert.doesNotMatch(heading, /==/);
 });
 
 test('multi-sentence article links survive nearby edits', () => {
