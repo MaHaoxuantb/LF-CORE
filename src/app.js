@@ -2711,9 +2711,32 @@ function renderChatTranscript(panel, item, chat) {
     }
     transcript.append(bubble);
   }
-  if (aiPanel.busy) transcript.append(el('div', { class: 'ai-message ai-message-assistant ai-chat-thinking', text: 'Thinking…' }));
+  if (aiPanel.busy) {
+    const streaming = el('div', { class: `ai-message ai-message-assistant ${aiPanel.streamingReply ? 'ai-chat-streaming' : 'ai-chat-thinking'}` });
+    if (aiPanel.streamingReply) {
+      const answer = el('div', { class: 'ai-output markdown-preview' });
+      answer.innerHTML = renderMarkdown(aiPanel.streamingReply);
+      streaming.append(answer);
+    } else streaming.textContent = 'Thinking…';
+    transcript.append(streaming);
+  }
   panel.append(transcript);
   requestAnimationFrame(() => { if (transcript.isConnected) transcript.scrollTop = transcript.scrollHeight; });
+}
+
+function updateStreamingChatReply(reply) {
+  const transcript = document.querySelector('.ai-panel .ai-chat-messages');
+  const bubble = transcript?.lastElementChild;
+  if (!bubble?.classList.contains('ai-message-assistant')) return;
+  bubble.classList.toggle('ai-chat-thinking', !reply);
+  bubble.classList.toggle('ai-chat-streaming', !!reply);
+  if (!reply) bubble.textContent = 'Thinking…';
+  else {
+    const answer = el('div', { class: 'ai-output markdown-preview' });
+    answer.innerHTML = renderMarkdown(reply);
+    bubble.replaceChildren(answer);
+  }
+  transcript.scrollTop = transcript.scrollHeight;
 }
 
 function renderChatComposer(panel, item, chat, snapshot, picker) {
@@ -2773,10 +2796,20 @@ function renderChatComposer(panel, item, chat, snapshot, picker) {
     chat.messages.push(userMessage);
     if (chat.title === 'New chat') chat.title = question.slice(0, 56);
     chat.updatedAt = userMessage.createdAt;
-    scope.draft = ''; scope.error = ''; scope.busy = true;
+    scope.draft = ''; scope.error = ''; scope.busy = true; scope.streamingReply = '';
     persist(); renderAiPanel();
     try {
-      const result = await chatModel(config, getApiKey(), prior, question, selected);
+      let renderScheduled = false;
+      const result = await chatModel(config, getApiKey(), prior, question, selected, { onReply: (reply) => {
+        if (scope !== aiPanel || currentId !== workspaceId) return;
+        scope.streamingReply = reply;
+        if (renderScheduled) return;
+        renderScheduled = true;
+        requestAnimationFrame(() => {
+          renderScheduled = false;
+          if (scope === aiPanel && currentId === workspaceId && scope.busy) updateStreamingChatReply(scope.streamingReply);
+        });
+      } });
       const savedChat = state.chats[workspaceId]?.find((entry) => entry.id === chatId);
       if (!savedChat) return;
       const proposals = result.edits.map((edit) => ({
@@ -2792,7 +2825,7 @@ function renderChatComposer(panel, item, chat, snapshot, picker) {
       if (scope === aiPanel) { scope.error = error.message; scope.draft = question; }
       persist();
     } finally {
-      scope.busy = false;
+      scope.busy = false; scope.streamingReply = '';
       if (scope === aiPanel && currentId === workspaceId) renderAiPanel();
     }
   });
@@ -2875,6 +2908,10 @@ document.addEventListener('keydown', (event) => {
   if (mod && key === 's') { event.preventDefault(); saveNow(); return; }
   if (!currentId) return;
   if (event.key === 'Escape' && document.querySelector('.context-menu')) { event.preventDefault(); closeContextMenu(); return; }
+  // Escape exits focus even when the focus toolbar (or another control) has focus.
+  // Keep this before the editable-control guard so the advertised global shortcut
+  // still works after changing the relationship mode or depth.
+  if (event.key === 'Escape' && graphFocus) { event.preventDefault(); exitGraphFocus(); return; }
   if (mod && key === 'z' && !event.shiftKey) { event.preventDefault(); undo(); return; }
   if (mod && ((key === 'z' && event.shiftKey) || key === 'y')) { event.preventDefault(); redo(); return; }
   if (mod && key === 'k' && selectedPassage) { event.preventDefault(); createAnchoredNode(); return; }
@@ -2911,7 +2948,6 @@ document.addEventListener('keydown', (event) => {
     if (target && rect) openContextMenu(target, rect.left + 24, rect.top + 24);
     return;
   }
-  if (event.key === 'Escape' && graphFocus) { event.preventDefault(); exitGraphFocus(); return; }
   if (event.key === 'Escape') { selectedId = null; selectedIds.clear(); selectedPassage = null; renderWorkspace(); return; }
   if (event.key === 'Tab' && selectedId) { event.preventDefault(); addNode(selectedId); }
   else if (event.key === 'Enter' && selectedId) { event.preventDefault(); addSibling(work().nodes.find((node) => node.id === selectedId)); }

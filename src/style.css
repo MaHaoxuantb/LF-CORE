@@ -628,6 +628,9 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .ai-chat-action:hover { background: var(--accent-soft); }
 .ai-message-status { display: inline-block; margin-top: 7px; color: #5d806e; font-size: .7rem; }
 .ai-chat-thinking { color: #687486; font-style: italic; }
+.ai-chat-streaming::after { content: ''; display: inline-block; width: 2px; height: 1em; margin-left: 3px; vertical-align: -.15em; background: currentColor; animation: chat-stream-cursor .8s steps(1) infinite; }
+@keyframes chat-stream-cursor { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .ai-chat-streaming::after { animation: none; } }
 .ai-chat-composer { display: flex; align-items: flex-end; gap: 7px; margin: 8px -2px -2px; padding: 10px 2px 2px; background: #fff; }
 .ai-chat-composer .ai-question { min-height: 48px; max-height: 130px; resize: vertical; }
 .ai-chat-composer .panel-action { flex: none; margin: 0; }

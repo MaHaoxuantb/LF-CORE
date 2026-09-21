@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import { completionUrl, encryptApiKey, unlockApiKey, getApiKey, lockApiKey, saveModelSettings, loadModelSettings } from '../src/model-settings.js';
-import { complete, generateArticle, askModel, proposeInsertion } from '../src/ai.js';
+import { complete, generateArticle, askModel, partialChatReply, proposeInsertion } from '../src/ai.js';
 
 globalThis.crypto ||= webcrypto;
 
@@ -56,4 +56,29 @@ test('proposed edits do not mutate article and malformed generation is rejected'
   const settings = { endpoint: 'https://host.example/v1', models: ['a'], selectedModel: 'a' };
   await assert.rejects(generateArticle(settings, '', 'LEAN', { fetcher: async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: 'Short.' } }] }) }) }), /incomplete article/);
   await assert.rejects(complete(settings, '', [], { fetcher: async () => ({ ok: false, status: 401 }) }), /HTTP 401/);
+});
+
+test('streaming completion decodes SSE deltas and reports accumulated text', async () => {
+  const settings = { endpoint: 'https://host.example/v1', models: ['a'], selectedModel: 'a' };
+  const chunks = [
+    'data: {"choices":[{"delta":{"content":"H',
+    'el"}}]}\n\n',
+    'data: {"choices":[{"delta":{"content":"lo"}}]}\n\ndata: [DONE]\n\n'
+  ].map((chunk) => new TextEncoder().encode(chunk));
+  let index = 0, request, updates = [];
+  const fetcher = async (_url, options) => {
+    request = JSON.parse(options.body);
+    return { ok: true, body: { getReader: () => ({ read: async () => index < chunks.length ? { done: false, value: chunks[index++] } : { done: true } }) } };
+  };
+  const result = await complete(settings, '', [], { fetcher, onDelta: (delta, accumulated) => updates.push([delta, accumulated]) });
+  assert.equal(request.stream, true);
+  assert.equal(result, 'Hello');
+  assert.deepEqual(updates, [['Hel', 'Hel'], ['lo', 'Hello']]);
+});
+
+test('partial chat reply exposes only the decoded reply field', () => {
+  assert.equal(partialChatReply('{"reply":"First line\\nSecond'), 'First line\nSecond');
+  assert.equal(partialChatReply('{"reply":"A \\u263A'), 'A ☺');
+  assert.equal(partialChatReply('{"rep'), '');
+  assert.equal(partialChatReply('Plain response'), 'Plain response');
 });
