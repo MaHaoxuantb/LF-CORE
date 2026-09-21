@@ -10,6 +10,7 @@ import { chatModel } from './ai.js';
 import { contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, proposalStatus } from './chat.js';
 import { normalizeGraphFocusPreferences, relatedNodeIds } from './graph-focus.js';
 import { parseProject, projectFileName, serializeProject, PROJECT_EXTENSION } from './project.js';
+import { attachSourceToQuestion, compareIdeas, createResearchProposal, createResearchQuestion, discoverSources, normalizeResearch, recordCloseout, verifiedSourceFromResult } from './research.js';
 import 'katex/dist/katex.min.css';
 import './style.css';
 
@@ -99,6 +100,7 @@ const pendingPdfDeletes = new Set();
 let selectedPassage = null, editGroup = null, view = { x: 0, y: 0, zoom: 1 };
 let viewTimer = null, toastTimer = null;
 let aiPanel = null;
+let researchPanel = null;
 let graphFocus = null, graphFocusNodeIds = null, spaceKeySession = null;
 
 // Focus is a viewing mode: navigation and focus controls remain available, but
@@ -272,6 +274,11 @@ async function downloadProject() {
       pdfBytes.set(source.id, await getPdf(source.id));
     }
     const contents = serializeProject(item, state.chats[item.id] || [], pdfBytes);
+    if (window.lfcoreDesktop?.saveProject) {
+      const saved = await window.lfcoreDesktop.saveProject(projectFileName(item.title), contents);
+      if (saved) announce('Project downloaded.');
+      return;
+    }
     const url = URL.createObjectURL(new Blob([contents], { type: 'application/vnd.linecoflow.project+json' }));
     const link = el('a', { href: url, download: projectFileName(item.title) });
     document.body.append(link); link.click(); link.remove();
@@ -458,7 +465,15 @@ function renderHome() {
   const pdf = el('input', { type: 'file', accept: '.pdf,application/pdf', class: 'entry-file', 'aria-label': 'Choose a local PDF' });
   const create = el('button', { type: 'submit', text: 'Create canvas  ↗' });
   const projectUpload = el('input', { type: 'file', accept: PROJECT_EXTENSION, class: 'project-upload-input', 'aria-label': 'Upload project' });
-  const uploadProjectButton = button('Upload project', () => projectUpload.click(), 'project-upload-button');
+  const uploadProjectButton = button('Upload project', async () => {
+    if (!window.lfcoreDesktop?.openProject) return projectUpload.click();
+    uploadProjectButton.disabled = true;
+    try {
+      const opened = await window.lfcoreDesktop.openProject();
+      if (opened) await uploadProject(new File([opened.contents], opened.name, { type: 'application/vnd.linecoflow.project+json' }));
+    } catch (error) { announce(`Project upload failed: ${error.message}`); }
+    finally { uploadProjectButton.disabled = false; }
+  }, 'project-upload-button');
   projectUpload.addEventListener('change', async () => {
     uploadProjectButton.disabled = true;
     try { await uploadProject(projectUpload.files?.[0]); }
@@ -880,6 +895,7 @@ function renderWorkspace() {
         historyButton('redo', redo, !!state.redo[item.id]?.length))),
     el('div', { class: 'header-right' },
       button('Chat', toggleAiPanel, `source-toggle ${aiPanel ? 'active' : ''}`, { 'aria-pressed': String(!!aiPanel), 'aria-label': 'Toggle chat' }),
+      button('Research', toggleResearchPanel, `source-toggle ${researchPanel ? 'active' : ''}`, { 'aria-pressed': String(!!researchPanel), 'aria-label': 'Toggle research' }),
       button(`Sources${item.sources?.length ? ` ${item.sources.length}` : ''}`, () => openSource(openSourceId ? null : item.sources?.[0]?.id || 'library'), `source-toggle ${openSourceId ? 'active' : ''}`, { 'aria-pressed': String(!!openSourceId), 'aria-label': 'Toggle sources' })));
 
   app.replaceChildren(el('div', { class: `workspace-shell ${graphFocus ? 'graph-focus-active graph-focus-readonly' : ''}`.trim() }, renderCanvas(item), chrome));
@@ -896,6 +912,7 @@ function renderWorkspace() {
   renderConnectionHandles(document.querySelector('.scene'), item);
   if (selectedPassage) renderPassageToolbar();
   if (aiPanel) renderAiPanel();
+  if (researchPanel) renderResearchPanel();
 }
 
 function appearanceControl() {
@@ -2055,7 +2072,7 @@ function openSource(id, page = 1, anchor = null) {
   // Chat and Sources are mutually exclusive workspace panels. Opening one
   // always turns the other one off; clicking the active menu item passes null
   // and simply closes it.
-  if (id !== null) aiPanel = null;
+  if (id !== null) { aiPanel = null; researchPanel = null; }
   openSourceId = id;
   sourcePage = page;
   sourceJump = anchor;
@@ -2068,7 +2085,26 @@ function toggleAiPanel() {
     renderWorkspace();
     return;
   }
+  researchPanel = null;
+  openSourceId = null;
   openAiPanel();
+}
+
+function selectedResearchContext(item) {
+  const ids = selectedId ? [selectedId] : [...selectedIds];
+  if (selectedPassage?.targetId && selectedPassage.targetId !== 'article' && !ids.includes(selectedPassage.targetId)) ids.push(selectedPassage.targetId);
+  return { targetIds: ids, quote: selectedPassage?.quote || '' };
+}
+
+function toggleResearchPanel() {
+  if (researchPanel) { researchPanel = null; renderWorkspace(); return; }
+  const item = work(); if (!item) return;
+  normalizeResearch(item);
+  const context = selectedResearchContext(item);
+  const suggested = context.quote ? `What should I verify about “${shortTitle(context.quote)}”?` : '';
+  researchPanel = { tab: 'questions', questionId: item.research.questions.find((question) => question.status === 'open')?.id || null, draftQuestion: suggested, query: '', results: [], error: '', loading: false, ideaIds: new Set(context.targetIds) };
+  aiPanel = null; openSourceId = null;
+  renderWorkspace();
 }
 
 function sourceReference(source, page, text, offsets) {
@@ -2139,7 +2175,7 @@ function showSourcePassage(textRoot, anchor, surface) {
 function renderSourcesPanel(item) {
   const panel = el('section', { class: 'sources-panel', 'aria-label': 'Sources' });
   const sidebar = el('div', { class: 'sources-sidebar' }, el('div', { class: 'sources-heading' }, el('strong', { text: 'Sources' }), button('×', () => openSource(null), 'panel-close', { 'aria-label': 'Close sources' })));
-  for (const source of item.sources || []) sidebar.append(button(`${source.type === 'pdf' ? '▤' : '≡'}  ${source.title}`, () => openSource(source.id), `source-list-item ${source.id === openSourceId ? 'active' : ''}`));
+  for (const source of item.sources || []) sidebar.append(button(`${source.type === 'pdf' ? '▤' : source.type === 'web' ? '↗' : '≡'}  ${source.title}`, () => openSource(source.id), `source-list-item ${source.id === openSourceId ? 'active' : ''}`));
   const addText = el('div', { class: 'source-add-text' });
   const textTitle = el('input', { placeholder: 'Source title', 'aria-label': 'Pasted source title' });
   const textBody = el('textarea', { placeholder: 'Paste source text…', 'aria-label': 'Source text' });
@@ -2166,9 +2202,23 @@ function renderSourcesPanel(item) {
 }
 
 function renderSourceContent(body, source) {
-  body.append(el('div', { class: 'source-reader-heading' }, el('strong', { text: source.title }), el('small', { text: source.type === 'pdf' ? `${source.pages} page PDF · stored locally` : 'Pasted text · stored locally' })));
+  const description = source.type === 'pdf' ? `${source.pages} page PDF · stored locally`
+    : source.type === 'web' ? `Metadata verified via ${source.discovery?.provider || 'source discovery'} · ${source.publishedAt || 'date unknown'}`
+      : 'Pasted text · stored locally';
+  body.append(el('div', { class: 'source-reader-heading' }, el('strong', { text: source.title }), el('small', { text: description })));
   const actions = el('div', { class: 'source-selection-actions', 'aria-live': 'polite' });
   body.append(actions);
+  if (source.type === 'web') {
+    const card = el('article', { class: 'web-source-card' });
+    card.append(el('div', { class: 'research-badge verified', text: '✓ Metadata verified' }));
+    if (source.authors?.length) card.append(el('p', { text: source.authors.join(', ') }));
+    if (source.venue) card.append(el('p', { text: `${source.venue}${source.publishedAt ? ` · ${source.publishedAt}` : ''}` }));
+    card.append(el('p', { class: 'ai-muted', text: 'Verification confirms that this provider record exists. It does not confirm that the source supports a particular claim; inspect the original before consolidating a finding.' }));
+    card.append(el('a', { class: 'panel-action source-external-link', href: source.url, target: '_blank', rel: 'noopener noreferrer', text: 'Open original source ↗' }));
+    if (source.openAccessUrl && source.openAccessUrl !== source.url) card.append(el('a', { class: 'panel-secondary source-external-link', href: source.openAccessUrl, target: '_blank', rel: 'noopener noreferrer', text: 'Open accessible copy ↗' }));
+    body.append(card);
+    return;
+  }
   if (source.type === 'text') {
     const scroll = el('div', { class: 'source-scroll' });
     const surface = el('div', { class: 'source-text-surface' });
@@ -2930,6 +2980,199 @@ function startChatResize(event, panel) {
   document.addEventListener('pointermove', move);
   document.addEventListener('pointerup', finish);
   document.addEventListener('pointercancel', finish);
+}
+
+function activeResearchQuestion(item) {
+  const research = normalizeResearch(item);
+  return research.questions.find((question) => question.id === researchPanel?.questionId) || research.questions[0] || null;
+}
+
+function researchSourceLink(source) {
+  const link = source.url
+    ? el('a', { class: 'research-source-link', href: source.url, target: '_blank', rel: 'noopener noreferrer', text: source.title })
+    : button(source.title, () => openSource(source.id), 'research-source-link');
+  return el('div', { class: 'research-source-row' }, link,
+    source.discovery?.verifiedAt ? el('span', { class: 'research-badge verified', text: '✓ provider record' }) : el('span', { class: 'research-badge', text: 'local source' }));
+}
+
+function findResearchProposal(item, id) {
+  return normalizeResearch(item).findings.find((proposal) => proposal.id === id);
+}
+
+function applyResearchProposal(id, editedText) {
+  const item = work();
+  const proposal = item && findResearchProposal(item, id);
+  if (!proposal) return;
+  if (item.article.markdown !== proposal.before) {
+    researchPanel.error = 'The article changed after this proposal was created. Create a fresh proposal so no newer work is overwritten.';
+    renderResearchPanel(); return;
+  }
+  const after = String(editedText || '').trim();
+  if (!after) { researchPanel.error = 'The proposed article cannot be empty.'; renderResearchPanel(); return; }
+  const acceptedAt = new Date().toISOString();
+  change((workspace) => {
+    const saved = findResearchProposal(workspace, id);
+    saved.after = after; saved.status = 'accepted'; saved.acceptedAt = acceptedAt;
+    workspace.article.markdown = after;
+    (workspace.article.origins ||= []).push({ kind: 'research', proposalId: id, questionId: saved.questionId, sourceIds: saved.sourceIds, comparisonId: saved.comparisonId, acceptedAt });
+  }, { article: true });
+  researchPanel.previewId = null;
+  announce('Research proposal applied. The source and reasoning trail were preserved; Undo is available.');
+}
+
+function renderResearchProposal(proposal, item) {
+  const card = el('article', { class: 'research-proposal' });
+  const heading = el('div', { class: 'research-card-heading' }, el('strong', { text: 'Article proposal' }), el('span', { class: `research-status ${proposal.status}`, text: proposal.status }));
+  card.append(heading);
+  if (proposal.sourceIds?.length) card.append(el('p', { class: 'research-trail', text: `${proposal.sourceIds.length} attached source${proposal.sourceIds.length === 1 ? '' : 's'} · reasoning trail retained` }));
+  if (proposal.status === 'proposed') {
+    if (researchPanel.previewId !== proposal.id) {
+      card.append(button('Review before applying', () => { researchPanel.previewId = proposal.id; renderResearchPanel(); }, 'chat-review-button'),
+        button('Discard', () => change((workspace) => { findResearchProposal(workspace, proposal.id).status = 'discarded'; }), 'chat-text-button'));
+    } else {
+      const editor = el('textarea', { class: 'research-proposal-editor', 'aria-label': 'Proposed complete article', value: proposal.after });
+      card.append(el('p', { class: 'research-warning', text: 'Review the complete article below. Attached records verify source identity, not whether every claim is supported.' }), renderProposalDiff(proposal.before, proposal.after), editor,
+        el('div', { class: 'research-actions' }, button('Apply to article', () => applyResearchProposal(proposal.id, editor.value), 'chat-apply-button'), button('Cancel review', () => { researchPanel.previewId = null; renderResearchPanel(); }, 'chat-text-button')));
+    }
+  }
+  return card;
+}
+
+function renderResearchQuestions(panel, item) {
+  const research = normalizeResearch(item);
+  const create = el('div', { class: 'research-create' });
+  const questionInput = el('textarea', { placeholder: 'What do you want to verify?', 'aria-label': 'New research question', value: researchPanel.draftQuestion || '' });
+  create.append(questionInput, button('Save question', () => {
+    try {
+      const question = createResearchQuestion(questionInput.value, selectedResearchContext(item));
+      researchPanel.questionId = question.id; researchPanel.draftQuestion = ''; researchPanel.query = question.text;
+      change((workspace) => normalizeResearch(workspace).questions.unshift(question));
+    } catch (error) { researchPanel.error = error.message; renderResearchPanel(); }
+  }, 'panel-action'));
+  panel.append(create);
+  if (research.questions.length) {
+    const chooser = el('select', { class: 'research-question-select', 'aria-label': 'Research question' });
+    for (const question of research.questions) chooser.append(el('option', { value: question.id, text: `${question.status === 'open' ? '○' : '✓'} ${question.text}` }));
+    const active = activeResearchQuestion(item);
+    chooser.value = active?.id || '';
+    chooser.addEventListener('change', () => { researchPanel.questionId = chooser.value; researchPanel.query = ''; researchPanel.results = []; renderResearchPanel(); });
+    panel.append(chooser);
+  }
+  const question = activeResearchQuestion(item);
+  if (!question) return panel.append(el('p', { class: 'research-empty', text: 'Save a question from your selected passage or nodes to begin a traceable research thread.' }));
+  const sourceIds = new Set(question.sourceIds || []);
+  const attached = item.sources.filter((source) => sourceIds.has(source.id));
+  const questionCard = el('section', { class: 'research-section' }, el('div', { class: 'research-card-heading' }, el('strong', { text: question.text }), button(question.status === 'open' ? 'Mark resolved' : 'Reopen', () => change((workspace) => {
+    const saved = normalizeResearch(workspace).questions.find((entry) => entry.id === question.id);
+    saved.status = saved.status === 'open' ? 'resolved' : 'open'; saved.updatedAt = new Date().toISOString();
+  }), 'chat-text-button')));
+  if (question.context?.quote) questionCard.append(el('blockquote', { class: 'research-context', text: question.context.quote }));
+  questionCard.append(el('p', { class: 'research-label', text: `ATTACHED SOURCES · ${attached.length}` }));
+  for (const source of attached) questionCard.append(researchSourceLink(source));
+  const available = item.sources.filter((source) => !sourceIds.has(source.id));
+  if (available.length) {
+    const existing = el('select', { 'aria-label': 'Existing source to attach' });
+    for (const source of available) existing.append(el('option', { value: source.id, text: source.title }));
+    questionCard.append(el('div', { class: 'research-attach-existing' }, existing, button('Attach existing', () => {
+      const source = item.sources.find((entry) => entry.id === existing.value);
+      if (source) change((workspace) => attachSourceToQuestion(workspace, question.id, source));
+    }, 'panel-secondary')));
+  }
+  const search = el('div', { class: 'research-search' });
+  const query = el('input', { value: researchPanel.query || question.text, placeholder: 'Search scholarly works', 'aria-label': 'Source discovery query' });
+  search.append(query, button(researchPanel.loading ? 'Searching…' : 'Discover sources', async () => {
+    researchPanel.query = query.value; researchPanel.loading = true; researchPanel.error = ''; researchPanel.results = [];
+    renderResearchPanel();
+    try { researchPanel.results = await discoverSources(researchPanel.query); }
+    catch (error) { researchPanel.error = error.message; }
+    finally { researchPanel.loading = false; renderResearchPanel(); }
+  }, 'panel-action', researchPanel.loading ? { disabled: '' } : {}));
+  questionCard.append(search, el('p', { class: 'research-disclaimer', text: 'Discovery sends these search terms to OpenAlex. Attaching a result verifies its provider record and preserves a link to the original; read it before relying on a claim.' }));
+  for (const result of researchPanel.results || []) {
+    const resultCard = el('article', { class: 'research-result' }, el('strong', { text: result.title }), el('small', { text: [result.authors.slice(0, 3).join(', '), result.venue, result.publishedAt, `${result.citedByCount} indexed citations`].filter(Boolean).join(' · ') || 'Publication details unavailable' }));
+    const already = item.sources.some((source) => source.discovery?.providerId === result.providerId && sourceIds.has(source.id));
+    resultCard.append(el('div', { class: 'research-actions' }, el('a', { href: result.url, target: '_blank', rel: 'noopener noreferrer', text: 'Inspect original ↗' }), button(already ? 'Attached' : 'Attach to question', () => {
+      if (already) return;
+      try {
+        const source = verifiedSourceFromResult(result);
+        change((workspace) => attachSourceToQuestion(workspace, question.id, source));
+        announce('Verified source record attached to the research question.');
+      } catch (error) { researchPanel.error = error.message; renderResearchPanel(); }
+    }, 'panel-secondary', already ? { disabled: '' } : {})));
+    questionCard.append(resultCard);
+  }
+  const finding = el('textarea', { class: 'research-finding-input', placeholder: 'Write what you learned after inspecting the source. This becomes a proposal, not an automatic edit.', 'aria-label': 'Research finding' });
+  questionCard.append(el('p', { class: 'research-label', text: 'PROPOSE A FINDING' }), finding, button('Create article proposal', () => {
+    try {
+      const proposal = createResearchProposal(item, { text: finding.value, questionId: question.id, sourceIds: [...sourceIds], title: 'Research finding' });
+      researchPanel.previewId = proposal.id;
+      change((workspace) => normalizeResearch(workspace).findings.unshift(proposal));
+    } catch (error) { researchPanel.error = error.message; renderResearchPanel(); }
+  }, 'panel-secondary'));
+  for (const proposal of research.findings.filter((entry) => entry.questionId === question.id)) questionCard.append(renderResearchProposal(proposal, item));
+  panel.append(questionCard);
+}
+
+function renderResearchCompare(panel, item) {
+  const ideas = [{ id: 'article', title: 'Master article', text: item.article.markdown }, ...item.nodes.map((node) => ({ id: node.id, title: nodeLabel(node), text: node.document?.markdown || '' }))];
+  const list = el('div', { class: 'research-idea-list' });
+  for (const idea of ideas) {
+    const checkbox = el('input', { type: 'checkbox', value: idea.id, ...(researchPanel.ideaIds?.has(idea.id) ? { checked: '' } : {}) });
+    checkbox.addEventListener('change', () => { researchPanel.ideaIds ||= new Set(); checkbox.checked ? researchPanel.ideaIds.add(idea.id) : researchPanel.ideaIds.delete(idea.id); });
+    list.append(el('label', {}, checkbox, el('span', { text: idea.title })));
+  }
+  panel.append(el('p', { class: 'research-disclaimer', text: 'Compare two or more ideas. Contradiction flags are lexical prompts for review, never factual conclusions.' }), list,
+    button('Compare and draft merge', () => {
+      try {
+        const selected = ideas.filter((idea) => researchPanel.ideaIds?.has(idea.id));
+        const comparison = compareIdeas(selected);
+        const proposal = createResearchProposal(item, { text: comparison.markdown, comparisonId: comparison.id, title: 'Compared ideas' });
+        researchPanel.previewId = proposal.id;
+        change((workspace) => { const research = normalizeResearch(workspace); research.comparisons.unshift(comparison); research.findings.unshift(proposal); });
+      } catch (error) { researchPanel.error = error.message; renderResearchPanel(); }
+    }, 'panel-action'));
+  for (const comparison of normalizeResearch(item).comparisons) {
+    const card = el('article', { class: 'research-section' }, el('div', { class: 'research-card-heading' }, el('strong', { text: `Comparison · ${comparison.ideaIds.length} ideas` }), el('small', { text: new Date(comparison.createdAt).toLocaleString() })));
+    if (comparison.sharedTerms.length) card.append(el('p', { class: 'research-trail', text: `Shared terms: ${comparison.sharedTerms.join(', ')}` }));
+    if (comparison.possibleContradictions.length) for (const flag of comparison.possibleContradictions) card.append(el('p', { class: 'research-contradiction', text: flag.note }));
+    else card.append(el('p', { class: 'research-no-contradiction', text: 'No simple polarity conflict was detected. This does not establish agreement.' }));
+    for (const proposal of normalizeResearch(item).findings.filter((entry) => entry.comparisonId === comparison.id)) card.append(renderResearchProposal(proposal, item));
+    panel.append(card);
+  }
+}
+
+function renderResearchCloseout(panel, item) {
+  const research = normalizeResearch(item);
+  const understanding = el('textarea', { placeholder: 'What do you understand now?', 'aria-label': 'Current understanding' });
+  const open = el('textarea', { placeholder: 'One open question per line', 'aria-label': 'Open questions' });
+  open.value = research.questions.filter((question) => question.status === 'open').map((question) => question.text).join('\n');
+  panel.append(el('p', { class: 'research-disclaimer', text: 'Close the session with a compact return point. This record does not alter the article.' }), understanding, open,
+    button('Save session closeout', () => {
+      try { const closeout = recordCloseout({ understanding: understanding.value, openQuestions: open.value }); change((workspace) => normalizeResearch(workspace).closeouts.unshift(closeout)); }
+      catch (error) { researchPanel.error = error.message; renderResearchPanel(); }
+    }, 'panel-action'));
+  for (const closeout of research.closeouts) {
+    const card = el('article', { class: 'research-section' }, el('small', { text: new Date(closeout.createdAt).toLocaleString() }));
+    if (closeout.understanding) card.append(el('h3', { text: 'Current understanding' }), el('p', { text: closeout.understanding }));
+    if (closeout.openQuestions.length) card.append(el('h3', { text: 'Open questions' }), el('ul', {}, ...closeout.openQuestions.map((question) => el('li', { text: question }))));
+    panel.append(card);
+  }
+}
+
+function renderResearchPanel() {
+  document.querySelector('.research-panel')?.remove();
+  const item = work(); if (!item || !researchPanel) return;
+  const panel = el('aside', { class: 'research-panel', 'aria-label': 'Research and consolidation' });
+  const heading = el('header', { class: 'research-heading' }, el('div', {}, el('span', { class: 'research-eyebrow', text: 'PHASE 4' }), el('h2', { text: 'Research & consolidate' })), button('×', () => { researchPanel = null; renderWorkspace(); }, 'panel-close', { 'aria-label': 'Close research' }));
+  const tabs = el('div', { class: 'research-tabs', role: 'tablist' });
+  for (const [id, label] of [['questions', 'Questions'], ['compare', 'Compare'], ['closeout', 'Closeout']]) tabs.append(button(label, () => { researchPanel.tab = id; researchPanel.error = ''; renderResearchPanel(); }, '', { role: 'tab', 'aria-selected': String(researchPanel.tab === id) }));
+  const body = el('div', { class: 'research-body' });
+  if (researchPanel.error) body.append(el('p', { class: 'research-error', text: researchPanel.error }));
+  if (researchPanel.tab === 'compare') renderResearchCompare(body, item);
+  else if (researchPanel.tab === 'closeout') renderResearchCloseout(body, item);
+  else renderResearchQuestions(body, item);
+  panel.append(heading, tabs, body);
+  document.querySelector('.workspace-shell')?.append(panel);
 }
 
 function renderAiPanel() {

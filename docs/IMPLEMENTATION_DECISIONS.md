@@ -30,6 +30,16 @@ Browser local storage is used for small manual workspaces. The current version u
 
 AI requests and proposals remain later-phase work. The sample article is manually written and has no citations.
 
+## Phase 4 research and consolidation
+
+Research records live with the workspace as four explicit collections: questions, findings/proposals, comparisons, and session closeouts. A question retains the selected node IDs and quoted passage that motivated it. Source IDs are attached to the question and copied into any resulting article proposal and accepted article origin, so later article edits do not erase the reasoning trail.
+
+Lightweight discovery uses the public OpenAlex works search from the browser and sends only the search terms visible in the Research panel. An attached result becomes a `web` source with its OpenAlex work ID, resolution time, bibliographic metadata, and original URL. The interface consistently describes this as provider-record verification: it establishes that the indexed record exists, not that its contents prove a learner's claim. Existing pasted text and PDF sources can also be attached directly to a question. No discovered source is silently included in model context.
+
+Findings and comparison merges are stored as proposals containing the complete before/after article Markdown. They never modify the article on creation. Acceptance requires a full diff review, rejects stale proposals when the article has changed, increments the article revision, participates in undo/redo, and records question, source, comparison, and proposal IDs in article provenance.
+
+Comparison is deliberately local and inspectable. It summarizes up to eight selected article/node ideas, records shared terms, and raises a *possible* contradiction only when shared terms occur with different simple negative/positive wording. This is a review prompt, not semantic or factual adjudication. Session closeouts store current understanding plus discrete open questions and do not mutate the article.
+
 ## Phase 2 sources
 
 The home screen offers topic, pasted-text, and local-PDF starts. Topic starts with an empty working article; pasted text and PDFs also begin with an empty working article, while the original material is recorded as a separate source. Workspaces now have `sources[]`; nodes have `sourceRefs[]` with a source ID, page number for PDFs, and a quote/context anchor. These fields are optional on older saved records and are normalized on load without changing the storage key or the old source data. Source passage links are not article anchors and do not imply that the article contains the cited text.

@@ -1,0 +1,113 @@
+name: macOS release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+
+      - name: Use tag as package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: npm version --no-git-tag-version "${GITHUB_REF_NAME#v}"
+
+      - name: Install Developer ID certificate
+        env:
+          LF_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          LF_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          LF_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        shell: bash
+        run: |
+          CERTIFICATE_PATH="$RUNNER_TEMP/lf-core-developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/lf-core-signing.keychain-db"
+          echo -n "$LF_CERTIFICATE_BASE64" | base64 --decode -o "$CERTIFICATE_PATH"
+          security create-keychain -p "$LF_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$LF_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$LF_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$LF_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security find-identity -p codesigning -v "$KEYCHAIN_PATH"
+
+      - name: Install notarization API key
+        env:
+          LF_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          LF_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+        shell: bash
+        run: echo -n "$LF_API_KEY_BASE64" | base64 --decode -o "$RUNNER_TEMP/AuthKey_${LF_API_KEY_ID}.p8"
+
+      - name: Make signed and notarized installers
+        env:
+          APPLE_SIGNING_ENABLED: 'true'
+          APPLE_API_KEY: ${{ runner.temp }}/AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: npm run desktop:make -- --arch=${{ matrix.arch }}
+
+      - name: Verify signature and notarization ticket
+        shell: bash
+        run: |
+          APP_PATH="out/LF CORE-darwin-${{ matrix.arch }}/LF CORE.app"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          spctl --assess --type execute --verbose=2 "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v7
+        with:
+          name: lf-core-macos-${{ matrix.arch }}
+          path: |
+            out/make/**/*.dmg
+            out/make/**/*.zip
+          if-no-files-found: error
+
+      - name: Remove temporary signing material
+        if: always()
+        shell: bash
+        run: |
+          security delete-keychain "$RUNNER_TEMP/lf-core-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/lf-core-developer-id.p12" "$RUNNER_TEMP"/AuthKey_*.p8
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: lf-core-macos-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release create "$GITHUB_REF_NAME" release-assets/* --repo "$GITHUB_REPOSITORY" --generate-notes --verify-tag

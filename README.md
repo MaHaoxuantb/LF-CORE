@@ -4,7 +4,7 @@ LF CORE by LinecoFlow is an article-first, local-first workspace for independent
 
 **North Star:** Does this make the next study session easier to revisit than chat?
 
-## Run the Phase 3 prototype
+## Run the Phase 4 prototype
 
 Requires Node.js 20 or newer.
 
@@ -31,7 +31,11 @@ The save control at the upper right offers **Auto save** and **Manual save**. In
 
 The prototype stores workspace records in this browser's local storage and imported PDF bytes in IndexedDB. Previous Phase 1 data, including card notes, migrates to Markdown without changing the old saved record. Use project download for a portable backup before clearing site data. There is no account or cloud sync. Run `npm test` for the anchor, outline, migration, project-file, and persistence checks.
 
-Current scope includes workspace chat with reviewed article and node edits alongside the Phase 2 source workflow. See [implementation decisions](docs/IMPLEMENTATION_DECISIONS.md), [Phase 2 verification](docs/PHASE_2_CHECK.md), and [Phase 3 verification](docs/PHASE_3_CHECK.md) for the earlier prototype decisions.
+Current scope includes reviewed research and consolidation, workspace chat with reviewed article and node edits, and the Phase 2 source workflow. See [implementation decisions](docs/IMPLEMENTATION_DECISIONS.md), [Phase 2 verification](docs/PHASE_2_CHECK.md), and [Phase 3 verification](docs/PHASE_3_CHECK.md) for the earlier prototype decisions.
+
+Open **Research** to preserve a question alongside the selected passage or nodes. A question can use an existing local source or search OpenAlex for scholarly works; discovery sends only the displayed search terms. Attaching a discovery result stores the provider record, verification time, and original URL. That confirms the record exists, not that it proves a claim. Inspect the original, write a finding, and review the complete article diff before applying it. The question, attached source IDs, proposal, and accepted article origin remain linked.
+
+The **Compare** tab creates a reviewable synthesis from two or more selected ideas. Its conservative contradiction marker only detects shared terminology with different positive/negative wording and is explicitly not a factual verdict. **Closeout** records current understanding and open questions without editing the article, giving the next session a compact return point.
 
 [Phase 0/1 verification](docs/PHASE_0_1_CHECK.md) records the technical exit-gate checks, the PDF reading spike, and what still requires learner observation.
 
@@ -40,5 +44,7 @@ Project documents:
 - [Master plan](docs/MASTER_PLAN.md) — phases, implementation sequence, and completion tests.
 - [Core concepts](docs/CORE_CONCEPTS.md) — product rules, interaction model, and data model.
 - [Design guidelines](docs/DESIGN_GUIDELINES.md) — interface principles and prototype behavior.
+- [macOS distribution](docs/MACOS_DISTRIBUTION.md) — Electron development, Developer ID signing, notarization, and GitHub Actions releases.
+- [Phase 4 verification](docs/PHASE_4_CHECK.md) — research, consolidation, provenance, and closeout checks.
 
 These documents define a prototype direction, not a finished specification. Decisions marked *open* in the master plan should be resolved through a working slice and user observation.

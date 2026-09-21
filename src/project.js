@@ -64,6 +64,15 @@ function remapPdfSourceIds(workspace, idMap) {
       if (reference.anchor && idMap.has(reference.anchor.targetId)) reference.anchor.targetId = idMap.get(reference.anchor.targetId);
     }
   }
+  for (const question of workspace.research?.questions || []) {
+    question.sourceIds = (question.sourceIds || []).map((id) => idMap.get(id) || id);
+  }
+  for (const finding of workspace.research?.findings || []) {
+    finding.sourceIds = (finding.sourceIds || []).map((id) => idMap.get(id) || id);
+  }
+  for (const origin of workspace.article?.origins || []) {
+    if (origin.kind === 'research') origin.sourceIds = (origin.sourceIds || []).map((id) => idMap.get(id) || id);
+  }
 }
 
 export function parseProject(serialized, { uuid = () => crypto.randomUUID(), now = () => new Date().toISOString() } = {}) {
