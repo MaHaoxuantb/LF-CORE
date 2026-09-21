@@ -235,9 +235,25 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .workspace-chrome .header-right { flex: none; }
 .workspace-chrome .header-left .save-menu { left: 0; right: auto; }
 .document-menu-control { position: relative; min-width: 0; max-width: min(330px, 42vw); }
-.document-menu { position: absolute; z-index: 40; top: calc(100% + 9px); left: 0; width: 150px; display: grid; padding: 5px; border: 1px solid #e1e4eb; border-radius: 10px; background: #fff; box-shadow: 0 12px 34px #26364f24; color: #3f495a; }
-.document-menu-option { border: 0; border-radius: 6px; background: transparent; color: inherit; padding: 9px 10px; text-align: left; font-size: .77rem; }
+.document-menu { position: absolute; z-index: 40; top: calc(100% + 9px); left: 0; width: 210px; display: grid; padding: 5px; border: 1px solid #e1e4eb; border-radius: 10px; background: #fff; box-shadow: 0 12px 34px #26364f24; color: #3f495a; }
+.document-menu-option { width: 100%; display: flex; align-items: center; justify-content: space-between; border: 0; border-radius: 6px; background: transparent; color: inherit; padding: 9px 10px; text-align: left; font-size: .77rem; }
+.document-menu-option[aria-checked='true']::after { content: '✓'; margin-left: auto; color: var(--accent); font-weight: 800; }
+.document-menu-option.submenu-trigger::after { content: '›'; margin-left: auto; color: #8992a0; font-size: 1rem; line-height: .7; }
 .document-menu-option:hover, .document-menu-option:focus-visible { background: #f1f0fb; color: #4e4ab2; }
+.document-menu-separator { height: 1px; margin: 4px 5px; background: #edf0f4; }
+.document-menu-heading { padding: 7px 10px 3px; color: #777f8d; font-size: .65rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.document-menu-subheading { padding: 7px 10px 2px; color: #9299a5; font-size: .62rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.document-menu-submenu { position: relative; }
+.document-submenu { display: none; position: absolute; z-index: 41; top: -5px; left: calc(100% + 5px); width: 145px; padding: 5px; border: 1px solid #e1e4eb; border-radius: 10px; background: #fff; box-shadow: 0 12px 34px #26364f24; }
+.document-menu-submenu.open .document-submenu { display: grid; }
+.document-menu-submenu.open > .document-menu-option { background: #f1f0fb; color: #4e4ab2; }
+.document-menu-choice { text-transform: capitalize; }
+.document-menu-status { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 5px 3px 10px; color: #7c8797; font-size: .72rem; }
+.document-menu-label { font-size: .62rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.document-save-status { border: 0; border-radius: 6px; background: transparent; color: inherit; padding: 7px 8px; font-size: .72rem; }
+.document-save-status:hover, .document-save-status:focus-visible { background: #f1f0fb; color: #4e4ab2; }
+.document-save-status[data-state='dirty'] { color: #9a6b31; }
+.document-save-status[data-state='error'] { color: #ae4d58; }
 .workspace-chrome .workspace-title { display: block; max-width: 100%; border: 0; background: transparent; text-align: left; font-size: .87rem; font-weight: 650; color: #333b49; padding: 0 10px 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .document-title-input { display: block; width: 100%; min-width: 120px; border: 1px solid var(--accent); border-radius: 6px; background: transparent; color: inherit; font-size: .87rem; font-weight: 650; padding: 4px 7px; outline: 0; }
 .workspace-chrome .header-icon { width: 32px; height: 32px; border: 0; border-radius: 7px; color: #626b7b; background: transparent; }
@@ -321,7 +337,7 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .selection-toolbar button:hover { background: #f1f0fb; }
 .selection-toolbar .selection-delete { color: #a34d56; }
 .selection-toolbar .selection-delete:hover { background: #fff0f1; }
-@media (max-width: 620px) { .workspace-chrome { inset: 10px 10px auto; gap: 6px; } .workspace-chrome .header-left-group { max-width: calc(100vw - 100px); gap: 5px; } .workspace-chrome .header-left { max-width: none; flex: 1 1 auto; } .workspace-chrome .header-right { gap: 0; } .workspace-chrome .workspace-title { display: block; max-width: 120px; padding: 0 5px; font-size: .76rem; } .outline-panel { top: 62px; bottom: 75px; } .details-panel { top: auto; bottom: 64px; } .zoom-controls { bottom: 12px; } }
+@media (max-width: 620px) { .workspace-chrome { inset: 10px 10px auto; gap: 6px; } .workspace-chrome .header-left-group { max-width: calc(100vw - 100px); gap: 5px; } .workspace-chrome .header-left { max-width: none; flex: 1 1 auto; } .workspace-chrome .header-right { gap: 0; } .document-menu { width: min(210px, calc(100vw - 20px)); } .document-submenu { position: static; width: auto; margin: 0 5px 4px; box-shadow: none; } .workspace-chrome .workspace-title { display: block; max-width: 120px; padding: 0 5px; font-size: .76rem; } .outline-panel { top: 62px; bottom: 75px; } .details-panel { top: auto; bottom: 64px; } .zoom-controls { bottom: 12px; } }
 
 /* Floating panels should reveal the canvas, not cover it from top to bottom. */
 .outline-panel { bottom: auto; max-height: min(420px, calc(100vh - 155px)); }
@@ -381,7 +397,15 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 :root[data-dark='true'] .workspace-chrome .header-icon.active { background: #383451; color: #e4ddff; }
 :root[data-dark='true'] .zoom-divider,
 :root[data-dark='true'] .context-separator,
-:root[data-dark='true'] .save-menu-separator { background: #454545; }
+:root[data-dark='true'] .save-menu-separator,
+:root[data-dark='true'] .document-menu-separator { background: #454545; }
+:root[data-dark='true'] .document-menu-status,
+:root[data-dark='true'] .document-menu-heading,
+:root[data-dark='true'] .document-menu-subheading { color: #acafbb; }
+:root[data-dark='true'] .document-submenu { background: #222; border-color: #454545; }
+:root[data-dark='true'] .document-menu-submenu.open > .document-menu-option { background: #33313e; color: #f2efff; }
+:root[data-dark='true'] .document-save-status:hover,
+:root[data-dark='true'] .document-save-status:focus-visible { background: #33313e; color: #f2efff; }
 :root[data-dark='true'] .link-grip { background: #292932; border-color: #8f89bb; color: #dedaff; }
 :root[data-dark='true'] .connectors path.branch-line,
 :root[data-dark='true'] .connectors path.cross-line,

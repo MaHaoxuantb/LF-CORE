@@ -208,12 +208,37 @@ function renameWorkspace() {
   input.select();
 }
 
+function documentMenuSubmenu(label, values, current, action) {
+  const wrapper = el('div', { class: 'document-menu-submenu' });
+  const trigger = button(label, () => wrapper.classList.toggle('open'), 'document-menu-option submenu-trigger', { role: 'menuitem', 'aria-haspopup': 'menu', 'aria-expanded': 'false' });
+  const submenu = el('div', { class: 'document-submenu', role: 'menu', 'aria-label': label });
+  for (const value of values) {
+    const option = button(value[0].toUpperCase() + value.slice(1), () => action(value), 'document-menu-option', { role: 'menuitemradio', 'aria-checked': current === value });
+    submenu.append(option);
+  }
+  trigger.addEventListener('click', () => trigger.setAttribute('aria-expanded', String(wrapper.classList.contains('open'))));
+  wrapper.append(trigger, submenu);
+  return wrapper;
+}
+
+function appendAppearanceOptions(menu) {
+  menu.append(el('div', { class: 'document-menu-heading', text: 'Appearance' }));
+  menu.append(documentMenuSubmenu('Mode', themes, theme, (value) => setAppearance(value, color)));
+  menu.append(documentMenuSubmenu('Accent color', colors, color, (value) => setAppearance(theme, value)));
+}
+
 function toggleDocumentMenu(wrapper) {
   if (wrapper.querySelector('.document-menu')) return closeDocumentMenu();
   closeSaveMenu();
   closeDocumentMenu();
   const menu = el('div', { class: 'document-menu', role: 'menu', 'aria-label': 'Document options' });
-  menu.append(button('rename', renameWorkspace, 'document-menu-option', { role: 'menuitem' }));
+  menu.append(button('Rename', renameWorkspace, 'document-menu-option', { role: 'menuitem' }));
+  menu.append(el('div', { class: 'document-menu-separator', role: 'separator' }));
+  menu.append(el('div', { class: 'document-menu-heading', text: 'Saving' }));
+  menu.append(button('Auto save', () => setSaveMode('auto'), 'document-menu-option', { role: 'menuitemradio', 'aria-checked': saveMode === 'auto' }));
+  menu.append(button('Manual save', () => setSaveMode('manual'), 'document-menu-option', { role: 'menuitemradio', 'aria-checked': saveMode === 'manual' }));
+  menu.append(el('div', { class: 'document-menu-separator', role: 'separator' }));
+  appendAppearanceOptions(menu);
   wrapper.append(menu);
   wrapper.querySelector('.document-menu-button')?.setAttribute('aria-expanded', 'true');
   menu.querySelector('button')?.focus();
@@ -234,7 +259,7 @@ function toggleSaveMenu(wrapper) {
 
 function saveControl() {
   const wrapper = el('div', { class: 'save-control', 'data-state': saveError ? 'error' : dirty ? 'dirty' : 'saved' });
-  wrapper.append(button(saveLabel(), () => saveMode === 'manual' ? saveNow() : toggleSaveMenu(wrapper), 'save-main', { 'aria-label': 'Save status' }), button('', () => toggleSaveMenu(wrapper), 'save-mode-button', { 'aria-label': 'Save options', 'aria-haspopup': 'menu', 'aria-expanded': 'false' }));
+  wrapper.append(button(saveLabel(), saveNow, 'save-main', { 'aria-label': 'Save status' }));
   return wrapper;
 }
 
@@ -590,10 +615,9 @@ function renderWorkspace() {
         saveControl(),
         historyButton('undo', undo, !!state.history[item.id]?.length),
         historyButton('redo', redo, !!state.redo[item.id]?.length))),
-    el('div', { class: 'header-right' }, 
-      button(`Sources${item.sources?.length ? ` ${item.sources.length}` : ''}`, () => openSource(openSourceId ? null : item.sources?.[0]?.id || 'library'), 'source-toggle', { 'aria-label': 'Open sources' }),
+    el('div', { class: 'header-right' },
       button('Chat', () => openAiPanel(), 'source-toggle'),
-      appearanceControl()));
+      button(`Sources${item.sources?.length ? ` ${item.sources.length}` : ''}`, () => openSource(openSourceId ? null : item.sources?.[0]?.id || 'library'), 'source-toggle', { 'aria-label': 'Open sources' })));
   app.replaceChildren(el('div', { class: 'workspace-shell' }, renderCanvas(item), chrome));
   updateSaveControls();
   applyView();
