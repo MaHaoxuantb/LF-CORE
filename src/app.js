@@ -208,15 +208,18 @@ function renameWorkspace() {
   input.select();
 }
 
-function documentMenuSubmenu(label, values, current, action) {
+function documentMenuSubmenu(label, values, current, action, format = (value) => value[0].toUpperCase() + value.slice(1)) {
   const wrapper = el('div', { class: 'document-menu-submenu' });
   const trigger = button(label, () => wrapper.classList.toggle('open'), 'document-menu-option submenu-trigger', { role: 'menuitem', 'aria-haspopup': 'menu', 'aria-expanded': 'false' });
   const submenu = el('div', { class: 'document-submenu', role: 'menu', 'aria-label': label });
   for (const value of values) {
-    const option = button(value[0].toUpperCase() + value.slice(1), () => action(value), 'document-menu-option', { role: 'menuitemradio', 'aria-checked': current === value });
+    const option = button(format(value), () => action(value), 'document-menu-option', { role: 'menuitemradio', 'aria-checked': current === value });
     submenu.append(option);
   }
-  trigger.addEventListener('click', () => trigger.setAttribute('aria-expanded', String(wrapper.classList.contains('open'))));
+  const syncExpanded = () => trigger.setAttribute('aria-expanded', String(wrapper.classList.contains('open')));
+  trigger.addEventListener('click', syncExpanded);
+  wrapper.addEventListener('mouseenter', () => { wrapper.classList.add('open'); syncExpanded(); });
+  wrapper.addEventListener('mouseleave', () => { wrapper.classList.remove('open'); syncExpanded(); });
   wrapper.append(trigger, submenu);
   return wrapper;
 }
@@ -232,11 +235,9 @@ function toggleDocumentMenu(wrapper) {
   closeSaveMenu();
   closeDocumentMenu();
   const menu = el('div', { class: 'document-menu', role: 'menu', 'aria-label': 'Document options' });
+  menu.append(el('div', { class: 'document-menu-heading', text: 'File' }));
   menu.append(button('Rename', renameWorkspace, 'document-menu-option', { role: 'menuitem' }));
-  menu.append(el('div', { class: 'document-menu-separator', role: 'separator' }));
-  menu.append(el('div', { class: 'document-menu-heading', text: 'Saving' }));
-  menu.append(button('Auto save', () => setSaveMode('auto'), 'document-menu-option', { role: 'menuitemradio', 'aria-checked': saveMode === 'auto' }));
-  menu.append(button('Manual save', () => setSaveMode('manual'), 'document-menu-option', { role: 'menuitemradio', 'aria-checked': saveMode === 'manual' }));
+  menu.append(documentMenuSubmenu('Saving', ['auto', 'manual'], saveMode, (value) => setSaveMode(value), (value) => value === 'auto' ? 'Auto save' : 'Manual save'));
   menu.append(el('div', { class: 'document-menu-separator', role: 'separator' }));
   appendAppearanceOptions(menu);
   wrapper.append(menu);

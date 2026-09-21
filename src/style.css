@@ -245,7 +245,8 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .document-menu-subheading { padding: 7px 10px 2px; color: #9299a5; font-size: .62rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .document-menu-submenu { position: relative; }
 .document-submenu { display: none; position: absolute; z-index: 41; top: -5px; left: calc(100% + 5px); width: 145px; padding: 5px; border: 1px solid #e1e4eb; border-radius: 10px; background: #fff; box-shadow: 0 12px 34px #26364f24; }
-.document-menu-submenu.open .document-submenu { display: grid; }
+.document-menu-submenu.open .document-submenu,
+.document-menu-submenu:hover .document-submenu { display: grid; }
 .document-menu-submenu.open > .document-menu-option { background: #f1f0fb; color: #4e4ab2; }
 .document-menu-choice { text-transform: capitalize; }
 .document-menu-status { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 5px 3px 10px; color: #7c8797; font-size: .72rem; }
