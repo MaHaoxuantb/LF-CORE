@@ -18,8 +18,8 @@ The product cycle is **explore → understand → consolidate → revisit**. A s
 | Object | Purpose | Key behavior |
 | --- | --- | --- |
 | Workspace | One learning subject | Opens to the master article and remembers reading position |
-| Master article | Coherent current understanding | One Markdown document with LaTeX formulas and a heading outline; AI changes are previewed before application; PDF is not an article format |
-| Graph node | One idea, explanation, or research lead | Can anchor to an article passage, a source passage, or another node; questions are handled by the later chat interface |
+| Master article | Coherent current understanding | One Markdown document with LaTeX formulas and a heading outline; chat edits are previewed before application; PDF is not an article format |
+| Graph node | One idea, explanation, or research lead | Can anchor to an article passage, a source passage, or another node; chat can propose edits to its Markdown content |
 | Link | Relationship between two items | May have a short label such as “supports,” “contradicts,” or “extends” |
 | Source | Imported PDF or pasted material | Original content stays separate from generated content |
 | Source anchor | Precise reference to a passage | Opens the original file and location where possible |
@@ -31,9 +31,9 @@ The graph is the workspace surface. The article remains fully visible on it, so 
 
 1. Enter “I want to learn LEAN.” The system proposes an outline and a full introductory article. The draft is visibly AI-generated. Claims without verified sources are not presented as sourced facts.
 2. Read the article. Highlight several sentences and drag outward to create a graph node anchored to that passage. Keyboard and menu equivalents provide the same action.
-3. Ask a freeform question on that selection or node, such as “Why is this proof step sufficient?” Suggested actions are shortcuts, not a fixed command vocabulary.
+3. Open chat with the selection as context. Add or remove the master article and nodes, then ask a freeform question such as “Why is this proof step sufficient?”
 4. Inspect the answer and any cited or attached source. Optionally pin a PDF, highlight its relevant passage, and link it to the node.
-5. Choose **Put this in the article**. The system proposes a specific insertion or revision and shows a before/after diff. Accept, edit, or cancel it.
+5. Ask chat to revise the article or a selected node. Review each proposed Markdown change before applying it, or edit or discard the proposal.
 6. Return later to the article, with a concise view of unresolved questions and the supporting graph.
 
 ## Product rules

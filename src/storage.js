@@ -4,7 +4,7 @@ const MARKDOWN_KEY = 'learning-canvas:markdown-v3';
 const CANVAS_KEY = 'learning-canvas:canvas-v2';
 const FIRST_KEY = 'learning-canvas:v1';
 
-export function emptyState() { return { version: 4, workspaces: [], history: {}, redo: {} }; }
+export function emptyState() { return { version: 4, workspaces: [], history: {}, redo: {}, chats: {} }; }
 
 export function createWorkspace(title, markdown = '') {
   const id = crypto.randomUUID();
@@ -71,6 +71,7 @@ export function loadState(storage = localStorage) {
   if (current) {
     const parsed = validate(JSON.parse(current), 4);
     parsed.redo ||= {};
+    parsed.chats ||= {};
     parsed.workspaces.forEach(normalizeWorkspace);
     Object.values(parsed.history).flat().forEach(normalizeWorkspace);
     Object.values(parsed.redo).flat().forEach(normalizeWorkspace);
@@ -80,6 +81,7 @@ export function loadState(storage = localStorage) {
   if (markdown) {
     const parsed = validate(JSON.parse(markdown), 3);
     parsed.redo ||= {};
+    parsed.chats ||= {};
     parsed.workspaces.forEach(normalizeWorkspace);
     Object.values(parsed.history).flat().forEach(normalizeWorkspace);
     Object.values(parsed.redo).flat().forEach(normalizeWorkspace);
@@ -89,12 +91,12 @@ export function loadState(storage = localStorage) {
   const canvas = storage.getItem(CANVAS_KEY);
   if (canvas) {
     const parsed = validate(JSON.parse(canvas), 2);
-    return { version: 4, workspaces: parsed.workspaces.map(migrateWorkspace).map(normalizeWorkspace), history: Object.fromEntries(Object.entries(parsed.history).map(([id, snapshots]) => [id, snapshots.map(migrateWorkspace).map(normalizeWorkspace)])), redo: {} };
+    return { version: 4, workspaces: parsed.workspaces.map(migrateWorkspace).map(normalizeWorkspace), history: Object.fromEntries(Object.entries(parsed.history).map(([id, snapshots]) => [id, snapshots.map(migrateWorkspace).map(normalizeWorkspace)])), redo: {}, chats: {} };
   }
   const first = storage.getItem(FIRST_KEY);
   if (first) {
     const parsed = validate(JSON.parse(first), 1);
-    return { version: 4, workspaces: parsed.workspaces.map(migrateWorkspace).map(normalizeWorkspace), history: {}, redo: {} };
+    return { version: 4, workspaces: parsed.workspaces.map(migrateWorkspace).map(normalizeWorkspace), history: {}, redo: {}, chats: {} };
   }
   return emptyState();
 }

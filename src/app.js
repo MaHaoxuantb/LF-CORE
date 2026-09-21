@@ -5,7 +5,8 @@ import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pd
 import { putPdf, getPdf, deletePdf } from './source-store.js';
 import { connectionPort, crossConnectionRoute, nearestConnectionSide, snappedConnectionSides } from './cross-connection.js';
 import { loadModelSettings, saveModelSettings, encryptApiKey, unlockApiKey, getApiKey, lockApiKey } from './model-settings.js';
-import { generateArticle, askModel, proposeInsertion } from './ai.js';
+import { chatModel } from './ai.js';
+import { contextSnapshot, MAX_CONTEXT_CHARS, proposalStatus } from './chat.js';
 import 'katex/dist/katex.min.css';
 import './style.css';
 
@@ -300,13 +301,13 @@ function startWorkspace(title, source = null, generate = false) {
   state.workspaces.unshift(item); state.history[item.id] = [];
   persist(); openWorkspace(item.id);
   if (source) openSource(source.id);
-  if (generate) openAiPanel({ kind: 'generate' });
+  if (generate) openAiPanel({ targetId: 'article', draft: `Write an introductory article about ${title.trim() || 'this topic'} with a clear outline, examples, and open questions. Replace the current working notes.` });
 }
 
 function renderHome() {
   if (flushView()) persist();
   currentId = null; selectedId = null; selectedIds.clear(); selectedPassage = null; openSourceId = null;
-  const header = el('header', { class: 'home-header' }, el('div', { class: 'brand' }, el('span', { class: 'brand-mark', text: 'LF' }), el('span', { class: 'brand-name', text: 'CORE' }), el('span', { class: 'brand-company', text: 'LinecoFlow' })), button('Model settings', renderSettings, 'source-toggle'));
+  const header = el('header', { class: 'home-header' }, el('div', { class: 'brand' }, el('span', { class: 'brand-mark', text: 'LF' }), el('span', { class: 'brand-name', text: 'CORE' }), el('span', { class: 'brand-company', text: 'LinecoFlow' })));
   const form = el('form', { class: 'create-form entry-form' });
   let entryMode = 'topic';
   const tabs = el('div', { class: 'entry-tabs', role: 'tablist', 'aria-label': 'Start from' });
@@ -377,7 +378,7 @@ function deleteWorkspace(id) {
   if (!item || !window.confirm(`Delete “${item.title}” and all its connected nodes? This cannot be undone.`)) return;
   for (const source of item.sources || []) if (source.type === 'pdf') pendingPdfDeletes.add(source.id);
   state.workspaces = state.workspaces.filter((entry) => entry.id !== id);
-  delete state.history[id]; delete state.redo[id];
+  delete state.history[id]; delete state.redo[id]; delete state.chats[id];
   persist(); renderHome();
 }
 
@@ -546,9 +547,7 @@ function renderWorkspace() {
       el('span', { class: 'workspace-title', text: item.title }),
       button(`Sources${item.sources?.length ? ` ${item.sources.length}` : ''}`, () => openSource(openSourceId ? null : item.sources?.[0]?.id || 'library'), 'source-toggle', { 'aria-label': 'Open sources' })),
     el('div', { class: 'header-right' },
-      button('Ask AI', () => openAiPanel({ kind: 'ask', targetId: selectedId || 'article' }), 'source-toggle'),
-      button(`AI history${item.proposals?.length ? ` ${item.proposals.length}` : ''}`, () => openAiPanel({ kind: 'history' }), 'source-toggle'),
-      button('Model settings', renderSettings, 'source-toggle'),
+      button('Chat', () => openAiPanel(), 'source-toggle'),
       saveControl(),
       appearanceControl(),
       historyButton('undo', undo, !!state.history[item.id]?.length),
@@ -749,7 +748,7 @@ function openContextMenu(target, x, y) {
     option('Delete selected nodes', () => removeNodes([...selectedIds]), true);
   } else if (node) {
     option('Open details', () => selectNode(node.id));
-    option('Ask about node', () => openAiPanel({ kind: 'ask', targetId: node.id }));
+    option('Chat with node', () => openAiPanel({ targetId: node.id }));
     option('Edit content on canvas', () => beginNodeMarkdownEdit(node.id));
     if (passage?.targetId === node.id) option('Create node from highlight', () => { selectedPassage = passage; createAnchoredNode(); });
     option('Add child', () => addNode(node.id));
@@ -758,8 +757,7 @@ function openContextMenu(target, x, y) {
     menu.append(el('div', { class: 'context-separator', role: 'separator' }));
     option('Delete node', () => removeNode(node.id), true);
   } else if (onPaper) {
-    option('Ask about article', () => openAiPanel({ kind: 'ask', targetId: 'article' }));
-    option('Generate article draft', () => openAiPanel({ kind: 'generate' }));
+    option('Chat with article', () => openAiPanel({ targetId: 'article' }));
     if (passage?.targetId === 'article') option('Create node from highlight', () => { selectedPassage = passage; createAnchoredNode(); });
     option(editingMarkdown ? 'Done editing' : 'Edit document', () => { editingMarkdown = !editingMarkdown; selectedPassage = null; renderWorkspace(); if (editingMarkdown) document.querySelector('.markdown-editor')?.focus(); });
     option('Add node', () => addNode(null, null, floatingPosition));
@@ -1618,7 +1616,7 @@ function renderDetails(node, item) {
   }
   const actions = el('div', { class: 'panel-actions' }, button('＋ Child', () => addNode(node.id), 'panel-action'), button('＋ Sibling', () => addNode(node.parentId), 'panel-secondary'));
   panel.append(actions);
-  panel.append(button('Ask about this node', () => openAiPanel({ kind: 'ask', targetId: node.id }), 'panel-secondary'));
+  panel.append(button('Chat with this node', () => openAiPanel({ targetId: node.id }), 'panel-secondary'));
   panel.append(button(item.nodes.some((entry) => entry.parentId === node.id) ? 'Delete node and its descendants' : 'Delete node', () => removeNode(node.id), 'remove-branch'));
   return panel;
 }
@@ -1828,7 +1826,7 @@ function renderPaper(item) {
   paper.style.left = `${ROOT.x}px`; paper.style.top = `${ROOT.y}px`;
   paper.style.width = `${item.layout.articleSize.width}px`;
   paper.style.minHeight = `${item.layout.articleSize.minHeight}px`;
-  paper.append(el('div', { class: 'paper-heading' }, el('span', { class: 'paper-label', text: 'master article' }), item.article.origins?.length ? button(`AI edits ${item.article.origins.length}`, () => openAiPanel({ kind: 'history' }), 'paper-ai-action', { title: 'Review accepted AI proposals and model provenance' }) : null, button('Generate draft', () => openAiPanel({ kind: 'generate' }), 'paper-ai-action')));
+  paper.append(el('div', { class: 'paper-heading' }, el('span', { class: 'paper-label', text: 'master article' }), button('Chat about article', () => openAiPanel({ targetId: 'article' }), 'paper-ai-action')));
   const scroll = el('div', { class: 'paper-scroll' });
   if (editingMarkdown) {
     const editor = el('textarea', { class: 'markdown-editor', 'aria-label': 'Edit document', spellcheck: 'true' });
@@ -2016,7 +2014,7 @@ function centerOnElement(element) {
 function renderPassageToolbar() {
   document.querySelector('.passage-toolbar')?.remove();
   if (!selectedPassage) return;
-  const toolbar = el('div', { class: 'passage-toolbar' }, button('＋ Node', createAnchoredNode, 'passage-create', { 'aria-label': 'Create connected node' }), button('Highlight', createHighlight, 'passage-create', { 'aria-label': 'Save highlight for connections' }), button('Ask AI', () => openAiPanel({ kind: 'ask', targetId: selectedPassage.targetId, quote: sourcePlainText(work(), selectedPassage.targetId).slice(selectedPassage.start, selectedPassage.end) }), 'passage-create'), button('×', () => { selectedPassage = null; toolbar.remove(); }, 'passage-close', { 'aria-label': 'Dismiss selection action' }));
+  const toolbar = el('div', { class: 'passage-toolbar' }, button('＋ Node', createAnchoredNode, 'passage-create', { 'aria-label': 'Create connected node' }), button('Highlight', createHighlight, 'passage-create', { 'aria-label': 'Save highlight for connections' }), button('Chat', () => openAiPanel({ targetId: selectedPassage.targetId, quote: sourcePlainText(work(), selectedPassage.targetId).slice(selectedPassage.start, selectedPassage.end) }), 'passage-create'), button('×', () => { selectedPassage = null; toolbar.remove(); }, 'passage-close', { 'aria-label': 'Dismiss selection action' }));
   toolbar.style.left = `${clamp(selectedPassage.x + 12, 12, window.innerWidth - 135)}px`;
   toolbar.style.top = `${clamp(selectedPassage.y - 48, 72, window.innerHeight - 58)}px`;
   document.querySelector('.workspace-shell')?.append(toolbar);
@@ -2046,14 +2044,14 @@ function createHighlight() {
   } catch (error) { announce(error.message); }
 }
 
-function renderSettings() {
+function renderSettings(container = null) {
   document.querySelector('.model-settings-overlay')?.remove();
   const saved = loadModelSettings();
-  const overlay = el('div', { class: 'model-settings-overlay' });
-  const panel = el('section', { class: 'model-settings-card', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Model settings' });
-  const close = () => overlay.remove();
-  overlay.addEventListener('pointerdown', (event) => { if (event.target === overlay) close(); });
-  panel.append(el('div', { class: 'ai-heading' }, el('h2', { text: 'Model settings' }), button('×', close, 'panel-close', { 'aria-label': 'Close settings' })));
+  const overlay = container ? null : el('div', { class: 'model-settings-overlay' });
+  const panel = el('section', { class: `model-settings-card ${container ? 'chat-settings' : ''}`, ...(container ? {} : { role: 'dialog', 'aria-modal': 'true' }), 'aria-label': 'Model settings' });
+  const close = () => { if (container) { aiPanel.tab = 'chat'; renderAiPanel(); } else overlay.remove(); };
+  overlay?.addEventListener('pointerdown', (event) => { if (event.target === overlay) close(); });
+  if (!container) panel.append(el('div', { class: 'ai-heading' }, el('h2', { text: 'Model settings' }), button('×', close, 'panel-close', { 'aria-label': 'Close settings' })));
   panel.append(el('p', { text: 'OpenAI compatible chat completions. Only the context shown before a request is sent to this endpoint. The key is encrypted locally with your passphrase and unlocked for this tab session.' }));
   const endpoint = el('input', { type: 'url', value: saved.endpoint, 'aria-label': 'API endpoint', placeholder: 'https://api.openai.com/v1' });
   const models = el('textarea', { 'aria-label': 'Models, one per line', placeholder: 'One model ID per line' }); models.value = saved.models.join('\n');
@@ -2091,164 +2089,266 @@ function renderSettings() {
     catch (error) { status.textContent = error.message; }
   }, 'panel-secondary'));
   panel.append(controls, el('p', { class: 'ai-muted', text: 'The endpoint and model IDs are stored in browser storage. Your key is stored only as AES-GCM ciphertext; losing the passphrase means replacing the key. Browser site data can be cleared to remove settings. Use a trusted endpoint that permits browser CORS requests.' }));
-  overlay.append(panel); document.body.append(overlay); endpoint.focus();
+  if (container) container.append(panel);
+  else { overlay.append(panel); document.body.append(overlay); endpoint.focus(); }
 }
 
-function openAiPanel(next) {
-  aiPanel = { ...next, proposalId: null, error: '', busy: false, messages: [] };
-  if (next.kind === 'ask' && !next.quote) {
-    const node = work()?.nodes.find((entry) => entry.id === next.targetId);
-    aiPanel.quote = node ? `${node.title}\n${node.document?.markdown || ''}` : '';
-  }
+function chatList() { return state.chats[currentId] ||= []; }
+
+function currentChat() { return chatList().find((chat) => chat.id === aiPanel?.chatId); }
+
+function newChat(seed = {}) {
+  const nodeIds = seed.targetId && seed.targetId !== 'article' ? [seed.targetId]
+    : selectedIds.size ? [...selectedIds] : selectedId ? [selectedId] : [];
+  const mode = seed.targetId === 'article' || (!seed.targetId && !nodeIds.length) ? 'article' : 'selected';
+  const passage = seed.quote && seed.targetId ? { targetId: seed.targetId, quote: seed.quote } : null;
+  const now = new Date().toISOString();
+  const chat = { id: crypto.randomUUID(), title: 'New chat', createdAt: now, updatedAt: now,
+    context: { mode, nodeIds, passage }, messages: [] };
+  chatList().push(chat);
+  persist();
+  aiPanel = { chatId: chat.id, tab: 'chat', draft: seed.draft || '', busy: false, error: '', previewId: null, width: aiPanel?.width };
   renderAiPanel();
 }
 
-function aiProposal(item) { return item.proposals?.find((proposal) => proposal.id === aiPanel?.proposalId); }
+function openAiPanel(seed = null) {
+  if (!work()) return;
+  if (seed || selectedId || selectedIds.size || !chatList().length) return newChat(seed || {});
+  const chat = [...chatList()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+  aiPanel = { chatId: chat.id, tab: 'chat', draft: '', busy: false, error: '', previewId: null, width: aiPanel?.width };
+  renderAiPanel();
+}
+
+function getChatProposal(id) {
+  for (const message of currentChat()?.messages || []) {
+    const proposal = message.proposals?.find((entry) => entry.id === id);
+    if (proposal) return proposal;
+  }
+  return null;
+}
+
+function changeChatContext(update) {
+  const chat = currentChat(); if (!chat) return;
+  update(chat.context);
+  if (chat.context.passage && !contextSnapshot(work(), chat.context).passage) chat.context.passage = null;
+  chat.updatedAt = new Date().toISOString();
+  persist(); renderAiPanel();
+}
+
+function renderContextPicker(item, chat) {
+  const snapshot = contextSnapshot(item, chat.context);
+  const mode = chat.context.mode || (chat.context.article ? 'article' : 'selected');
+  const liveSelection = selectedId ? [selectedId] : [...selectedIds];
+  const availableSelected = liveSelection.length ? liveSelection : chat.context.nodeIds || [];
+  const picker = el('select', { class: 'chat-context-select', 'aria-label': 'Context scope', title: `${snapshot.size.toLocaleString()} / ${MAX_CONTEXT_CHARS.toLocaleString()} context characters` });
+  for (const [value, label] of [['article', 'Master article'], ['selected', 'Selected nodes'], ['all', 'All']]) {
+    const choice = el('option', { value, text: label });
+    if (value === 'selected' && !availableSelected.length) choice.disabled = true;
+    picker.append(choice);
+  }
+  picker.value = mode;
+  picker.addEventListener('change', () => changeChatContext((context) => {
+    context.mode = picker.value;
+    if (picker.value === 'selected' && liveSelection.length) context.nodeIds = liveSelection;
+  }));
+  return { snapshot, picker };
+}
+
+function renderProposalCard(proposal, item) {
+  const status = proposalStatus(item, proposal);
+  const target = proposal.targetId === 'article' ? 'Master article' : item.nodes.find((node) => node.id === proposal.targetId)?.title || 'Removed node';
+  const card = el('div', { class: 'chat-proposal' }, el('div', { class: 'chat-proposal-heading' },
+    el('strong', { text: `Proposed edit · ${target}` }), el('span', { text: status === 'accepted' ? 'Applied' : status === 'undone' ? 'Undone' : status === 'discarded' ? 'Discarded' : 'Needs review' })));
+  if (status === 'proposed' || status === 'undone') {
+    card.append(button('Review change', () => { aiPanel.previewId = proposal.id; aiPanel.previewText = proposal.after; aiPanel.error = ''; renderAiPanel(); }, 'chat-review-button'),
+      button('Discard', () => { proposal.status = 'discarded'; persist(); renderAiPanel(); }, 'chat-text-button'));
+  }
+  if (aiPanel.previewId === proposal.id) {
+    const before = el('textarea', { class: 'ai-diff', readonly: '', 'aria-label': 'Current content before proposed edit' });
+    before.value = proposal.before;
+    const after = el('textarea', { class: 'ai-diff', 'aria-label': 'Proposed Markdown' });
+    after.value = aiPanel.previewText ?? proposal.after;
+    after.addEventListener('input', () => { aiPanel.previewText = after.value; });
+    card.append(el('p', { class: 'ai-muted', text: 'Review the full Markdown. You can edit the proposed version before applying it.' }),
+      el('label', { text: 'BEFORE' }), before, el('label', { text: 'AFTER · EDITABLE' }), after,
+      button('Apply change', () => {
+        const workspace = work();
+        const targetObject = proposal.targetId === 'article' ? workspace?.article : workspace?.nodes.find((node) => node.id === proposal.targetId);
+        const currentMarkdown = proposal.targetId === 'article' ? targetObject?.markdown : targetObject?.document?.markdown;
+        if (!targetObject || currentMarkdown !== proposal.before) {
+          aiPanel.error = 'This content changed since the proposal was made. Ask chat for an updated edit.';
+          aiPanel.previewId = null; renderAiPanel(); return;
+        }
+        if (!after.value.trim()) { aiPanel.error = 'Proposed Markdown cannot be empty.'; renderAiPanel(); return; }
+        const acceptedAt = new Date().toISOString();
+        proposal.after = after.value; proposal.status = 'accepted'; proposal.acceptedAt = acceptedAt;
+        change((entry) => {
+          const edited = proposal.targetId === 'article' ? entry.article : entry.nodes.find((node) => node.id === proposal.targetId);
+          if (proposal.targetId === 'article') edited.markdown = after.value;
+          else edited.document.markdown = after.value;
+          (edited.origins ||= []).push({ kind: 'ai', proposalId: proposal.id, acceptedAt, model: proposal.model });
+        }, { article: proposal.targetId === 'article' });
+        aiPanel.previewId = null; aiPanel.previewText = null;
+        renderWorkspace(); announce(`${target} updated. Undo is available.`);
+      }, 'chat-apply-button'),
+      button('Cancel', () => { aiPanel.previewId = null; renderAiPanel(); }, 'chat-text-button'));
+  }
+  return card;
+}
+
+function renderChatTranscript(panel, item, chat) {
+  const transcript = el('div', { class: 'ai-chat-messages', 'aria-live': 'polite' });
+  if (!chat.messages.length) transcript.append(el('div', { class: 'ai-chat-welcome' },
+    el('div', { class: 'ai-chat-welcome-mark', text: '✦' }),
+    el('h3', { text: 'Think it through.' }),
+    el('p', { text: 'Ask a question, or tell chat how to revise the selected article or nodes.' })));
+  for (const message of chat.messages) {
+    const bubble = el('div', { class: `ai-message ai-message-${message.role}` });
+    if (message.role === 'user') {
+      bubble.append(el('p', { text: message.content }));
+      if (message.contextSnapshot) bubble.append(el('small', { class: 'chat-message-context', text: `Context: ${message.contextSnapshot.targets.map((target) => target.title).join(', ') || 'none'}` }));
+    } else {
+      bubble.append(el('div', { class: 'ai-message-label', text: 'AI' }));
+      if (message.content) {
+        const answer = el('div', { class: 'ai-output markdown-preview' });
+        answer.innerHTML = renderMarkdown(message.content);
+        bubble.append(answer);
+      }
+      for (const proposal of message.proposals || []) bubble.append(renderProposalCard(proposal, item));
+      bubble.append(el('small', { class: 'chat-message-context', text: `${message.model} · ${new Date(message.createdAt).toLocaleString()}` }));
+    }
+    transcript.append(bubble);
+  }
+  if (aiPanel.busy) transcript.append(el('div', { class: 'ai-message ai-message-assistant ai-chat-thinking', text: 'Thinking…' }));
+  panel.append(transcript);
+  requestAnimationFrame(() => { if (transcript.isConnected) transcript.scrollTop = transcript.scrollHeight; });
+}
+
+function renderChatComposer(panel, item, chat, snapshot, picker) {
+  const settings = loadModelSettings();
+  const unavailable = !settings.models.length || !!(settings.secret && !getApiKey());
+  if (unavailable) panel.append(el('div', { class: 'chat-config-notice' },
+    el('span', { text: !settings.models.length ? 'Choose an endpoint and model to start chatting.' : 'Unlock your API key to continue chatting.' }),
+    button('Model settings', () => { aiPanel.tab = 'settings'; renderAiPanel(); }, 'chat-text-button')));
+  if (snapshot.size > MAX_CONTEXT_CHARS) panel.append(el('p', { class: 'ai-error chat-error', text: 'Context is too large. Choose a smaller scope before sending.' }));
+  if (aiPanel.error) panel.append(el('p', { class: 'ai-error chat-error', role: 'alert', text: aiPanel.error }));
+  const form = el('form', { class: 'ai-chat-composer' });
+  const input = el('textarea', { class: 'ai-question', 'aria-label': 'Your message', title: 'Enter to send · Option + Enter for a new line', placeholder: 'Ask or describe a change…', rows: '1' });
+  input.value = aiPanel.draft || '';
+  const resizeInput = () => { input.style.height = 'auto'; input.style.height = `${Math.min(100, input.scrollHeight)}px`; };
+  input.addEventListener('input', () => { aiPanel.draft = input.value; resizeInput(); });
+  input.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.isComposing) return;
+    event.preventDefault();
+    if (event.altKey) {
+      input.setRangeText('\n', input.selectionStart, input.selectionEnd, 'end');
+      aiPanel.draft = input.value;
+      resizeInput();
+    } else form.requestSubmit();
+  });
+  const send = button('Send', () => {}, 'panel-action', { 'aria-label': 'Send message' });
+  send.type = 'submit'; send.disabled = unavailable || aiPanel.busy || snapshot.size > MAX_CONTEXT_CHARS;
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const question = input.value.trim();
+    if (!question || aiPanel.busy) return;
+    const selected = contextSnapshot(work(), chat.context);
+    if (selected.size > MAX_CONTEXT_CHARS) { aiPanel.error = 'Context is too large. Deselect items before sending.'; renderAiPanel(); return; }
+    const config = loadModelSettings();
+    if (!config.models.length || (config.secret && !getApiKey())) { aiPanel.tab = 'settings'; renderAiPanel(); return; }
+    const scope = aiPanel, workspaceId = item.id, chatId = chat.id;
+    const prior = chat.messages.filter((message) => message.role === 'user' || message.role === 'assistant').map((message) => ({ role: message.role, content: message.content }));
+    const userMessage = { id: crypto.randomUUID(), role: 'user', content: question, contextSnapshot: selected, createdAt: new Date().toISOString() };
+    chat.messages.push(userMessage);
+    if (chat.title === 'New chat') chat.title = question.slice(0, 56);
+    chat.updatedAt = userMessage.createdAt;
+    scope.draft = ''; scope.error = ''; scope.busy = true;
+    persist(); renderAiPanel();
+    try {
+      const result = await chatModel(config, getApiKey(), prior, question, selected);
+      const savedChat = state.chats[workspaceId]?.find((entry) => entry.id === chatId);
+      if (!savedChat) return;
+      const proposals = result.edits.map((edit) => ({
+        id: crypto.randomUUID(), targetId: edit.targetId,
+        before: selected.targets.find((target) => target.id === edit.targetId).markdown,
+        after: edit.markdown, status: 'proposed', model: config.selectedModel
+      }));
+      savedChat.messages.push({ id: crypto.randomUUID(), role: 'assistant', content: result.reply, proposals,
+        model: config.selectedModel, endpoint: config.endpoint, createdAt: new Date().toISOString() });
+      savedChat.updatedAt = new Date().toISOString(); persist();
+    } catch (error) {
+      chat.messages = chat.messages.filter((message) => message.id !== userMessage.id);
+      if (scope === aiPanel) { scope.error = error.message; scope.draft = question; }
+      persist();
+    } finally {
+      scope.busy = false;
+      if (scope === aiPanel && currentId === workspaceId) renderAiPanel();
+    }
+  });
+  form.append(input, picker, send);
+  panel.append(form);
+  requestAnimationFrame(() => { if (input.isConnected) resizeInput(); });
+  if (!aiPanel.busy && !aiPanel.previewId) requestAnimationFrame(() => { if (input.isConnected) input.focus(); });
+}
+
+function startChatResize(event, panel) {
+  event.preventDefault();
+  event.stopPropagation();
+  const startX = event.clientX;
+  const startWidth = panel.getBoundingClientRect().width;
+  const minWidth = 300;
+  const maxWidth = Math.max(minWidth, window.innerWidth - 32);
+  const updateWidth = (clientX) => {
+    const width = clamp(startWidth - (clientX - startX), minWidth, maxWidth);
+    panel.style.width = `${width}px`;
+    if (aiPanel) aiPanel.width = width;
+  };
+  const finish = () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', finish);
+    document.removeEventListener('pointercancel', finish);
+  };
+  const move = (moveEvent) => { moveEvent.preventDefault(); updateWidth(moveEvent.clientX); };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', finish);
+  document.addEventListener('pointercancel', finish);
+}
 
 function renderAiPanel() {
   document.querySelector('.ai-panel')?.remove();
   const item = work(); if (!item || !aiPanel) return;
-  const panel = el('aside', { class: 'ai-panel', 'aria-label': aiPanel.kind === 'generate' ? 'Article draft' : aiPanel.kind === 'history' ? 'AI history' : 'Ask AI' });
-  panel.append(el('div', { class: 'ai-heading' }, el('h2', { text: aiPanel.kind === 'generate' ? 'Generate article draft' : aiPanel.kind === 'history' ? 'AI history' : 'Ask AI' }), button('×', () => { aiPanel = null; panel.remove(); }, 'panel-close', { 'aria-label': 'Close AI panel' })));
-  if (aiPanel.kind === 'history') {
-    panel.append(el('p', { class: 'ai-muted', text: 'Saved proposals, requests, model origin, and acceptance status for this workspace.' }));
-    if (!item.proposals?.length) panel.append(el('p', { text: 'No AI proposals yet.' }));
-    for (const record of [...(item.proposals || [])].reverse()) panel.append(button(`${record.type === 'article-draft' ? 'Article draft' : 'Answer'} · ${record.status} · ${record.request.slice(0, 60)}`, () => { aiPanel = { kind: record.type === 'article-draft' ? 'generate' : 'ask', targetId: record.context?.targetId || 'article', quote: record.context?.quote || '', proposalId: record.id, messages: [], draft: '', error: '', busy: false }; renderAiPanel(); }, 'ai-history-item'));
-    document.querySelector('.workspace-shell')?.append(panel);
-    return;
+  const chat = currentChat(); if (!chat) return;
+  const panel = el('aside', { class: 'ai-panel', 'aria-label': 'Workspace chat', ...(aiPanel.width ? { style: `width: ${aiPanel.width}px` } : {}) });
+  panel.addEventListener('pointerdown', (event) => {
+    if (event.clientX - panel.getBoundingClientRect().left <= 8) startChatResize(event, panel);
+  });
+  const heading = el('div', { class: 'ai-heading' },
+    el('div', {}, el('span', { class: 'chat-eyebrow', text: 'WORKSPACE ASSISTANT' }), el('h2', { text: aiPanel.tab === 'chat' ? chat.title : aiPanel.tab === 'history' ? 'Chat history' : 'Model settings' })),
+    button('×', () => { aiPanel = null; panel.remove(); }, 'panel-close', { 'aria-label': 'Close chat' }));
+  panel.append(heading);
+  const tabs = el('nav', { class: 'chat-tabs', 'aria-label': 'Chat sections' });
+  for (const [tab, label] of [['chat', 'Chat'], ['history', 'History'], ['settings', 'Model settings']]) {
+    tabs.append(button(label, () => { aiPanel.tab = tab; aiPanel.error = ''; renderAiPanel(); }, `chat-tab ${aiPanel.tab === tab ? 'active' : ''}`, { 'aria-current': aiPanel.tab === tab ? 'page' : 'false' }));
   }
-  const settings = loadModelSettings();
-  const proposal = aiProposal(item);
-  if (aiPanel.kind === 'ask') {
-    const unavailable = !settings.models.length || (settings.secret && !getApiKey());
-    if (unavailable) panel.append(el('p', { class: 'ai-error', text: !settings.models.length ? 'Configure an endpoint and model before using AI.' : 'Unlock your encrypted API key in Model settings.' }), button('Open model settings', renderSettings, 'panel-action'));
-    const contextLabel = aiPanel.quote ? aiPanel.quote.slice(0, 180) : aiPanel.targetId === 'article' ? 'Article excerpt' : 'Selected node';
-    const chatToolbar = el('div', { class: 'ai-chat-toolbar' }, el('span', { class: 'ai-chat-context', text: `Working with · ${contextLabel}` }), button('New chat', () => { aiPanel.messages = []; aiPanel.proposalId = null; aiPanel.preview = null; aiPanel.error = ''; aiPanel.draft = ''; renderAiPanel(); }, 'ai-new-chat'));
-    panel.append(chatToolbar);
-    const transcript = el('div', { class: 'ai-chat-messages', 'aria-live': 'polite' });
-    const records = item.proposals || [];
-    const messages = aiPanel.messages.length ? aiPanel.messages : (proposal ? [{ role: 'user', content: proposal.request }, { role: 'assistant', content: proposal.output, proposalId: proposal.id }] : []);
-    if (!messages.length) transcript.append(el('div', { class: 'ai-chat-welcome' }, el('div', { class: 'ai-chat-welcome-mark', text: '✦' }), el('h3', { text: 'How can I help?' }), el('p', { text: 'Ask about the article, a selected passage, or one of your nodes.' })));
-    for (const message of messages) {
-      const bubble = el('div', { class: `ai-message ai-message-${message.role}` });
-      bubble.append(el('div', { class: 'ai-message-label', text: message.role === 'user' ? 'You' : 'AskAI' }));
-      if (message.role === 'assistant') {
-        const answer = el('div', { class: 'ai-output markdown-preview' }); answer.innerHTML = renderMarkdown(message.content); bubble.append(answer);
-        const answerProposal = records.find((record) => record.id === message.proposalId);
-        if (answerProposal?.status === 'proposed') bubble.append(button('Put this in the article', () => { aiPanel.proposalId = answerProposal.id; aiPanel.preview = proposeInsertion(work().article.markdown, answerProposal.output, { kind: aiPanel.targetId === 'article' ? 'article' : 'node', quote: aiPanel.quote }); renderAiPanel(); }, 'ai-chat-action'));
-        if (answerProposal?.status === 'accepted') bubble.append(el('span', { class: 'ai-message-status', text: 'Added to article' }));
-      } else bubble.append(el('p', { text: message.content }));
-      transcript.append(bubble);
+  panel.append(tabs);
+  if (aiPanel.tab === 'settings') renderSettings(panel);
+  else if (aiPanel.tab === 'history') {
+    const list = el('div', { class: 'chat-history-list' });
+    list.append(button('＋ New chat', () => newChat(), 'chat-new-button'));
+    for (const entry of [...chatList()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) {
+      list.append(button(entry.title, () => {
+        aiPanel.chatId = entry.id; aiPanel.tab = 'chat'; aiPanel.draft = ''; aiPanel.previewId = null; renderAiPanel();
+      }, `chat-history-row ${entry.id === chat.id ? 'active' : ''}`, { title: new Date(entry.updatedAt).toLocaleString() }));
     }
-    if (aiPanel.busy) transcript.append(el('div', { class: 'ai-message ai-message-assistant ai-chat-thinking', text: 'AskAI is thinking…' }));
-    panel.append(transcript);
-    if (aiPanel.error) panel.append(el('p', { class: 'ai-error', role: 'alert', text: aiPanel.error }));
-    const composer = el('form', { class: 'ai-chat-composer' });
-    const input = el('textarea', { class: 'ai-question', 'aria-label': 'Your message', placeholder: 'Ask a question about this context…', rows: '2' });
-    input.value = aiPanel.draft || '';
-    input.addEventListener('input', () => { aiPanel.draft = input.value; });
-    input.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); composer.requestSubmit(); } });
-    const send = button(aiPanel.busy ? 'Working…' : 'Send', () => {}, 'panel-action');
-    send.type = 'submit'; send.disabled = unavailable || aiPanel.busy;
-    composer.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      if (aiPanel.busy) return;
-      const scope = aiPanel, workspaceId = item.id, question = input.value.trim();
-      if (!question) { scope.error = 'Enter a question first.'; renderAiPanel(); return; }
-      scope.messages.push({ role: 'user', content: question }); scope.draft = ''; scope.busy = true; scope.error = ''; renderAiPanel();
-      try {
-        const config = loadModelSettings();
-        const context = scope.quote || (scope.targetId === 'article' ? item.article.markdown.slice(0, 6000) : '');
-        const output = await askModel(config, getApiKey(), question, { kind: scope.targetId === 'article' ? 'article excerpt' : 'node or selected passage', text: context });
-        if (currentId !== workspaceId || aiPanel !== scope) return;
-        const record = { id: crypto.randomUUID(), type: 'answer', status: 'proposed', request: question, context: { targetId: scope.targetId || 'article', quote: context.slice(0, 6000) }, output, model: config.selectedModel, endpoint: config.endpoint, createdAt: new Date().toISOString(), provenance: 'ai', uncertainty: 'Model output has not been source verified.' };
-        change((entry) => { (entry.proposals ||= []).push(record); }, { rerender: false });
-        scope.messages.push({ role: 'assistant', content: output, proposalId: record.id });
-      } catch (error) { if (aiPanel === scope) scope.error = error.message; }
-      finally { if (aiPanel === scope) { scope.busy = false; renderAiPanel(); } }
-    });
-    composer.append(input, send, el('small', { class: 'ai-chat-composer-hint', text: 'Enter to send · Shift + Enter for a new line' })); panel.append(composer);
-    if (aiPanel.preview) {
-      const preview = aiPanel.preview, selectedProposal = records.find((record) => record.id === aiPanel.proposalId);
-      panel.append(el('h3', { text: `Review change · ${preview.location}` }), el('p', { class: 'ai-muted', text: 'Review the proposed Markdown before accepting it.' }));
-      const before = el('textarea', { class: 'ai-diff', readonly: '', 'aria-label': 'Article before change' }); before.value = preview.before;
-      const after = el('textarea', { class: 'ai-diff', 'aria-label': 'Proposed article Markdown' }); after.value = preview.after;
-      panel.append(before, after, button('Accept article change', () => {
-        if (work().article.markdown !== preview.before) { aiPanel.error = 'The article changed. Review the proposal again.'; aiPanel.preview = null; renderAiPanel(); return; }
-        if (!after.value.trim() || !selectedProposal) return;
-        change((entry) => { entry.article.markdown = after.value; entry.article.origins ||= []; entry.article.origins.push({ kind: 'ai', proposalId: selectedProposal.id, acceptedAt: new Date().toISOString(), model: selectedProposal.model }); entry.proposals.find((candidate) => candidate.id === selectedProposal.id).status = 'accepted'; }, { article: true });
-        aiPanel.preview = null; aiPanel.proposalId = null; renderWorkspace(); announce('Article updated. Undo is available.');
-      }, 'panel-action'), button('Cancel review', () => { aiPanel.preview = null; aiPanel.proposalId = null; renderAiPanel(); }, 'panel-secondary'));
-    }
-    document.querySelector('.workspace-shell')?.append(panel);
-    if (!aiPanel.busy) requestAnimationFrame(() => { transcript.scrollTop = transcript.scrollHeight; input.focus(); });
-    return;
-  }
-  if (!proposal && (!settings.models.length || (settings.secret && !getApiKey()))) {
-    panel.append(el('p', { class: 'ai-error', text: !settings.models.length ? 'Configure an endpoint and model before using AI.' : 'Unlock your encrypted API key in Model settings.' }), button('Open model settings', renderSettings, 'panel-action'));
-  }
-  if (!proposal) {
-    const context = aiPanel.kind === 'generate' ? `Topic: ${item.title}` : aiPanel.quote || (aiPanel.targetId === 'article' ? 'Article (first 6,000 characters)' : 'Node');
-    panel.append(el('p', { class: 'ai-muted', text: `Sent to ${settings.endpoint || 'your endpoint'} · ${settings.selectedModel || 'no model selected'}` }), el('p', { class: 'ai-context', text: context.slice(0, 700) }));
-    if (aiPanel.kind === 'ask') {
-      const input = el('textarea', { class: 'ai-question', 'aria-label': 'Your question', placeholder: 'What would you like to understand?' });
-      input.value = aiPanel.question || '';
-      input.addEventListener('input', () => { aiPanel.question = input.value; });
-      panel.append(input);
-      const suggestions = el('div', { class: 'ai-suggestions' });
-      for (const suggestion of ['Explain this step', 'Give an example', 'What is uncertain?']) suggestions.append(button(suggestion, () => { input.value = suggestion; aiPanel.question = suggestion; input.focus(); }, 'panel-secondary'));
-      panel.append(suggestions);
-    }
-    if (aiPanel.error) panel.append(el('p', { class: 'ai-error', role: 'alert', text: aiPanel.error }));
-    const request = button(aiPanel.busy ? 'Working…' : aiPanel.kind === 'generate' ? 'Generate draft' : 'Ask', async () => {
-      if (aiPanel.busy) return;
-      const scope = aiPanel, workspaceId = item.id;
-      const question = scope.question?.trim();
-      if (scope.kind === 'ask' && !question) { scope.error = 'Enter a question first.'; renderAiPanel(); return; }
-      const config = loadModelSettings();
-      if (!config.models.length || (config.secret && !getApiKey())) { scope.error = 'Configure a model and unlock your key first.'; renderAiPanel(); return; }
-      scope.busy = true; scope.error = ''; renderAiPanel();
-      try {
-        const context = scope.quote || (scope.targetId === 'article' ? item.article.markdown.slice(0, 6000) : '');
-        const output = scope.kind === 'generate' ? await generateArticle(config, getApiKey(), item.title) : await askModel(config, getApiKey(), question, { kind: scope.targetId === 'article' ? 'article excerpt' : 'node or selected passage', text: context });
-        if (currentId !== workspaceId || aiPanel !== scope) return;
-        const record = { id: crypto.randomUUID(), type: scope.kind === 'generate' ? 'article-draft' : 'answer', status: 'proposed', request: question || item.title, context: { targetId: scope.targetId || 'article', quote: context.slice(0, 6000) }, output, model: config.selectedModel, endpoint: config.endpoint, createdAt: new Date().toISOString(), provenance: 'ai', uncertainty: 'Model output has not been source verified.' };
-        change((entry) => { (entry.proposals ||= []).push(record); }, { rerender: false });
-        scope.proposalId = record.id; renderAiPanel();
-      } catch (error) { if (aiPanel === scope) { scope.error = error.message; renderAiPanel(); } }
-      finally { scope.busy = false; }
-    }, 'panel-action');
-    request.disabled = aiPanel.busy || !settings.models.length || !!(settings.secret && !getApiKey());
-    panel.append(request);
+    panel.append(list);
   } else {
-    panel.append(el('p', { class: 'ai-muted', text: `${proposal.type === 'article-draft' ? 'Proposed article and outline' : 'Answer proposal'} · ${proposal.model} · ${new Date(proposal.createdAt).toLocaleString()} · ${proposal.status}` }), el('p', { class: 'ai-muted', text: proposal.uncertainty }));
-    const output = el('div', { class: 'ai-output markdown-preview' }); output.innerHTML = renderMarkdown(proposal.output); panel.append(output);
-    if (proposal.status === 'proposed') {
-      panel.append(button(proposal.type === 'article-draft' ? 'Preview article replacement' : 'Put this in the article', () => {
-        aiPanel.preview = proposal.type === 'article-draft' ? { before: work().article.markdown, after: proposal.output, location: 'Replace the full article' } : proposeInsertion(work().article.markdown, proposal.output, { kind: aiPanel.targetId === 'article' ? 'article' : 'node', quote: aiPanel.quote });
-        renderAiPanel();
-      }, 'panel-action'));
-      if (aiPanel.preview) {
-        const preview = aiPanel.preview;
-        panel.append(el('h3', { text: `Review change · ${preview.location}` }), el('p', { class: 'ai-muted', text: 'Before and after Markdown. You can edit the proposed text before accepting.' }));
-        const before = el('textarea', { class: 'ai-diff', readonly: '', 'aria-label': 'Article before change' }); before.value = preview.before;
-        const after = el('textarea', { class: 'ai-diff', 'aria-label': 'Proposed article Markdown' }); after.value = preview.after;
-        panel.append(before, after, button('Accept article change', () => {
-          if (work().article.markdown !== preview.before) { aiPanel.error = 'The article changed. Review the proposal again.'; aiPanel.preview = null; renderAiPanel(); return; }
-          if (!after.value.trim()) return;
-          change((entry) => {
-            entry.article.markdown = after.value;
-            entry.article.origins ||= [];
-            entry.article.origins.push({ kind: 'ai', proposalId: proposal.id, acceptedAt: new Date().toISOString(), model: proposal.model });
-            entry.proposals.find((candidate) => candidate.id === proposal.id).status = 'accepted';
-          }, { article: true });
-          aiPanel = null; renderWorkspace(); announce('Article updated. Undo is available.');
-        }, 'panel-action'));
-      }
-      if (aiPanel.error) panel.append(el('p', { class: 'ai-error', role: 'alert', text: aiPanel.error }));
-      panel.append(button('Discard proposal', () => { change((entry) => { entry.proposals.find((candidate) => candidate.id === proposal.id).status = 'discarded'; }); aiPanel = null; renderWorkspace(); }, 'panel-secondary'));
-    }
-    panel.append(button('New request', () => { aiPanel = { kind: aiPanel.kind, targetId: aiPanel.targetId, quote: aiPanel.quote, proposalId: null, busy: false, error: '' }; renderAiPanel(); }, 'panel-secondary'));
+    const toolbar = el('div', { class: 'ai-chat-toolbar' },
+      el('span', { class: 'chat-toolbar-label', text: `${chat.messages.length} messages · ${new Date(chat.updatedAt).toLocaleDateString()}` }),
+      button('＋ New chat', () => newChat(), 'ai-new-chat'));
+    panel.append(toolbar);
+    const { snapshot, picker } = renderContextPicker(item, chat);
+    renderChatTranscript(panel, item, chat);
+    renderChatComposer(panel, item, chat, snapshot, picker);
   }
   document.querySelector('.workspace-shell')?.append(panel);
 }
