@@ -180,6 +180,45 @@ function closeSaveMenu() {
   document.querySelectorAll('.save-mode-button').forEach((control) => control.setAttribute('aria-expanded', 'false'));
 }
 
+function closeDocumentMenu() {
+  document.querySelector('.document-menu')?.remove();
+  document.querySelectorAll('.document-menu-button').forEach((control) => control.setAttribute('aria-expanded', 'false'));
+}
+
+function renameWorkspace() {
+  const item = work();
+  const wrapper = document.querySelector('.document-menu-control');
+  if (!item || !wrapper || wrapper.querySelector('.document-title-input')) return;
+  closeDocumentMenu();
+  const title = wrapper.querySelector('.document-menu-button');
+  const input = el('input', { class: 'document-title-input', value: item.title, 'aria-label': 'Rename document', spellcheck: 'false' });
+  title.replaceWith(input);
+  const finish = (save = true) => {
+    if (!input.isConnected) return;
+    const value = input.value.trim();
+    if (save && value && value !== item.title) change((workspace) => { workspace.title = value; });
+    else renderWorkspace();
+  };
+  input.addEventListener('blur', () => finish(true), { once: true });
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); input.blur(); }
+    if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+  });
+  input.focus();
+  input.select();
+}
+
+function toggleDocumentMenu(wrapper) {
+  if (wrapper.querySelector('.document-menu')) return closeDocumentMenu();
+  closeSaveMenu();
+  closeDocumentMenu();
+  const menu = el('div', { class: 'document-menu', role: 'menu', 'aria-label': 'Document options' });
+  menu.append(button('rename', renameWorkspace, 'document-menu-option', { role: 'menuitem' }));
+  wrapper.append(menu);
+  wrapper.querySelector('.document-menu-button')?.setAttribute('aria-expanded', 'true');
+  menu.querySelector('button')?.focus();
+}
+
 function toggleSaveMenu(wrapper) {
   if (wrapper.querySelector('.save-menu')) return closeSaveMenu();
   closeSaveMenu();
@@ -541,17 +580,18 @@ function renderWorkspace() {
   ensurePositions(item);
   const chrome = el('div', { class: 'workspace-chrome' },
     el('div', { class: 'header-left' },
-      el('span', { class: 'workspace-brand', 'aria-label': 'LF CORE by LinecoFlow' }, el('strong', { text: 'LF' }), el('span', { text: 'CORE' })),
       iconButton('M3 11 12 3l9 8v9a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z', 'Home', renderHome),
       iconButton('M4 5h16M4 10h11M4 15h16M4 20h11', outlineOpen ? 'Hide outline' : 'Open outline', () => { outlineOpen = !outlineOpen; saveView(); renderWorkspace(); }, outlineOpen),
-      el('span', { class: 'workspace-title', text: item.title }),
-      button(`Sources${item.sources?.length ? ` ${item.sources.length}` : ''}`, () => openSource(openSourceId ? null : item.sources?.[0]?.id || 'library'), 'source-toggle', { 'aria-label': 'Open sources' })),
-    el('div', { class: 'header-right' },
-      button('Chat', () => openAiPanel(), 'source-toggle'),
+      el('div', { class: 'document-menu-control' },
+        button(item.title, () => toggleDocumentMenu(document.querySelector('.document-menu-control')), 'workspace-title document-menu-button', { 'aria-label': `Document options for ${item.title}`, 'aria-haspopup': 'menu', 'aria-expanded': 'false', title: item.title }),
+      ),
       saveControl(),
-      appearanceControl(),
       historyButton('undo', undo, !!state.history[item.id]?.length),
-      historyButton('redo', redo, !!state.redo[item.id]?.length)));
+      historyButton('redo', redo, !!state.redo[item.id]?.length)),
+    el('div', { class: 'header-right' },
+      button(`Sources${item.sources?.length ? ` ${item.sources.length}` : ''}`, () => openSource(openSourceId ? null : item.sources?.[0]?.id || 'library'), 'source-toggle', { 'aria-label': 'Open sources' }),
+      button('Chat', () => openAiPanel(), 'source-toggle'),
+      appearanceControl()));
   app.replaceChildren(el('div', { class: 'workspace-shell' }, renderCanvas(item), chrome));
   updateSaveControls();
   applyView();
@@ -613,7 +653,7 @@ function renderCanvas(item) {
   for (const edge of item.edges) {
     if (endpointVisible(item, edge.fromId) && endpointVisible(item, edge.toId)) scene.append(renderEdgeLabel(item, edge));
   }
-  viewport.append(scene);
+  viewport.append(scene, el('div', { class: 'app-watermark', 'aria-hidden': 'true', text: 'LF CORE' }));
   attachPanAndZoom(viewport);
   const presets = el('div', { class: 'zoom-presets', role: 'menu', 'aria-label': 'Zoom presets' });
   const zoomMenu = el('div', { class: 'zoom-menu' }, button('100%', () => { const open = zoomMenu.classList.toggle('open'); zoomMenu.querySelector('.zoom-value').setAttribute('aria-expanded', String(open)); if (open) presets.querySelector('button')?.focus(); }, 'zoom-value', { 'aria-label': 'Zoom level; choose a preset', 'aria-haspopup': 'menu', 'aria-expanded': 'false' }), presets);
@@ -784,6 +824,7 @@ function openContextMenu(target, x, y) {
 document.addEventListener('pointerdown', (event) => {
   if (!event.target.closest('.context-menu')) closeContextMenu();
   if (!event.target.closest('.save-control')) closeSaveMenu();
+  if (!event.target.closest('.document-menu-control')) closeDocumentMenu();
   if (!event.target.closest('.zoom-menu')) {
     document.querySelector('.zoom-menu.open')?.classList.remove('open');
     document.querySelector('.zoom-value')?.setAttribute('aria-expanded', 'false');
@@ -1040,7 +1081,12 @@ function renderConnectionHandles(scene, item) {
 
 function edgeMidpoint(from, to, fromSide = 'auto', toSide = 'auto') {
   const route = crossConnectionRoute(from, to, fromSide, toSide);
-  return { x: (route.x1 + route.x2) / 2, y: (route.y1 + route.y2) / 2 };
+  // A cubic curve's midpoint is not generally halfway between its endpoints.
+  // Place the description at t=.5 so it stays on the visible connection.
+  return {
+    x: (route.x1 + 3 * route.c1x + 3 * route.c2x + route.x2) / 8,
+    y: (route.y1 + 3 * route.c1y + 3 * route.c2y + route.y2) / 8,
+  };
 }
 
 function placeEdgeLabel(label, item, edge, fromSide = edge.fromSide, toSide = edge.toSide) {
@@ -2356,6 +2402,7 @@ function renderAiPanel() {
 document.addEventListener('keydown', (event) => {
   const key = event.key.toLowerCase(), mod = event.metaKey || event.ctrlKey;
   if (event.key === 'Escape' && document.querySelector('.save-menu')) { event.preventDefault(); closeSaveMenu(); return; }
+  if (event.key === 'Escape' && document.querySelector('.document-menu')) { event.preventDefault(); closeDocumentMenu(); return; }
   if (mod && key === 's') { event.preventDefault(); saveNow(); return; }
   if (!currentId) return;
   if (event.key === 'Escape' && document.querySelector('.context-menu')) { event.preventDefault(); closeContextMenu(); return; }

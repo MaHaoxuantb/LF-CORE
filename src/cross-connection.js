@@ -46,6 +46,7 @@ export function crossConnectionRoute(from, to, fromSide = 'auto', toSide = 'auto
   return {
     d: `M ${start.x} ${start.y} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${end.x} ${end.y}`,
     x1: start.x, y1: start.y, x2: end.x, y2: end.y,
+    c1x, c1y, c2x, c2y,
     fromSide: startSide, toSide: endSide,
   };
 }
