@@ -8,6 +8,7 @@ import { connectionPort, crossConnectionRoute, nearestConnectionSide, snappedCon
 import { loadModelSettings, saveModelSettings, encryptApiKey, unlockApiKey, getApiKey, lockApiKey } from './model-settings.js';
 import { chatModel } from './ai.js';
 import { contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, proposalStatus } from './chat.js';
+import { normalizeGraphFocusPreferences, relatedNodeIds } from './graph-focus.js';
 import 'katex/dist/katex.min.css';
 import './style.css';
 
@@ -53,10 +54,14 @@ let saveMode = 'auto';
 try { saveMode = loadSaveMode(); } catch { /* Browser storage can be unavailable. */ }
 const THEME_KEY = 'learning-canvas:theme-v1';
 const COLOR_KEY = 'learning-canvas:color-v1';
+const GRAPH_FOCUS_KEY = 'learning-canvas:graph-focus-v1';
 const themes = ['auto', 'light', 'dark'];
 const colors = ['violet', 'blue', 'green', 'rose', 'amber'];
 let theme = localStorage.getItem(THEME_KEY) || 'auto';
 let color = localStorage.getItem(COLOR_KEY) || 'violet';
+let graphFocusPreferences;
+try { graphFocusPreferences = normalizeGraphFocusPreferences(JSON.parse(localStorage.getItem(GRAPH_FOCUS_KEY) || '{}')); }
+catch { graphFocusPreferences = normalizeGraphFocusPreferences(); }
 if (!themes.includes(theme)) theme = 'auto';
 if (!colors.includes(color)) color = 'violet';
 function applyAppearance() {
@@ -93,6 +98,7 @@ const pendingPdfDeletes = new Set();
 let selectedPassage = null, editGroup = null, view = { x: 0, y: 0, zoom: 1 };
 let viewTimer = null, toastTimer = null;
 let aiPanel = null;
+let graphFocus = null, graphFocusNodeIds = null, spaceKeySession = null;
 
 function el(tag, attrs = {}, ...children) {
   const node = ['svg', 'path', 'text', 'defs', 'marker', 'circle', 'linearGradient', 'stop'].includes(tag) ? document.createElementNS('http://www.w3.org/2000/svg', tag) : document.createElement(tag);
@@ -152,6 +158,7 @@ function persist(force = false) {
 }
 
 function flushView() {
+  if (graphFocus) { clearTimeout(viewTimer); viewTimer = null; return false; }
   if (!viewTimer) return false;
   clearTimeout(viewTimer); viewTimer = null;
   const item = work();
@@ -373,6 +380,7 @@ function startWorkspace(title, source = null, generate = false) {
 function renderHome() {
   if (flushView()) persist();
   currentId = null; selectedId = null; selectedIds.clear(); selectedPassage = null; openSourceId = null;
+  graphFocus = null; graphFocusNodeIds = null; spaceKeySession = null;
   const header = el('header', { class: 'home-header' }, el('div', { class: 'brand' }, el('span', { class: 'brand-mark', text: 'LF' }), el('span', { class: 'brand-name', text: 'CORE' }), el('span', { class: 'brand-company', text: 'LinecoFlow' })));
   const form = el('form', { class: 'create-form entry-form' });
   let entryMode = 'topic';
@@ -450,6 +458,7 @@ function deleteWorkspace(id) {
 
 function openWorkspace(id) {
   currentId = id; aiPanel = null; selectedId = null; selectedIds.clear(); editingMarkdown = false; selectedPassage = null; editGroup = null; openSourceId = null;
+  graphFocus = null; graphFocusNodeIds = null; spaceKeySession = null;
   const item = work(); if (!item) return renderHome();
   const needsFit = !item.layout?.articleSize;
   if (attachExampleAnchors(item)) {
@@ -482,6 +491,7 @@ function attachExampleAnchors(item) {
 
 function saveView() {
   clearTimeout(viewTimer);
+  if (graphFocus) { viewTimer = null; return; }
   if (saveMode === 'manual') {
     viewTimer = null;
     const item = work(); if (!item) return;
@@ -508,6 +518,7 @@ function applyView() {
 }
 
 function fitCanvas() {
+  if (graphFocus) return fitGraphFocus();
   const viewport = document.querySelector('.canvas-viewport'); if (!viewport) return;
   const item = work();
   const bounds = item.nodes.map((node) => pointFor(item, node.id));
@@ -520,6 +531,74 @@ function fitCanvas() {
   view.x = viewport.clientWidth / 2 - ((minX + maxX) / 2) * view.zoom;
   view.y = viewport.clientHeight / 2 - ((minY + maxY) / 2) * view.zoom;
   applyView(); saveView();
+}
+
+function saveGraphFocusPreferences() {
+  try { localStorage.setItem(GRAPH_FOCUS_KEY, JSON.stringify(graphFocusPreferences)); }
+  catch { announce('Could not save the graph focus preference.'); }
+}
+
+function syncGraphFocus(item) {
+  if (!graphFocus) { graphFocusNodeIds = null; return; }
+  if (!item.nodes.some((node) => node.id === graphFocus.rootId)) {
+    view = { ...graphFocus.beforeView };
+    graphFocus = null;
+    graphFocusNodeIds = null;
+    spaceKeySession = null;
+    return;
+  }
+  graphFocusNodeIds = relatedNodeIds(item, graphFocus.rootId, graphFocus.mode, graphFocus.depth);
+}
+
+function fitGraphFocus() {
+  const viewport = document.querySelector('.canvas-viewport'), item = work();
+  if (!viewport || !item || !graphFocusNodeIds?.size) return;
+  const bounds = item.nodes.filter((node) => graphFocusNodeIds.has(node.id)).map((node) => pointFor(item, node.id));
+  if (!bounds.length) return;
+  const minX = Math.min(...bounds.map((point) => point.x));
+  const maxX = Math.max(...bounds.map((point) => point.x + point.width));
+  const minY = Math.min(...bounds.map((point) => point.y));
+  const maxY = Math.max(...bounds.map((point) => point.y + point.height));
+  const availableWidth = Math.max(240, viewport.clientWidth - (outlineOpen ? 310 : 80));
+  const availableHeight = Math.max(220, viewport.clientHeight - 150);
+  const width = Math.max(180, maxX - minX + 120), height = Math.max(120, maxY - minY + 120);
+  view.zoom = clamp(Math.min(availableWidth / width, availableHeight / height, 1), .45, 1);
+  const leftOffset = outlineOpen ? 275 : 0;
+  view.x = leftOffset + availableWidth / 2 - ((minX + maxX) / 2) * view.zoom;
+  view.y = 70 + availableHeight / 2 - ((minY + maxY) / 2) * view.zoom;
+  applyView();
+}
+
+function enterGraphFocus() {
+  const item = work();
+  if (!item || !selectedId || selectedIds.size || !item.nodes.some((node) => node.id === selectedId)) return false;
+  if (flushView()) persist();
+  graphFocus = { rootId: selectedId, ...graphFocusPreferences, beforeView: { ...view } };
+  activeConnection = null;
+  selectedPassage = null;
+  renderWorkspace();
+  fitGraphFocus();
+  return true;
+}
+
+function exitGraphFocus() {
+  if (!graphFocus) return false;
+  const beforeView = graphFocus.beforeView;
+  graphFocus = null;
+  graphFocusNodeIds = null;
+  view = { ...beforeView };
+  renderWorkspace();
+  return true;
+}
+
+function updateGraphFocus(next) {
+  if (!graphFocus) return;
+  graphFocusPreferences = normalizeGraphFocusPreferences({ ...graphFocusPreferences, ...next });
+  graphFocus.mode = graphFocusPreferences.mode;
+  graphFocus.depth = graphFocusPreferences.depth;
+  saveGraphFocusPreferences();
+  renderWorkspace();
+  fitGraphFocus();
 }
 
 function zoomTo(next, clientX, clientY) {
@@ -627,6 +706,12 @@ function edgePoints(item, edge) {
 function renderWorkspace() {
   const item = work(); if (!item) return renderHome();
   ensureUnifiedNodeEdges(item);
+  syncGraphFocus(item);
+  if (graphFocus && selectedId && !graphFocusNodeIds.has(selectedId)) selectedId = graphFocus.rootId;
+  if (activeConnection?.kind === 'edge') {
+    const edge = item.edges.find((entry) => entry.id === activeConnection.id);
+    if (!edge || !endpointVisible(item, edge.fromId) || !endpointVisible(item, edge.toId) || (graphFocus && !isFocusEdge(item, edge))) activeConnection = null;
+  }
   if (selectedId) selectedIds.clear();
   else selectedIds = new Set([...selectedIds].filter((id) => item.nodes.some((node) => node.id === id && isVisible(item, node))));
   ensurePositions(item);
@@ -646,7 +731,7 @@ function renderWorkspace() {
       button('Chat', toggleAiPanel, `source-toggle ${aiPanel ? 'active' : ''}`, { 'aria-pressed': String(!!aiPanel), 'aria-label': 'Toggle chat' }),
       button(`Sources${item.sources?.length ? ` ${item.sources.length}` : ''}`, () => openSource(openSourceId ? null : item.sources?.[0]?.id || 'library'), `source-toggle ${openSourceId ? 'active' : ''}`, { 'aria-pressed': String(!!openSourceId), 'aria-label': 'Toggle sources' })));
 
-  app.replaceChildren(el('div', { class: 'workspace-shell' }, renderCanvas(item), chrome));
+  app.replaceChildren(el('div', { class: `workspace-shell ${graphFocus ? 'graph-focus-active' : ''}`.trim() }, renderCanvas(item), chrome));
   updateSaveControls();
   applyView();
   for (const preview of document.querySelectorAll('.markdown-preview')) {
@@ -715,13 +800,36 @@ function renderCanvas(item) {
   for (const level of [50, 75, 100, 125, 150, 175]) presets.append(button(`${level}%`, () => { zoomTo(level / 100); zoomMenu.classList.remove('open'); zoomMenu.querySelector('.zoom-value').setAttribute('aria-expanded', 'false'); }, 'zoom-preset', { role: 'menuitem' }));
   presets.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.stopPropagation(); zoomMenu.classList.remove('open'); zoomMenu.querySelector('.zoom-value').setAttribute('aria-expanded', 'false'); zoomMenu.querySelector('.zoom-value').focus(); } });
   const zoom = el('div', { class: 'zoom-controls' }, button('−', () => zoomTo(view.zoom - .15), '', { 'aria-label': 'Zoom out' }), zoomMenu, button('+', () => zoomTo(view.zoom + .15), '', { 'aria-label': 'Zoom in' }), el('span', { class: 'zoom-divider' }), button('Fit', fitCanvas, 'fit-button', { 'aria-label': 'Fit canvas' }));
-  const shell = el('div', { class: 'canvas-shell' }, viewport, zoom);
+  const shell = el('div', { class: `canvas-shell ${graphFocus ? 'graph-focus-active' : ''}`.trim() }, viewport, zoom);
   if (outlineOpen) shell.append(renderOutline(item));
   if (!selectedId && selectedIds.size > 1) {
     shell.append(el('div', { class: 'selection-toolbar', role: 'status' }, el('span', { text: `${selectedIds.size} selected` }), button('Delete', () => removeNodes([...selectedIds]), 'selection-delete'), button('Clear', () => { selectedIds.clear(); renderWorkspace(); }, 'selection-clear')));
   }
+  if (graphFocus) shell.append(renderGraphFocusToolbar(item));
   if (openSourceId) shell.append(renderSourcesPanel(item));
   return shell;
+}
+
+function renderGraphFocusToolbar(item) {
+  const root = item.nodes.find((node) => node.id === graphFocus.rootId);
+  const toolbar = el('div', { class: 'graph-focus-toolbar', role: 'toolbar', 'aria-label': 'Related-node focus settings' });
+  const mode = el('select', { 'aria-label': 'Relationship mode', title: 'Choose which related nodes are shown' });
+  for (const [value, label] of [['directional', 'Directional'], ['connected', 'Connected'], ['neighbors', 'Neighbors']]) {
+    mode.append(el('option', { value, text: label }));
+  }
+  mode.value = graphFocus.mode;
+  mode.addEventListener('change', () => updateGraphFocus({ mode: mode.value }));
+  const depth = el('input', { type: 'number', min: '1', max: '20', step: '1', value: String(graphFocus.depth), 'aria-label': 'Maximum chain length', title: 'Maximum relationship hops in each direction' });
+  depth.disabled = graphFocus.mode === 'neighbors';
+  const applyDepth = () => updateGraphFocus({ depth: depth.value });
+  depth.addEventListener('change', applyDepth);
+  toolbar.append(
+    el('span', { class: 'graph-focus-label', text: `Focused: ${root ? nodeLabel(root) : 'node'}`, title: root ? nodeLabel(root) : '' }),
+    mode,
+    el('label', { class: 'graph-focus-depth' }, el('span', { text: 'Depth' }), depth),
+    button('×', exitGraphFocus, 'graph-focus-exit', { 'aria-label': 'Exit related-node focus', title: 'Exit focus · Space or Escape' })
+  );
+  return toolbar;
 }
 
 function attachPanAndZoom(viewport) {
@@ -735,7 +843,7 @@ function attachPanAndZoom(viewport) {
       const rectangle = el('div', { class: 'selection-rectangle', 'aria-hidden': 'true' });
       viewport.setPointerCapture(event.pointerId);
       const bounds = (x, y) => ({ left: Math.min(start.x, x), top: Math.min(start.y, y), right: Math.max(start.x, x), bottom: Math.max(start.y, y) });
-      const matches = (box) => [...viewport.querySelectorAll('.topic-card')].filter((card) => {
+      const matches = (box) => [...viewport.querySelectorAll('.topic-card:not(.focus-muted)')].filter((card) => {
         const rect = card.getBoundingClientRect();
         return rect.left < box.right && rect.right > box.left && rect.top < box.bottom && rect.bottom > box.top;
       });
@@ -880,7 +988,7 @@ document.addEventListener('pointerdown', (event) => {
   }
 }, true);
 
-function isVisible(item, node) {
+function isNormallyVisible(item, node) {
   let parentId = node.parentId;
   while (parentId) {
     const parent = item.nodes.find((entry) => entry.id === parentId);
@@ -888,6 +996,33 @@ function isVisible(item, node) {
     parentId = parent.parentId;
   }
   return true;
+}
+
+function isVisible(item, node) {
+  return isNormallyVisible(item, node) || !!graphFocusNodeIds?.has(node.id);
+}
+
+function focusNodeClass(id) {
+  if (!graphFocusNodeIds) return '';
+  return graphFocusNodeIds.has(id) ? 'focus-related' : 'focus-muted';
+}
+
+function focusEndpointOwner(item, id) {
+  if (!isHighlightId(id)) return item.nodes.some((node) => node.id === id) ? id : null;
+  const targetId = highlightFor(item, id)?.targetId;
+  return targetId === 'article' || item.nodes.some((node) => node.id === targetId) ? targetId : null;
+}
+
+function isFocusEdge(item, edge) {
+  if (!graphFocusNodeIds) return false;
+  const owners = [focusEndpointOwner(item, edge.fromId), focusEndpointOwner(item, edge.toId)];
+  if (owners.includes(null)) return false;
+  return owners.every((id) => id === 'article' || graphFocusNodeIds.has(id)) && owners.some((id) => graphFocusNodeIds.has(id));
+}
+
+function focusEdgeClass(item, edge) {
+  if (!graphFocusNodeIds) return '';
+  return isFocusEdge(item, edge) ? 'focus-related' : 'focus-muted';
 }
 
 function pointFor(item, id) {
@@ -983,7 +1118,8 @@ function makeConnector(svg, id, from, to, fromY, side, className, attrs, onClick
     path._gradientReverse = reverseGradient;
   }
   updateRoute(path, from, to, fromY, side);
-  const hit = el('path', { d: path.getAttribute('d'), class: 'connector-hit', 'aria-label': 'Edit connection endpoints', tabindex: '0', role: 'button' });
+  const focusClass = className.match(/\bfocus-(?:related|muted)\b/)?.[0] || '';
+  const hit = el('path', { d: path.getAttribute('d'), class: `connector-hit ${focusClass}`.trim(), 'aria-label': 'Edit connection endpoints', tabindex: '0', role: 'button' });
   const activate = (event) => { event.stopPropagation(); onClick(event); };
   hit.addEventListener('click', activate);
   hit.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(event); } });
@@ -1159,7 +1295,7 @@ function edgeMarkerAttrs(edge) {
 
 function renderEdgeLabel(item, edge) {
   const selected = activeConnection?.kind === 'edge' && activeConnection.id === edge.id;
-  const chip = el('div', { class: `edge-label-chip ${selected ? 'active' : ''}`, 'data-edge-label': edge.id });
+  const chip = el('div', { class: `edge-label-chip ${selected ? 'active' : ''} ${focusEdgeClass(item, edge)}`.trim(), 'data-edge-label': edge.id });
   placeEdgeLabel(chip, item, edge);
   const name = button(edge.label || '', () => {
     if (!selected) { selectConnection('edge', edge.id); return; }
@@ -1208,11 +1344,12 @@ function renderConnectors(item) {
     defs.append(el('marker', { id, markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient, markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: color, style: `stroke: ${color}`, 'stroke-width': '1.6', 'stroke-opacity': '.78', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
   }
   svg.append(defs);
-  for (const edge of item.edges) {
+  const edges = [...item.edges].sort((a, b) => Number(isFocusEdge(item, a)) - Number(isFocusEdge(item, b)));
+  for (const edge of edges) {
     if (isHighlightId(edge.fromId) || isHighlightId(edge.toId)) continue;
     const from = item.nodes.find((node) => node.id === edge.fromId), to = item.nodes.find((node) => node.id === edge.toId);
     if (!from || !to || !isVisible(item, from) || !isVisible(item, to)) continue;
-    const lineClass = `cross-line ${edgeDirection(edge) === 'both' ? '' : 'one-way'}`.trim();
+    const lineClass = `cross-line ${edgeDirection(edge) === 'both' ? '' : 'one-way'} ${focusEdgeClass(item, edge)}`.trim();
     const direction = edgeDirection(edge);
     const path = makeConnector(svg, edge.id, pointFor(item, from.id), pointFor(item, to.id), null, edge.toSide, lineClass, { 'data-edge': edge.id, ...edgeMarkerAttrs(edge) }, () => selectConnection('edge', edge.id), direction === 'both', direction === 'reverse');
     updateCrossRoute(path, pointFor(item, from.id), pointFor(item, to.id), edge.fromSide, edge.toSide);
@@ -1223,12 +1360,13 @@ function renderConnectors(item) {
 function renderAnchorConnectors(item) {
   const svg = el('svg', { class: 'connectors anchor-connectors', viewBox: '-4000 -4000 8000 8000', role: 'group', 'aria-label': 'Passage connections' });
   svg.append(el('defs'));
-  for (const edge of item.edges) {
+  const edges = [...item.edges].sort((a, b) => Number(isFocusEdge(item, a)) - Number(isFocusEdge(item, b)));
+  for (const edge of edges) {
     if (!isHighlightId(edge.fromId) && !isHighlightId(edge.toId)) continue;
     if (!endpointVisible(item, edge.fromId) || !endpointVisible(item, edge.toId)) continue;
     const { from, to } = edgePoints(item, edge);
     const direction = edgeDirection(edge);
-    const lineClass = `cross-line ${direction === 'both' ? '' : 'one-way'}`.trim();
+    const lineClass = `cross-line ${direction === 'both' ? '' : 'one-way'} ${focusEdgeClass(item, edge)}`.trim();
     const path = makeConnector(svg, edge.id, from || rootBounds, to || rootBounds, null, edge.toSide, lineClass, { 'data-edge': edge.id, ...edgeMarkerAttrs(edge) }, () => selectConnection('edge', edge.id), direction === 'both', direction === 'reverse');
     if (!from || !to) { path.style.display = 'none'; path._hit.style.display = 'none'; }
     else updateCrossRoute(path, from, to, edge.fromSide, edge.toSide);
@@ -1274,7 +1412,7 @@ function positionConnectionHandles(item) {
 function renderNode(node, item) {
   const pos = item.layout.positions[node.id];
   const label = nodeLabel(node);
-  const card = el('div', { class: `topic-card ${selectedId === node.id || selectedIds.has(node.id) ? 'selected' : ''}`, 'data-node': node.id, tabindex: '0', role: 'button', 'aria-label': label });
+  const card = el('div', { class: `topic-card ${selectedId === node.id || selectedIds.has(node.id) ? 'selected' : ''} ${focusNodeClass(node.id)}`.trim(), 'data-node': node.id, tabindex: '0', role: 'button', 'aria-label': label });
   const size = pointFor(item, node.id);
   card.style.left = `${pos.x}px`; card.style.top = `${pos.y}px`; card.style.width = `${size.width}px`; card.style.height = `${size.height}px`;
   applyNodeSizeClass(card, size.width, size.height);
@@ -1954,7 +2092,7 @@ function reconnect(node) {
 }
 
 function renderPaper(item) {
-  const paper = el('article', { class: 'paper', 'aria-label': 'Document' });
+  const paper = el('article', { class: `paper ${graphFocus ? 'focus-muted' : ''}`.trim(), 'aria-label': 'Document' });
   paper.style.left = `${ROOT.x}px`; paper.style.top = `${ROOT.y}px`;
   paper.style.width = `${item.layout.articleSize.width}px`;
   paper.style.minHeight = `${item.layout.articleSize.minHeight}px`;
@@ -2566,7 +2704,31 @@ document.addEventListener('keydown', (event) => {
   if (mod && key === 'z' && !event.shiftKey) { event.preventDefault(); undo(); return; }
   if (mod && ((key === 'z' && event.shiftKey) || key === 'y')) { event.preventDefault(); redo(); return; }
   if (mod && key === 'k' && selectedPassage) { event.preventDefault(); createAnchoredNode(); return; }
-  if (event.target.closest('input, textarea, select, [contenteditable]')) return;
+  if (event.target.closest('button, input, textarea, select, [contenteditable]')) return;
+  if (event.key === ' ') {
+    if (event.repeat) {
+      if (spaceKeySession?.entered && graphFocus) {
+        event.preventDefault();
+        spaceKeySession.held = true;
+      }
+      return;
+    }
+    if (spaceKeySession?.down) { event.preventDefault(); return; }
+    spaceKeySession = { down: true, entered: false, held: false, exited: false };
+    if (graphFocus) {
+      event.preventDefault();
+      spaceKeySession.exited = true;
+      exitGraphFocus();
+      return;
+    }
+    if (selectedId && !selectedIds.size) {
+      event.preventDefault();
+      spaceKeySession.entered = enterGraphFocus();
+      return;
+    }
+    if (!selectedId && !selectedIds.size) { event.preventDefault(); fitCanvas(); }
+    return;
+  }
   if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
     event.preventDefault();
     const contextId = selectedId || selectedIds.values().next().value;
@@ -2575,12 +2737,22 @@ document.addEventListener('keydown', (event) => {
     if (target && rect) openContextMenu(target, rect.left + 24, rect.top + 24);
     return;
   }
+  if (event.key === 'Escape' && graphFocus) { event.preventDefault(); exitGraphFocus(); return; }
   if (event.key === 'Escape') { selectedId = null; selectedIds.clear(); selectedPassage = null; renderWorkspace(); return; }
   if (event.key === 'Tab' && selectedId) { event.preventDefault(); addNode(selectedId); }
   else if (event.key === 'Enter' && selectedId) { event.preventDefault(); addSibling(work().nodes.find((node) => node.id === selectedId)); }
   else if (key === 'f2' && selectedId) { event.preventDefault(); beginNodeMarkdownEdit(selectedId); }
   else if ((key === 'backspace' || key === 'delete') && (selectedId || selectedIds.size) && window.getSelection()?.isCollapsed) { event.preventDefault(); removeNodes(selectedId ? [selectedId] : [...selectedIds]); }
-  else if (event.key === ' ' && !selectedId && !selectedIds.size) { event.preventDefault(); fitCanvas(); }
+});
+
+document.addEventListener('keyup', (event) => {
+  if (event.key !== ' ') return;
+  const session = spaceKeySession;
+  spaceKeySession = null;
+  if (session?.entered && session.held && graphFocus) {
+    event.preventDefault();
+    exitGraphFocus();
+  }
 });
 
 window.addEventListener('beforeunload', (event) => {

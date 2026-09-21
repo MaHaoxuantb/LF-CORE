@@ -350,7 +350,36 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .selection-toolbar button:hover { background: #f1f0fb; }
 .selection-toolbar .selection-delete { color: #a34d56; }
 .selection-toolbar .selection-delete:hover { background: #fff0f1; }
+.graph-focus-toolbar { position: absolute; z-index: 18; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; align-items: center; gap: 7px; max-width: calc(100vw - 180px); padding: 5px 6px 5px 11px; border: 1px solid #dcddec; border-radius: 10px; background: rgb(255 255 255 / 92%); box-shadow: 0 6px 20px #27395324; color: #586178; font-size: .72rem; white-space: nowrap; -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
+.graph-focus-label { max-width: 210px; overflow: hidden; text-overflow: ellipsis; font-weight: 650; }
+.graph-focus-toolbar select, .graph-focus-toolbar input { height: 29px; border: 1px solid #d7dae3; border-radius: 6px; background: #fff; color: #4d5667; font-size: .71rem; }
+.graph-focus-toolbar select { padding: 0 25px 0 8px; }
+.graph-focus-depth { display: inline-flex; align-items: center; gap: 5px; color: #7a8290; }
+.graph-focus-depth input { width: 48px; padding: 0 4px 0 7px; }
+.graph-focus-exit { width: 29px; height: 29px; border: 0; border-radius: 6px; background: transparent; color: #747c89; font-size: 1rem; }
+.graph-focus-exit:hover, .graph-focus-exit:focus-visible { background: #f1f0fb; color: var(--accent); }
+.graph-focus-active .topic-card, .graph-focus-active .paper, .graph-focus-active .connectors path, .graph-focus-active .edge-label-chip { transition: opacity .16s ease; }
+.graph-focus-active .focus-muted { opacity: .1 !important; pointer-events: none !important; }
+.graph-focus-active .topic-card.focus-related { z-index: 7; opacity: 1; }
+.graph-focus-active .connectors path.focus-related, .graph-focus-active .edge-label-chip.focus-related { opacity: 1; }
+.graph-focus-active .app-watermark { opacity: .012; }
+.workspace-shell.graph-focus-active > .workspace-chrome,
+.workspace-shell.graph-focus-active .zoom-controls,
+.workspace-shell.graph-focus-active .outline-panel,
+.workspace-shell.graph-focus-active .details-panel,
+.workspace-shell.graph-focus-active .sources-panel,
+.workspace-shell.graph-focus-active .ai-panel,
+.workspace-shell.graph-focus-active .passage-toolbar,
+.workspace-shell.graph-focus-active .selection-toolbar { opacity: .1; pointer-events: none; transition: opacity .16s ease; }
+.workspace-shell.graph-focus-active .graph-focus-toolbar { opacity: 1; pointer-events: auto; }
+:root[data-dark='true'] .graph-focus-toolbar { background: rgb(27 27 27 / 92%); color: #e7eaf0; border-color: #444; }
+:root[data-dark='true'] .graph-focus-toolbar select, :root[data-dark='true'] .graph-focus-toolbar input { background: #242424; color: #e7eaf0; border-color: #4b4b4b; }
+@media (prefers-color-scheme: dark) {
+  :root[data-theme='auto'] .graph-focus-toolbar { background: rgb(27 27 27 / 92%); color: #e7eaf0; border-color: #444; }
+  :root[data-theme='auto'] .graph-focus-toolbar select, :root[data-theme='auto'] .graph-focus-toolbar input { background: #242424; color: #e7eaf0; border-color: #4b4b4b; }
+}
 @media (max-width: 620px) { .workspace-chrome { inset: 10px 10px auto; gap: 6px; } .workspace-chrome .header-left-group { max-width: calc(100vw - 100px); gap: 5px; } .workspace-chrome .header-left { max-width: none; flex: 1 1 auto; } .workspace-chrome .header-right { gap: 0; } .document-menu { width: min(210px, calc(100vw - 20px)); } .document-submenu { position: static; width: auto; margin: 0 5px 4px; box-shadow: none; } .workspace-chrome .workspace-title { display: block; max-width: 120px; padding: 0 5px; font-size: .76rem; } .outline-panel { top: 62px; bottom: 75px; } .details-panel { top: auto; bottom: 64px; } .zoom-controls { bottom: 12px; } }
+@media (max-width: 620px) { .graph-focus-toolbar { left: 8px; right: 8px; bottom: 57px; transform: none; max-width: none; overflow-x: auto; } .graph-focus-label { max-width: 125px; } }
 
 /* Floating panels should reveal the canvas, not cover it from top to bottom. */
 .outline-panel { bottom: auto; max-height: min(420px, calc(100vh - 155px)); }
