@@ -1416,23 +1416,6 @@ function renderNode(node, item) {
   const size = pointFor(item, node.id);
   card.style.left = `${pos.x}px`; card.style.top = `${pos.y}px`; card.style.width = `${size.width}px`; card.style.height = `${size.height}px`;
   applyNodeSizeClass(card, size.width, size.height);
-  const grip = el('button', { type: 'button', class: 'drag-grip', text: '⠿', title: 'Move', 'aria-label': `Move ${label}` });
-  grip.addEventListener('pointerdown', (event) => startNodeDrag(event, node, card, grip));
-  grip.addEventListener('keydown', (event) => {
-    const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
-    if (!direction) return;
-    event.preventDefault(); event.stopPropagation();
-    const step = event.shiftKey ? 24 : 8;
-    const ids = selectedIds.has(node.id) ? [...selectedIds] : [node.id];
-    change((entry) => {
-      for (const id of ids) {
-        const position = entry.layout.positions[id];
-        position.x += direction[0] * step;
-        position.y += direction[1] * step;
-      }
-    }, { group: `keyboard-move:${ids.join(',')}` });
-    document.querySelector(`[data-node="${node.id}"] .drag-grip`)?.focus();
-  });
   const content = el('div', { class: 'node-content markdown-preview', 'data-document-id': node.id, tabindex: '0', 'aria-label': `${label} content` });
   content.innerHTML = renderMarkdown(node.document?.markdown || '');
   content.addEventListener('mouseup', (event) => capturePassage(content, node.id, event));
@@ -1454,15 +1437,18 @@ function renderNode(node, item) {
   });
   resize.addEventListener('pointerdown', (event) => startNodeResize(event, node, card, resize));
   resize.addEventListener('keydown', (event) => resizeNodeWithKeys(event, node));
-  card.append(el('div', { class: 'topic-top' }, grip), content);
+  card.append(content);
   if (footer) card.append(footer);
   card.append(link, resize);
   if (selectedId === node.id) card.append(renderNodeActions(node, item));
+  card.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || event.target.closest('.node-content, .anchor-mark, button, input')) return;
+    startNodeDrag(event, node, card);
+  });
   card.addEventListener('click', (event) => {
-    // Leave the content surface alone so the browser can deliver a dblclick
-    // without the first click replacing the card's DOM.
-    if (event.target.closest('.node-content, .anchor-mark, button, input') || !window.getSelection()?.isCollapsed) return;
-    selectNode(node.id);
+    if (card._nodeDragged) { card._nodeDragged = false; return; }
+    if (event.target.closest('.anchor-mark, button, input') || !window.getSelection()?.isCollapsed) return;
+    selectNodeInPlace(node.id, card, node, item);
   });
   card.addEventListener('dblclick', (event) => { if (!event.target.closest('.node-content')) beginNodeMarkdownEdit(node.id); });
   card.addEventListener('keydown', (event) => { if (event.target === card && event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); selectNode(node.id); } });
@@ -1668,14 +1654,21 @@ function resizeNodeWithKeys(event, node) {
   document.querySelector(`[data-node="${node.id}"] .node-resize`)?.focus();
 }
 
-function startNodeDrag(event, node, card, grip) {
+function startNodeDrag(event, node, card) {
   if (event.button !== 0) return;
-  event.stopPropagation(); event.preventDefault();
   const item = work(), moving = selectedIds.has(node.id) ? [...selectedIds] : [node.id];
   const original = Object.fromEntries(moving.map((id) => [id, { ...item.layout.positions[id] }]));
   const originX = event.clientX, originY = event.clientY;
-  grip.setPointerCapture(event.pointerId);
+  let moved = false, ended = false;
   const move = (next) => {
+    if (!moved && Math.hypot(next.clientX - originX, next.clientY - originY) < 5) return;
+    if (!moved) {
+      moved = true;
+      card._nodeDragged = true;
+      event.preventDefault();
+      card.setPointerCapture?.(event.pointerId);
+      window.getSelection()?.removeAllRanges();
+    }
     const dx = Math.round((next.clientX - originX) / view.zoom), dy = Math.round((next.clientY - originY) / view.zoom);
     for (const id of moving) {
       const position = { x: original[id].x + dx, y: original[id].y + dy };
@@ -1685,22 +1678,35 @@ function startNodeDrag(event, node, card, grip) {
     }
     updateConnectors();
   };
-  let ended = false;
   const up = () => {
     if (ended) return;
     ended = true;
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
-    window.removeEventListener('mouseup', up);
-    grip.removeEventListener('lostpointercapture', up);
+    window.removeEventListener('pointercancel', up);
+    if (card.hasPointerCapture?.(event.pointerId)) card.releasePointerCapture(event.pointerId);
+    if (!moved) return;
     const final = Object.fromEntries(moving.map((id) => [id, { ...item.layout.positions[id] }]));
     for (const id of moving) item.layout.positions[id] = original[id];
-    if (moving.some((id) => final[id].x !== original[id].x || final[id].y !== original[id].y)) change((entry) => { for (const id of moving) entry.layout.positions[id] = final[id]; });
+    if (moving.some((id) => final[id].x !== original[id].x || final[id].y !== original[id].y)) {
+      change((entry) => { for (const id of moving) entry.layout.positions[id] = final[id]; });
+    }
   };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
-  window.addEventListener('mouseup', up);
-  grip.addEventListener('lostpointercapture', up);
+  window.addEventListener('pointercancel', up);
+}
+
+function selectNodeInPlace(id, card, node, item) {
+  selectedId = id;
+  selectedIds.clear();
+  selectedPassage = null;
+  editGroup = null;
+  document.querySelectorAll('.topic-card').forEach((entry) => {
+    entry.classList.toggle('selected', entry === card);
+    entry.querySelector('.node-actions')?.remove();
+  });
+  card.append(renderNodeActions(node, item));
 }
 
 function selectNode(id) { selectedId = id; selectedIds.clear(); selectedPassage = null; editGroup = null; renderWorkspace(); }

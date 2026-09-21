@@ -143,12 +143,10 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .anchor-mark:hover, .connectable-highlight:hover { background: #dad5ffcc; cursor: crosshair; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent); }
 .paper-resize { position: absolute; right: 7px; bottom: 6px; width: 26px; height: 26px; border: 0; border-radius: 5px; background: transparent; color: #9a9db4; cursor: nwse-resize; touch-action: none; font-size: 1.2rem; line-height: 1; }
 .paper-resize:hover, .paper-resize:focus-visible { background: #efedff; color: #5d56ba; }
-.topic-card { position: absolute; width: 238px; min-height: 112px; background: #fff; border: 1px solid #d6dced; border-left: 4px solid #766ed9; border-radius: 12px; box-shadow: 0 7px 20px #27395316; color: #283247; padding: 13px 15px 12px; cursor: pointer; user-select: none; }
+.topic-card { position: absolute; width: 238px; min-height: 112px; background: #fff; border: 1px solid #d6dced; border-left: 4px solid #766ed9; border-radius: 12px; box-shadow: 0 7px 20px #27395316; color: #283247; padding: 13px 15px 12px; cursor: grab; user-select: none; }
+.topic-card:active { cursor: grabbing; }
 .topic-card.selected { box-shadow: 0 0 0 3px #aca7ee, 0 10px 24px #27395323; border-color: #837bdb; }
 .topic-card:hover { box-shadow: 0 10px 24px #27395322; }
-.topic-top { display: flex; align-items: center; justify-content: space-between; height: 15px; }
-.drag-grip { background: transparent; border: 0; color: #9ea5b5; font-size: 1.1rem; cursor: grab; padding: 0 1px; touch-action: none; }
-.drag-grip:active { cursor: grabbing; }
 .topic-footer { display: flex; justify-content: space-between; align-items: center; color: #98a1ae; font-size: .67rem; margin-top: 6px; }
 .collapse-button { border: 0; border-radius: 5px; background: #f0f1fb; color: #7069bf; font-size: .65rem; }
 .zoom-controls { position: absolute; left: 21px; bottom: 27px; z-index: 7; display: flex; align-items: center; gap: 8px; border: 1px solid #e3e7ef; border-radius: 9px; background: #fff; box-shadow: 0 4px 15px #27395312; color: #68768b; }
@@ -286,8 +284,6 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .edge-label-remove { padding: 0 3px; font-size: .9rem; opacity: 0; }
 .edge-label-chip:hover .edge-label-remove, .edge-label-remove:focus-visible { opacity: 1; }
 .edge-label-input { width: 110px; border: 0; outline: 0; background: transparent; color: #3f495a; padding: 3px 5px; font-size: .7rem; }
-.topic-top { justify-content: flex-end; height: 18px; }
-.drag-grip { font-size: .88rem; line-height: 1; color: #abb1be; }
 .node-content { position: relative; flex: 1 1 auto; min-height: 0; margin: 8px 0 2px; overflow: hidden; cursor: text; user-select: text; font: .73rem/1.45 Georgia, 'Times New Roman', serif; color: #697486; }
 .topic-card.content-overflow .node-content::after { content: '…'; position: absolute; right: 0; bottom: 0; padding-left: 15px; background: linear-gradient(90deg, #fff0, #fff 35%); color: #8b93a3; pointer-events: none; }
 .node-content:empty::before { content: 'Add content…'; color: #a0a8b2; }
@@ -479,7 +475,6 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 
 /* Compact nodes keep their controls in the corner instead of reserving a row. */
 .topic-card { padding: 11px 13px 19px; }
-.topic-top { position: absolute; top: 9px; right: 11px; height: auto; }
 .node-content { flex: 0 1 auto; margin: 5px 0 0; }
 .node-content > :first-child { margin-right: 22px; }
 .node-content p:last-child, .node-content ul:last-child, .node-content ol:last-child { margin-bottom: 0; }
