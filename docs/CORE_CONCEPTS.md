@@ -77,7 +77,7 @@ For article edits, present the target passage or heading, proposed text, and dif
 
 ## Files, folders, and portability
 
-Do not require learners to manage a file tree. The initial library shows workspaces and sources. Internally, use separate records and imported source files so a large PDF does not sit inside one ever-growing document. The master article's editable and portable format is Markdown (`.md`); do not offer PDF as a master article format or export. A separate portable workspace export may be added later if it proves useful. Its format is independent of the article format and internal storage model.
+Do not require learners to manage a file tree. The initial library shows workspaces and sources. Internally, use separate records and imported source files so a large PDF does not sit inside one ever-growing document. The master article's editable format is Markdown; do not offer PDF as a master article format or export. Portable backup and transfer use a separate versioned `.lfcore` file containing one project and its source copies. Its format is independent of the article format and internal storage model.
 
 ## Success signals
 

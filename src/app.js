@@ -9,6 +9,7 @@ import { loadModelSettings, saveModelSettings, encryptApiKey, unlockApiKey, getA
 import { chatModel } from './ai.js';
 import { contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, proposalStatus } from './chat.js';
 import { normalizeGraphFocusPreferences, relatedNodeIds } from './graph-focus.js';
+import { parseProject, projectFileName, serializeProject, PROJECT_EXTENSION } from './project.js';
 import 'katex/dist/katex.min.css';
 import './style.css';
 
@@ -203,7 +204,7 @@ function renameWorkspace() {
   if (!item || !wrapper || wrapper.querySelector('.document-title-input')) return;
   closeDocumentMenu();
   const title = wrapper.querySelector('.document-menu-button');
-  const input = el('input', { class: 'document-title-input', value: item.title, 'aria-label': 'Rename document', spellcheck: 'false' });
+  const input = el('input', { class: 'document-title-input', value: item.title, 'aria-label': 'Rename project', spellcheck: 'false' });
   title.replaceWith(input);
   const finish = (save = true) => {
     if (!input.isConnected) return;
@@ -259,13 +260,34 @@ function appendAppearanceOptions(menu) {
   menu.append(documentMenuSubmenu('Accent color', colors, color, (value) => setAppearance(theme, value)));
 }
 
+async function downloadProject() {
+  const item = work();
+  if (!item) return;
+  closeDocumentMenu();
+  flushView();
+  const pdfBytes = new Map();
+  try {
+    for (const source of item.sources || []) {
+      if (source.type !== 'pdf') continue;
+      pdfBytes.set(source.id, await getPdf(source.id));
+    }
+    const contents = serializeProject(item, state.chats[item.id] || [], pdfBytes);
+    const url = URL.createObjectURL(new Blob([contents], { type: 'application/vnd.linecoflow.project+json' }));
+    const link = el('a', { href: url, download: projectFileName(item.title) });
+    document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    announce('Project downloaded.');
+  } catch (error) { announce(`Project download failed: ${error.message}`); }
+}
+
 function toggleDocumentMenu(wrapper) {
   if (wrapper.querySelector('.document-menu')) return closeDocumentMenu();
   closeSaveMenu();
   closeDocumentMenu();
-  const menu = el('div', { class: 'document-menu', role: 'menu', 'aria-label': 'Document options' });
+  const menu = el('div', { class: 'document-menu', role: 'menu', 'aria-label': 'Project options' });
   menu.append(el('div', { class: 'document-menu-heading', text: 'File' }));
   menu.append(button('Rename', renameWorkspace, 'document-menu-option', { role: 'menuitem' }));
+  menu.append(button('Download project', downloadProject, 'document-menu-option', { role: 'menuitem' }));
   menu.append(documentMenuSubmenu('Saving', ['auto', 'manual'], saveMode, (value) => setSaveMode(value), (value) => value === 'auto' ? 'Auto save' : 'Manual save'));
   menu.append(el('div', { class: 'document-menu-separator', role: 'separator' }));
   appendAppearanceOptions(menu);
@@ -398,6 +420,31 @@ function startWorkspace(title, source = null, generate = false) {
   if (generate) openAiPanel({ targetId: 'article', draft: `Write an introductory article about ${title.trim() || 'this topic'} with a clear outline, examples, and open questions. Replace the current working notes.` });
 }
 
+async function uploadProject(file) {
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith(PROJECT_EXTENSION)) throw new Error(`Choose a ${PROJECT_EXTENSION} project file.`);
+  const imported = parseProject(await file.text());
+  const storedPdfIds = [];
+  try {
+    for (const pdf of imported.pdfs) {
+      await putPdf(pdf.id, pdf.bytes.buffer);
+      storedPdfIds.push(pdf.id);
+    }
+    state.workspaces.unshift(imported.workspace);
+    state.history[imported.workspace.id] = [];
+    state.redo[imported.workspace.id] = [];
+    state.chats[imported.workspace.id] = imported.chats;
+    if (!persist(true)) throw new Error('The project could not be saved in browser storage.');
+  } catch (error) {
+    state.workspaces = state.workspaces.filter((entry) => entry.id !== imported.workspace.id);
+    delete state.history[imported.workspace.id]; delete state.redo[imported.workspace.id]; delete state.chats[imported.workspace.id];
+    await Promise.allSettled(storedPdfIds.map((id) => deletePdf(id)));
+    throw error;
+  }
+  openWorkspace(imported.workspace.id);
+  announce('Project uploaded.');
+}
+
 function renderHome() {
   if (flushView()) persist();
   currentId = null; selectedId = null; selectedIds.clear(); selectedPassage = null; openSourceId = null;
@@ -406,18 +453,26 @@ function renderHome() {
   const form = el('form', { class: 'create-form entry-form' });
   let entryMode = 'topic';
   const tabs = el('div', { class: 'entry-tabs', role: 'tablist', 'aria-label': 'Start from' });
-  const input = el('input', { type: 'text', placeholder: 'What are you learning?', 'aria-label': 'Workspace title' });
+  const input = el('input', { type: 'text', placeholder: 'What are you learning?', 'aria-label': 'Project title' });
   const pasted = el('textarea', { class: 'entry-paste', placeholder: 'Paste the original text here. It stays separate from your article.', 'aria-label': 'Pasted source text' });
   const pdf = el('input', { type: 'file', accept: '.pdf,application/pdf', class: 'entry-file', 'aria-label': 'Choose a local PDF' });
   const create = el('button', { type: 'submit', text: 'Create canvas  ↗' });
+  const projectUpload = el('input', { type: 'file', accept: PROJECT_EXTENSION, class: 'project-upload-input', 'aria-label': 'Upload project' });
+  const uploadProjectButton = button('Upload project', () => projectUpload.click(), 'project-upload-button');
+  projectUpload.addEventListener('change', async () => {
+    uploadProjectButton.disabled = true;
+    try { await uploadProject(projectUpload.files?.[0]); }
+    catch (error) { announce(`Project upload failed: ${error.message}`); }
+    finally { uploadProjectButton.disabled = false; projectUpload.value = ''; }
+  });
   const setMode = (mode) => {
     entryMode = mode;
-    input.placeholder = mode === 'topic' ? 'What are you learning?' : mode === 'paste' ? 'Workspace title (optional)' : 'Workspace title (defaults to PDF name)';
+    input.placeholder = mode === 'topic' ? 'What are you learning?' : mode === 'paste' ? 'Project title (optional)' : 'Project title (defaults to PDF name)';
     pasted.hidden = mode !== 'paste'; pdf.hidden = mode !== 'pdf';
     for (const tab of tabs.children) tab.setAttribute('aria-selected', String(tab.dataset.mode === mode));
   };
   for (const [mode, label] of [['topic', 'Topic'], ['paste', 'Pasted text'], ['pdf', 'Local PDF']]) tabs.append(button(label, () => setMode(mode), 'entry-tab', { role: 'tab', 'data-mode': mode, 'aria-selected': 'false' }));
-  if (loadError) { input.disabled = true; pasted.disabled = true; pdf.disabled = true; create.disabled = true; }
+  if (loadError) { input.disabled = true; pasted.disabled = true; pdf.disabled = true; create.disabled = true; uploadProjectButton.disabled = true; }
   form.append(tabs, input, pasted, pdf, create);
   setMode('topic');
   form.addEventListener('submit', async (event) => {
@@ -462,7 +517,7 @@ function renderHome() {
     ensurePositions(item); persist(); openWorkspace(item.id);
   }, 'example-link');
   if (loadError) exampleButton.disabled = true;
-  const main = el('main', { class: 'home-main' }, el('div', { class: 'home-eyebrow', text: 'YOUR WORKSPACE' }), el('h1', { text: 'Follow the shape of a thought.' }), el('p', { class: 'home-lead', text: 'Write at the center. Explore connected nodes, then return to what matters.' }), form, exampleButton, el('div', { class: 'list-heading' }, el('h2', { text: 'Your canvases' })), cards);
+  const main = el('main', { class: 'home-main' }, el('div', { class: 'home-eyebrow', text: 'YOUR WORKSPACE' }), el('h1', { text: 'Follow the shape of a thought.' }), el('p', { class: 'home-lead', text: 'Write at the center. Explore connected nodes, then return to what matters.' }), form, el('div', { class: 'home-secondary-actions' }, exampleButton, uploadProjectButton, projectUpload), el('div', { class: 'list-heading' }, el('h2', { text: 'Your canvases' })), cards);
   if (loadError) main.prepend(el('p', { class: 'error-banner', text: `${loadError} Existing data was left untouched.` }));
   app.replaceChildren(el('div', { class: 'home' }, header, main));
   updateSaveControls();
@@ -818,7 +873,7 @@ function renderWorkspace() {
       el('div', { class: 'header-left' },
         iconButton('M4 5h16M4 10h11M4 15h16M4 20h11', outlineOpen ? 'Hide outline' : 'Open outline', () => { outlineOpen = !outlineOpen; saveView(); renderWorkspace(); }, outlineOpen),
         el('div', { class: 'document-menu-control' },
-          button(item.title, () => toggleDocumentMenu(document.querySelector('.document-menu-control')), 'workspace-title document-menu-button', { 'aria-label': `Document options for ${item.title}`, 'aria-haspopup': 'menu', 'aria-expanded': 'false', title: item.title }),
+          button(item.title, () => toggleDocumentMenu(document.querySelector('.document-menu-control')), 'workspace-title document-menu-button', { 'aria-label': `Project options for ${item.title}`, 'aria-haspopup': 'menu', 'aria-expanded': 'false', title: item.title }),
         ),
         saveControl(),
         historyButton('undo', undo, !!state.history[item.id]?.length),

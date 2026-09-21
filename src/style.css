@@ -61,6 +61,10 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .create-form button:hover, .panel-action:hover, .passage-create:hover { background: #403dac; }
 .example-link { border: 0; background: transparent; color: #5654b3; padding: 8px 0; font-size: .84rem; }
 .example-link:hover { text-decoration: underline; }
+.home-secondary-actions { display: flex; align-items: center; gap: 22px; }
+.project-upload-button { border: 0; background: transparent; color: #5654b3; padding: 8px 0; font-size: .84rem; }
+.project-upload-button:hover { text-decoration: underline; }
+.project-upload-input { display: none; }
 .list-heading { display: flex; justify-content: space-between; align-items: center; margin: 63px 0 16px; border-bottom: 1px solid #e2e5ed; }
 .list-heading h2 { font-size: 1rem; }
 .workspace-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
@@ -175,7 +179,7 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 #toast { position: fixed; z-index: 50; left: 50%; bottom: 22px; transform: translateX(-50%); background: #29374d; border-radius: 9px; padding: 10px 15px; color: white; font-size: .8rem; box-shadow: 0 8px 25px #27395335; }
 #toast:empty { display: none; }
 @media (max-width: 850px) { .details-panel { width: 290px; } }
-@media (max-width: 620px) { .home-header { padding: 0 12px; } .home-main { padding: 55px 20px; } .workspace-list { grid-template-columns: 1fr; } .create-form { flex-direction: column; } .home-tag { display: none; } .details-panel { top: auto; bottom: 130px; right: 12px; left: 12px; width: auto; max-height: 45%; } .passage-toolbar { max-width: calc(100vw - 20px); white-space: normal; } }
+@media (max-width: 620px) { .home-header { padding: 0 12px; } .home-main { padding: 55px 20px; } .workspace-list { grid-template-columns: 1fr; } .create-form { flex-direction: column; } .home-secondary-actions { align-items: flex-start; flex-direction: column; gap: 0; } .home-tag { display: none; } .details-panel { top: auto; bottom: 130px; right: 12px; left: 12px; width: auto; max-height: 45%; } .passage-toolbar { max-width: calc(100vw - 20px); white-space: normal; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; } }
 
 /* A single Markdown article supplies the canvas text and the outline. */
