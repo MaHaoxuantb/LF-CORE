@@ -239,6 +239,7 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .document-menu-heading { padding: 7px 10px 3px; color: #777f8d; font-size: .65rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
 .document-menu-subheading { padding: 7px 10px 2px; color: #9299a5; font-size: .62rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .document-menu-submenu { position: relative; }
+.document-menu-submenu::after { content: ''; position: absolute; z-index: 40; top: -5px; left: 100%; width: 6px; height: calc(100% + 10px); }
 .document-submenu { display: none; position: absolute; z-index: 41; top: -5px; left: calc(100% + 5px); width: 145px; padding: 5px; border: 1px solid #e1e4eb; border-radius: 10px; background: #fff; box-shadow: 0 12px 34px #26364f24; }
 .document-menu-submenu.open .document-submenu,
 .document-menu-submenu:hover .document-submenu { display: grid; }

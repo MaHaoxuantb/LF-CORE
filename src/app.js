@@ -228,10 +228,27 @@ function documentMenuSubmenu(label, values, current, action, format = (value) =>
     const option = button(format(value), () => action(value), 'document-menu-option', { role: 'menuitemradio', 'aria-checked': current === value });
     submenu.append(option);
   }
+  let closeTimer;
   const syncExpanded = () => trigger.setAttribute('aria-expanded', String(wrapper.classList.contains('open')));
-  trigger.addEventListener('click', syncExpanded);
-  wrapper.addEventListener('mouseenter', () => { wrapper.classList.add('open'); syncExpanded(); });
-  wrapper.addEventListener('mouseleave', () => { wrapper.classList.remove('open'); syncExpanded(); });
+  const cancelClose = () => { clearTimeout(closeTimer); closeTimer = undefined; };
+  const open = () => {
+    cancelClose();
+    wrapper.parentElement?.querySelectorAll('.document-menu-submenu.open').forEach((item) => {
+      if (item !== wrapper) {
+        item.classList.remove('open');
+        item.querySelector('.submenu-trigger')?.setAttribute('aria-expanded', 'false');
+      }
+    });
+    wrapper.classList.add('open');
+    syncExpanded();
+  };
+  const closeAfterPointerTravel = () => {
+    cancelClose();
+    closeTimer = setTimeout(() => { wrapper.classList.remove('open'); syncExpanded(); }, 400);
+  };
+  trigger.addEventListener('click', () => { cancelClose(); syncExpanded(); });
+  wrapper.addEventListener('mouseenter', open);
+  wrapper.addEventListener('mouseleave', closeAfterPointerTravel);
   wrapper.append(trigger, submenu);
   return wrapper;
 }
