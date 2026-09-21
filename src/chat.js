@@ -47,4 +47,44 @@ export function proposalStatus(workspace, proposal) {
   const target = proposal.targetId === 'article' ? workspace.article : workspace.nodes.find((node) => node.id === proposal.targetId);
   return target?.origins?.some((origin) => origin.proposalId === proposal.id) ? 'accepted' : 'undone';
 }
+
+// A bounded line diff keeps large model proposals responsive in the browser.
+export function diffMarkdownLines(before, after) {
+  const oldLines = before.split('\n'), newLines = after.split('\n');
+  let start = 0;
+  while (start < oldLines.length && start < newLines.length && oldLines[start] === newLines[start]) start++;
+  let oldEnd = oldLines.length, newEnd = newLines.length;
+  while (oldEnd > start && newEnd > start && oldLines[oldEnd - 1] === newLines[newEnd - 1]) { oldEnd--; newEnd--; }
+  const operations = oldLines.slice(0, start).map((text) => ({ kind: 'context', text }));
+  const oldMiddle = oldLines.slice(start, oldEnd), newMiddle = newLines.slice(start, newEnd);
+  if (oldMiddle.length * newMiddle.length > 250_000) {
+    for (const text of oldMiddle) operations.push({ kind: 'removed', text });
+    for (const text of newMiddle) operations.push({ kind: 'added', text });
+  } else {
+    const width = newMiddle.length + 1;
+    const table = new Uint32Array((oldMiddle.length + 1) * width);
+    for (let i = oldMiddle.length - 1; i >= 0; i--) {
+      for (let j = newMiddle.length - 1; j >= 0; j--) {
+        table[i * width + j] = oldMiddle[i] === newMiddle[j]
+          ? 1 + table[(i + 1) * width + j + 1]
+          : Math.max(table[(i + 1) * width + j], table[i * width + j + 1]);
+      }
+    }
+    let i = 0, j = 0;
+    while (i < oldMiddle.length || j < newMiddle.length) {
+      if (i < oldMiddle.length && j < newMiddle.length && oldMiddle[i] === newMiddle[j]) {
+        operations.push({ kind: 'context', text: oldMiddle[i++] }); j++;
+      } else if (i < oldMiddle.length && (j === newMiddle.length || table[(i + 1) * width + j] >= table[i * width + j + 1])) {
+        operations.push({ kind: 'removed', text: oldMiddle[i++] });
+      } else operations.push({ kind: 'added', text: newMiddle[j++] });
+    }
+  }
+  for (let i = oldEnd; i < oldLines.length; i++) operations.push({ kind: 'context', text: oldLines[i] });
+  let oldNumber = 1, newNumber = 1;
+  return operations.map(({ kind, text }) => ({
+    kind, text,
+    beforeLine: kind === 'added' ? null : oldNumber++,
+    afterLine: kind === 'removed' ? null : newNumber++
+  }));
+}
 import { nodeLabel } from './node-content.js';

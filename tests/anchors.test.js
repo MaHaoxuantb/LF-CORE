@@ -2,13 +2,29 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { makeAnchor, resolveAnchor } from '../src/anchors.js';
 import { createWorkspace, emptyState, loadSaveMode, loadState, saveSaveMode, saveState } from '../src/storage.js';
-import { headingTokens } from '../src/markdown.js';
+import { headingTokens, wrapMarkdownHighlight, unwrapMarkdownHighlight } from '../src/markdown.js';
 import { nodeLabel } from '../src/node-content.js';
 
 test('node labels are derived from Markdown, not a separate title', () => {
   assert.equal(nodeLabel({ document: { markdown: '# Plate motion\n\nDetails' } }), 'Plate motion');
   assert.equal(nodeLabel({ document: { markdown: 'A plain note' } }), 'A plain note');
   assert.equal(nodeLabel({ document: { markdown: '' } }), 'Untitled node');
+});
+
+test('Markdown highlights use == marks without changing visible anchor text', () => {
+  const source = '# Motion\n\nThe plate moves slowly. The plate moves quickly.';
+  const quote = 'The plate moves quickly.';
+  const marked = wrapMarkdownHighlight(source, quote, source.lastIndexOf(quote));
+  assert.equal(marked, '# Motion\n\nThe plate moves slowly. ==The plate moves quickly.==');
+  assert.equal(wrapMarkdownHighlight(marked, quote, source.lastIndexOf(quote)), marked);
+  assert.equal(unwrapMarkdownHighlight(marked, quote, source.lastIndexOf(quote)), source);
+  assert.equal(
+    wrapMarkdownHighlight('A **fast plate** moves.', 'fast plate moves.', 2),
+    'A ==**fast plate** moves.=='
+  );
+  assert.deepEqual(headingTokens('# ==Marked heading=='), [{ level: 1, title: 'Marked heading' }]);
+  assert.deepEqual(headingTokens('# ==X=='), [{ level: 1, title: 'X' }]);
+  assert.equal(nodeLabel({ document: { markdown: '# ==Marked node==' } }), 'Marked node');
 });
 
 test('multi-sentence article links survive nearby edits', () => {

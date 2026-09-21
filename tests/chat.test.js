@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { contextSnapshot, MAX_CONTEXT_CHARS, parseChatResponse, proposalStatus } from '../src/chat.js';
+import { contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, parseChatResponse, proposalStatus } from '../src/chat.js';
 import { chatModel } from '../src/ai.js';
 import { emptyState, loadState, saveState, snapshotWorkspace } from '../src/storage.js';
 
@@ -63,6 +63,28 @@ test('undo can be reflected from target provenance without deleting chat records
   assert.equal(proposalStatus(workspace, proposal), 'accepted');
   workspace.nodes[0].origins = [];
   assert.equal(proposalStatus(workspace, proposal), 'undone');
+});
+
+test('line diff marks additions and removals with stable line numbers', () => {
+  const lines = diffMarkdownLines('# Title\nold\nshared\n', '# Title\nnew\nshared\nextra\n');
+  assert.deepEqual(lines.map((line) => [line.kind, line.beforeLine, line.afterLine, line.text]), [
+    ['context', 1, 1, '# Title'],
+    ['removed', 2, null, 'old'],
+    ['added', null, 2, 'new'],
+    ['context', 3, 3, 'shared'],
+    ['added', null, 4, 'extra'],
+    ['context', 4, 5, '']
+  ]);
+});
+
+test('line diff handles identical and large replacements', () => {
+  assert.deepEqual(diffMarkdownLines('same', 'same').map((line) => line.kind), ['context']);
+  const oldText = Array.from({ length: 600 }, (_, i) => `old ${i}`).join('\n');
+  const newText = Array.from({ length: 600 }, (_, i) => `new ${i}`).join('\n');
+  const lines = diffMarkdownLines(oldText, newText);
+  assert.equal(lines.filter((line) => line.kind === 'removed').length, 600);
+  assert.equal(lines.filter((line) => line.kind === 'added').length, 600);
+  assert.equal(lines.at(-1).afterLine, 600);
 });
 
 test('saved chats reopen separately from workspace undo snapshots', () => {

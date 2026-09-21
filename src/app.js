@@ -1,13 +1,13 @@
 import { makeAnchor, resolveAnchor, selectionOffsets } from './anchors.js';
 import { createWorkspace, emptyState, loadSaveMode, loadState, saveSaveMode, saveState, snapshotWorkspace } from './storage.js';
-import { renderMarkdown, headingTokens } from './markdown.js';
+import { renderMarkdown, headingTokens, wrapMarkdownHighlight, unwrapMarkdownHighlight } from './markdown.js';
 import { nodeLabel } from './node-content.js';
 import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
 import { putPdf, getPdf, deletePdf } from './source-store.js';
 import { connectionPort, crossConnectionRoute, nearestConnectionSide, snappedConnectionSides } from './cross-connection.js';
 import { loadModelSettings, saveModelSettings, encryptApiKey, unlockApiKey, getApiKey, lockApiKey } from './model-settings.js';
 import { chatModel } from './ai.js';
-import { contextSnapshot, MAX_CONTEXT_CHARS, proposalStatus } from './chat.js';
+import { contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, proposalStatus } from './chat.js';
 import 'katex/dist/katex.min.css';
 import './style.css';
 
@@ -536,9 +536,11 @@ function zoomTo(next, clientX, clientY) {
 function ensureUnifiedNodeEdges(item) {
   let changed = false;
   item.highlights ||= [];
+  for (const highlight of item.highlights) if (markAnchorInMarkdown(item, highlight)) changed = true;
   for (const node of item.nodes) {
     // Bring older passage links into the same edge collection as card links.
     if (node.anchor) {
+      if (markAnchorInMarkdown(item, node.anchor)) changed = true;
       if (!node.anchor.id) { node.anchor.id = crypto.randomUUID(); changed = true; }
       if (!item.highlights.some((highlight) => highlight.id === node.anchor.id)) {
         item.highlights.push({ ...node.anchor }); changed = true;
@@ -574,6 +576,28 @@ const endpointExists = (item, id) => isHighlightId(id) ? !!highlightFor(item, id
 const endpointVisible = (item, id) => isHighlightId(id)
   ? (highlightFor(item, id)?.targetId === 'article' || !!item.nodes.find((node) => node.id === highlightFor(item, id)?.targetId && isVisible(item, node)))
   : !!item.nodes.find((node) => node.id === id && isVisible(item, node));
+
+function markdownTarget(item, targetId) {
+  return targetId === 'article' ? item.article : item.nodes.find((node) => node.id === targetId)?.document;
+}
+
+function markAnchorInMarkdown(item, anchor) {
+  const target = markdownTarget(item, anchor?.targetId);
+  if (!target || typeof target.markdown !== 'string') return false;
+  const next = wrapMarkdownHighlight(target.markdown, anchor.quote, anchor.start);
+  if (next === target.markdown) return false;
+  target.markdown = next;
+  return true;
+}
+
+function unmarkAnchorInMarkdown(item, anchor) {
+  const target = markdownTarget(item, anchor?.targetId);
+  if (!target || typeof target.markdown !== 'string') return false;
+  const next = unwrapMarkdownHighlight(target.markdown, anchor.quote, anchor.start);
+  if (next === target.markdown) return false;
+  target.markdown = next;
+  return true;
+}
 
 function endpointPoint(item, id, toward = null) {
   if (!isHighlightId(id)) return endpointExists(item, id) ? pointFor(item, id) : null;
@@ -628,6 +652,7 @@ function renderWorkspace() {
   for (const preview of document.querySelectorAll('.markdown-preview')) {
     const targetId = preview.dataset.documentId;
     markAnchors(preview, item.highlights.filter((highlight) => highlight.targetId === targetId));
+    activateMarkdownHighlightDrag(preview, targetId);
   }
   document.querySelectorAll('.topic-card').forEach(updateCardOverflow);
   document.querySelectorAll('.markdown-editor').forEach(resizeEditor);
@@ -692,10 +717,7 @@ function renderCanvas(item) {
   const zoom = el('div', { class: 'zoom-controls' }, button('−', () => zoomTo(view.zoom - .15), '', { 'aria-label': 'Zoom out' }), zoomMenu, button('+', () => zoomTo(view.zoom + .15), '', { 'aria-label': 'Zoom in' }), el('span', { class: 'zoom-divider' }), button('Fit', fitCanvas, 'fit-button', { 'aria-label': 'Fit canvas' }));
   const shell = el('div', { class: 'canvas-shell' }, viewport, zoom);
   if (outlineOpen) shell.append(renderOutline(item));
-  if (selectedId) {
-    const node = item.nodes.find((entry) => entry.id === selectedId);
-    if (node) shell.append(renderDetails(node, item));
-  } else if (selectedIds.size > 1) {
+  if (!selectedId && selectedIds.size > 1) {
     shell.append(el('div', { class: 'selection-toolbar', role: 'status' }, el('span', { text: `${selectedIds.size} selected` }), button('Delete', () => removeNodes([...selectedIds]), 'selection-delete'), button('Clear', () => { selectedIds.clear(); renderWorkspace(); }, 'selection-clear')));
   }
   if (openSourceId) shell.append(renderSourcesPanel(item));
@@ -813,16 +835,14 @@ function openContextMenu(target, x, y) {
   const menu = el('div', { class: 'context-menu', role: 'menu', 'aria-label': group ? 'Selection options' : node ? `${nodeLabel(node)} options` : onPaper ? 'Document options' : 'Canvas options' });
   const option = (label, action, destructive = false) => menu.append(button(label, () => { closeContextMenu(); action(); }, `context-option ${destructive ? 'destructive' : ''}`, { role: 'menuitem' }));
   if (group) {
-    option(`Clear ${selectedIds.size} selected`, () => { selectedIds.clear(); renderWorkspace(); });
-    menu.append(el('div', { class: 'context-separator', role: 'separator' }));
     option('Delete selected nodes', () => removeNodes([...selectedIds]), true);
   } else if (node) {
-    option('Open details', () => selectNode(node.id));
+    option('Show node actions', () => selectNode(node.id));
     option('Chat with node', () => openAiPanel({ targetId: node.id }));
     option('Edit content on canvas', () => beginNodeMarkdownEdit(node.id));
     if (passage?.targetId === node.id) option('Create node from highlight', () => { selectedPassage = passage; createAnchoredNode(); });
     option('Add child', () => addNode(node.id));
-    option('Add sibling', () => addNode(node.parentId));
+    option('Add sibling', () => addSibling(node));
     menu.append(el('div', { class: 'context-separator', role: 'separator' }));
     option('Delete node', () => removeNode(node.id), true);
   } else if (onPaper) {
@@ -1299,6 +1319,7 @@ function renderNode(node, item) {
   card.append(el('div', { class: 'topic-top' }, grip), content);
   if (footer) card.append(footer);
   card.append(link, resize);
+  if (selectedId === node.id) card.append(renderNodeActions(node, item));
   card.addEventListener('click', (event) => {
     // Leave the content surface alone so the browser can deliver a dblclick
     // without the first click replacing the card's DOM.
@@ -1306,8 +1327,53 @@ function renderNode(node, item) {
     selectNode(node.id);
   });
   card.addEventListener('dblclick', (event) => { if (!event.target.closest('.node-content')) beginNodeMarkdownEdit(node.id); });
-  card.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); selectNode(node.id); } });
+  card.addEventListener('keydown', (event) => { if (event.target === card && event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); selectNode(node.id); } });
   return card;
+}
+
+function renderNodeActions(node, item) {
+  const toolbar = el('div', { class: 'node-actions', role: 'toolbar', 'aria-label': `${nodeLabel(node)} actions` });
+  const primary = el('div', { class: 'node-actions-row' },
+    button('Edit', () => beginNodeMarkdownEdit(node.id), 'node-action primary', { title: 'Edit Markdown on the card' }),
+    button('＋ Child', () => addNode(node.id), 'node-action'),
+    button('＋ Sibling', () => addSibling(node), 'node-action'),
+    button('Chat', () => openAiPanel({ targetId: node.id }), 'node-action'));
+  toolbar.append(primary);
+
+  const contextual = el('div', { class: 'node-actions-row secondary' });
+  if (node.anchor) {
+    const anchorRange = resolveAnchor(node.anchor, sourcePlainText(item, node.anchor.targetId));
+    contextual.append(button(anchorRange ? '↗ Passage' : 'Repair link', () => anchorRange ? goToPassage(node) : reconnect(node), `node-action ${anchorRange ? '' : 'warning'}`, {
+      title: anchorRange ? `Go to linked passage: “${shortTitle(node.anchor.quote)}”` : 'Reconnect this node to the selected passage'
+    }));
+  }
+  if (node.sourceRefs?.length) {
+    const sources = el('div', { class: 'node-source-control' });
+    const menu = el('div', { class: 'node-source-menu', role: 'menu', 'aria-label': 'Node sources' });
+    const toggle = button(`Sources ${node.sourceRefs.length}`, () => {
+      const open = sources.classList.toggle('open');
+      toggle.setAttribute('aria-expanded', String(open));
+      if (open) menu.querySelector('button')?.focus();
+    }, 'node-action', { 'aria-haspopup': 'menu', 'aria-expanded': 'false' });
+    for (const reference of node.sourceRefs) {
+      const source = item.sources?.find((entry) => entry.id === reference.sourceId);
+      menu.append(button(`${source?.title || 'Missing source'}${reference.page ? ` · p. ${reference.page}` : ''}`, () => openSource(reference.sourceId, reference.page || 1, reference.anchor), 'node-source-item', {
+        role: 'menuitem', title: `Open original passage: “${shortTitle(reference.anchor.quote)}”`
+      }));
+    }
+    menu.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      event.stopPropagation();
+      sources.classList.remove('open');
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.focus();
+    });
+    sources.append(toggle, menu);
+    contextual.append(sources);
+  }
+  contextual.append(button(item.nodes.some((entry) => entry.parentId === node.id) ? 'Delete branch' : 'Delete', () => removeNode(node.id), 'node-action destructive'));
+  toolbar.append(contextual);
+  return toolbar;
 }
 
 function openLinkMenu(sourceId, grip) {
@@ -1333,6 +1399,8 @@ function openLinkMenu(sourceId, grip) {
     menu.append(button('Remove highlight', () => {
       closeContextMenu();
       change((entry) => {
+        const highlight = highlightFor(entry, sourceId);
+        if (highlight) unmarkAnchorInMarkdown(entry, highlight);
         entry.highlights = entry.highlights.filter((highlight) => `h:${highlight.id}` !== sourceId);
         entry.edges = entry.edges.filter((edge) => edge.fromId !== sourceId && edge.toId !== sourceId);
         for (const node of entry.nodes) if (node.anchor?.id && `h:${node.anchor.id}` === sourceId) node.anchor = null;
@@ -1346,7 +1414,7 @@ function openLinkMenu(sourceId, grip) {
   menu.querySelector('button')?.focus();
 }
 
-function startEdgeDrag(event, node, grip, preserveClick = false) {
+function startEdgeDrag(event, node, grip, preserveClick = false, prepareSource = null) {
   if (event.button !== 0) return;
   if (!preserveClick) event.preventDefault();
   event.stopPropagation();
@@ -1361,7 +1429,7 @@ function startEdgeDrag(event, node, grip, preserveClick = false) {
   let target = null, destination = null, moved = false, sides = {};
   const move = (next) => {
     if (!moved && Math.hypot(next.clientX - event.clientX, next.clientY - event.clientY) < 5) return;
-    moved = true;
+    if (!moved) { prepareSource?.(); moved = true; }
     const rect = scene.getBoundingClientRect();
     destination = { x: (next.clientX - rect.left) / view.zoom, y: (next.clientY - rect.top) / view.zoom, width: 0, height: 0 };
     const hoveredId = endpointAtPointer(next.clientX, next.clientY);
@@ -1396,7 +1464,8 @@ function startEdgeDrag(event, node, grip, preserveClick = false) {
       let newId = target;
       if (!newId) {
         newId = crypto.randomUUID();
-        entry.nodes.push({ id: newId, parentId: null, document: { type: 'markdown', markdown: '' }, anchor: null, collapsed: false, provenance: 'learner' });
+        const sourceHighlight = isHighlightId(sourceId) ? highlightFor(entry, sourceId) : null;
+        entry.nodes.push({ id: newId, parentId: null, document: { type: 'markdown', markdown: '' }, anchor: sourceHighlight ? { ...sourceHighlight } : null, collapsed: false, provenance: 'learner' });
         entry.layout.positions[newId] = { x: destination.x - NODE.width / 2, y: destination.y - NODE.height / 2 };
       }
       const incoming = entry.edges.some((edge) => edge.toId === newId) || entry.nodes.some((candidate) => candidate.id === newId && candidate.parentId);
@@ -1425,7 +1494,7 @@ function startNodeResize(event, node, card, grip) {
   grip.setPointerCapture(event.pointerId);
   const move = (next) => {
     const width = clamp(Math.round(original.width + (next.clientX - x) / view.zoom), 170, 680);
-    const height = clamp(Math.round(original.height + (next.clientY - y) / view.zoom), 100, 480);
+    const height = Math.max(100, Math.round(original.height + (next.clientY - y) / view.zoom));
     item.layout.sizes[node.id] = { width, height };
     card.style.width = `${width}px`; card.style.height = `${height}px`;
     applyNodeSizeClass(card, width, height);
@@ -1456,7 +1525,7 @@ function resizeNodeWithKeys(event, node) {
   event.preventDefault(); event.stopPropagation();
   change((item) => {
     const size = pointFor(item, node.id);
-    item.layout.sizes[node.id] = { width: clamp(size.width + step[0], 170, 680), height: clamp(size.height + step[1], 100, 480) };
+    item.layout.sizes[node.id] = { width: clamp(size.width + step[0], 170, 680), height: Math.max(100, size.height + step[1]) };
   });
   document.querySelector(`[data-node="${node.id}"] .node-resize`)?.focus();
 }
@@ -1544,15 +1613,40 @@ function beginNodeMarkdownEdit(id) {
 }
 
 function resizeNodeEditor(editor) {
-  editor.style.height = 'auto';
-  editor.style.height = `${Math.max(60, Math.min(editor.scrollHeight + 2, 360))}px`;
+  editor.style.height = '100%';
+}
+
+function addSibling(node) {
+  const item = work();
+  if (!item || !node) return;
+  // Highlight-created nodes are root nodes with an anchor instead of a
+  // parent. A sibling must retain that anchor so it gets its own edge from
+  // the same highlight; otherwise it becomes an unconnected root node.
+  const highlightEdge = item.edges.find((edge) => edge.toId === node.id && isHighlightId(edge.fromId));
+  const sharedAnchor = node.anchor || (highlightEdge ? highlightFor(item, highlightEdge.fromId) : null);
+  const position = sharedAnchor && item.layout.positions[node.id]
+    ? { x: item.layout.positions[node.id].x, y: item.layout.positions[node.id].y + (item.layout.sizes[node.id]?.height || NODE.height) + 24 }
+    : null;
+  const anchor = sharedAnchor ? { ...sharedAnchor } : null;
+  addNode(node.parentId ?? null, anchor, position);
 }
 
 function addNode(parentId = null, anchor = null, preferredPosition = null) {
   const item = work(); if (!item) return;
-  const node = { id: crypto.randomUUID(), parentId, document: { type: 'markdown', markdown: anchor ? `# ${shortTitle(anchor.quote)}` : '' }, anchor, collapsed: false, provenance: 'learner' };
+  const node = { id: crypto.randomUUID(), parentId: parentId ?? null, document: { type: 'markdown', markdown: anchor ? `# ${shortTitle(anchor.quote)}` : '' }, anchor, collapsed: false, provenance: 'learner' };
   const position = preferredPosition || suggestedPosition(item, parentId);
-  change((entry) => { entry.nodes.push(node); entry.layout.positions[node.id] = position; });
+  change((entry) => {
+    if (anchor) {
+      markAnchorInMarkdown(entry, anchor);
+      entry.highlights ||= [];
+      entry.edges ||= [];
+      if (!entry.highlights.some((highlight) => highlight.id === anchor.id)) entry.highlights.push({ ...anchor });
+      if (!entry.edges.some((edge) => edge.fromId === `h:${anchor.id}` && edge.toId === node.id)) {
+        entry.edges.push({ id: crypto.randomUUID(), fromId: `h:${anchor.id}`, toId: node.id, label: anchor.description ?? anchor.label ?? null, direction: anchor.direction || 'forward' });
+      }
+    }
+    entry.nodes.push(node); entry.layout.positions[node.id] = position;
+  });
   selectedPassage = null; selectedId = node.id; editingMarkdown = false; renderWorkspace();
   if (anchor) focusSourceAndNode(node.id);
   else focusNode(node.id);
@@ -1603,7 +1697,7 @@ function focusSourceAndNode(id) {
   const from = source || node;
   const minX = Math.min(from.x, node.x), maxX = Math.max(from.x + (from.width || 0), node.x + node.width);
   const minY = Math.min(from.y, node.y), maxY = Math.max(from.y + (from.height || 0), node.y + node.height);
-  const left = outlineOpen ? 280 : 32, right = selectedId ? 358 : 32, top = 80, bottom = 65;
+  const left = outlineOpen ? 280 : 32, right = 32, top = 80, bottom = 105;
   const width = Math.max(220, viewport.clientWidth - left - right), height = Math.max(220, viewport.clientHeight - top - bottom);
   const padding = 24;
   // Reveal the relationship with the smallest possible pan. Keeping the
@@ -1642,41 +1736,6 @@ function removeNodes(ids) {
   selectedId = roots.length === 1 && !removed.has(roots[0].parentId) ? roots[0].parentId : null;
   selectedIds.clear(); selectedPassage = null;
   renderWorkspace(); announce(`${removed.size} node${removed.size === 1 ? '' : 's'} deleted. Undo is available.`);
-}
-
-function renderDetails(node, item) {
-  const anchorRange = resolveAnchor(node.anchor, sourcePlainText(item, node.anchor?.targetId));
-  const panel = el('aside', { class: 'details-panel', 'aria-label': 'Node details' }, el('div', { class: 'panel-heading' }, el('span', { class: 'panel-eyebrow', text: 'NODE DETAILS' }), button('×', () => { selectedId = null; renderWorkspace(); }, 'panel-close', { 'aria-label': 'Close details' })));
-  const markdown = el('textarea', { class: 'details-markdown', placeholder: 'Write here…', 'aria-label': 'Markdown content', spellcheck: 'true' }); markdown.value = node.document?.markdown || '';
-  markdown.addEventListener('input', () => {
-    change((entry) => { entry.nodes.find((n) => n.id === node.id).document.markdown = markdown.value; }, { group: `markdown:${node.id}`, rerender: false });
-    const preview = document.querySelector(`[data-node="${node.id}"] .node-content`);
-    if (preview) {
-      preview.innerHTML = renderMarkdown(markdown.value);
-      markAnchors(preview, work().highlights.filter((entry) => entry.targetId === node.id));
-      updateCardOverflow(preview.closest('.topic-card'));
-      updateConnectors();
-    }
-  });
-  markdown.addEventListener('blur', () => { editGroup = null; });
-  panel.append(el('label', { text: 'MARKDOWN' }), markdown);
-  if (node.sourceRefs?.length) {
-    panel.append(el('label', { text: 'SOURCES' }));
-    for (const reference of node.sourceRefs) {
-      const source = item.sources?.find((entry) => entry.id === reference.sourceId);
-      const link = button(`${source?.title || 'Missing source'}${reference.page ? ` · p. ${reference.page}` : ''}\n“${reference.anchor.quote}”`, () => openSource(reference.sourceId, reference.page || 1, reference.anchor), 'source-ref', { title: 'Open original passage' });
-      panel.append(link);
-    }
-  }
-  if (node.anchor) {
-    panel.append(el('div', { class: `source-quote ${anchorRange ? '' : 'unresolved'}` }, el('span', { class: 'source-label', text: anchorRange ? 'LINKED PASSAGE' : 'PASSAGE NEEDS REPAIR' }), el('p', { text: node.anchor.quote })));
-    panel.append(button(anchorRange ? '↗ Go to passage' : 'Reconnect selected passage', () => anchorRange ? goToPassage(node) : reconnect(node), 'panel-action'));
-  }
-  const actions = el('div', { class: 'panel-actions' }, button('＋ Child', () => addNode(node.id), 'panel-action'), button('＋ Sibling', () => addNode(node.parentId), 'panel-secondary'));
-  panel.append(actions);
-  panel.append(button('Chat with this node', () => openAiPanel({ targetId: node.id }), 'panel-secondary'));
-  panel.append(button(item.nodes.some((entry) => entry.parentId === node.id) ? 'Delete node and its descendants' : 'Delete node', () => removeNode(node.id), 'remove-branch'));
-  return panel;
 }
 
 function openSource(id, page = 1, anchor = null) {
@@ -1883,10 +1942,12 @@ function reconnect(node) {
     const anchor = { ...makeAnchor(targetId, sourcePlainText(work(), targetId), selectedPassage.start, selectedPassage.end), id: node.anchor?.id || crypto.randomUUID() };
     change((entry) => {
       const target = entry.nodes.find((n) => n.id === node.id);
+      if (target.anchor) unmarkAnchorInMarkdown(entry, target.anchor);
       target.anchor = anchor; target.parentId = null;
       const index = entry.highlights.findIndex((highlight) => highlight.id === anchor.id);
       if (index >= 0) entry.highlights[index] = { ...anchor };
       else entry.highlights.push({ ...anchor });
+      markAnchorInMarkdown(entry, anchor);
     });
     selectedPassage = null; announce('Passage reconnected.');
   } catch (error) { announce(error.message); }
@@ -2026,30 +2087,51 @@ function markAnchors(preview, highlights) {
         const item = work();
         const link = item.edges.find((edge) => edge.fromId === `h:${match.highlight.id}` || edge.toId === `h:${match.highlight.id}`);
         const linkedNode = item.nodes.find((node) => node.anchor?.id === match.highlight.id);
-        const mark = el('span', { class: 'anchor-mark', tabindex: '0', role: 'button', 'data-highlight': match.highlight.id, ...(linkedNode ? { 'data-anchor-node': linkedNode.id } : {}), title: 'Drag to connect; click to edit connections', text });
+        const mark = el('span', { class: 'anchor-mark', tabindex: '0', role: 'button', 'data-highlight': match.highlight.id, ...(linkedNode ? { 'data-anchor-node': linkedNode.id } : {}), title: 'Click to edit connections', text });
         mark.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--accent-soft').trim();
         mark.style.borderBottomColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
         const open = (event) => {
           if (event.type === 'click' && !window.getSelection()?.isCollapsed) return;
           event.stopPropagation(); selectedPassage = null;
           if (link) selectConnection('edge', link.id);
-          else openLinkMenu(`h:${match.highlight.id}`, mark);
         };
         mark.addEventListener('click', open);
         mark.addEventListener('pointerdown', (event) => {
           if (event.button !== 0) return;
-          event.preventDefault(); event.stopPropagation();
+          event.stopPropagation();
           startEdgeDrag(event, `h:${match.highlight.id}`, mark, true);
         });
         mark.addEventListener('keydown', (event) => {
           if (event.key === 'Enter') { event.preventDefault(); open(event); }
-          if (event.key === ' ') { event.preventDefault(); openLinkMenu(`h:${match.highlight.id}`, mark); }
         });
-        mark.addEventListener('contextmenu', (event) => { event.preventDefault(); event.stopPropagation(); openLinkMenu(`h:${match.highlight.id}`, mark); });
         fragment.append(mark);
       }
     }
     textNode.replaceWith(fragment);
+  }
+}
+
+function activateMarkdownHighlightDrag(preview, targetId) {
+  for (const mark of preview.querySelectorAll('.markdown-highlight')) {
+    if (mark.querySelector('.anchor-mark')) continue;
+    const before = document.createRange(); before.selectNodeContents(preview); before.setEnd(mark, 0);
+    const plain = textOf(preview), start = before.toString().length, end = start + textOf(mark).length;
+    const anchor = makeAnchor(targetId, plain, start, end);
+    let registered = false;
+    const register = () => {
+      if (registered) return;
+      change((item) => { (item.highlights ||= []).push(anchor); }, { rerender: false });
+      registered = true;
+      mark.classList.add('anchor-mark');
+      mark.dataset.highlight = anchor.id;
+    };
+    mark.classList.add('connectable-highlight');
+    mark.title = 'Drag to connect; drop on empty canvas to create a node';
+    mark.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      event.stopPropagation();
+      startEdgeDrag(event, `h:${anchor.id}`, mark, true, register);
+    });
   }
 }
 
@@ -2110,8 +2192,8 @@ function createHighlight() {
     if (existing) { selectedPassage = null; renderWorkspace(); return announce('This passage is already highlighted. Drag its highlight to connect it.'); }
     const anchor = makeAnchor(selection.targetId, sourcePlainText(item, selection.targetId), selection.start, selection.end);
     selectedPassage = null;
-    change((entry) => { (entry.highlights ||= []).push(anchor); });
-    announce('Highlight saved. Drag it to a node or another highlight to connect.');
+    change((entry) => { markAnchorInMarkdown(entry, anchor); (entry.highlights ||= []).push(anchor); });
+    announce('Highlight saved as ==marked text==. Drag it to a node or another highlight to connect.');
   } catch (error) { announce(error.message); }
 }
 
@@ -2229,27 +2311,64 @@ function renderContextPicker(item, chat) {
     context.mode = picker.value;
     if (picker.value === 'selected' && liveSelection.length) context.nodeIds = liveSelection;
   }));
-  return { snapshot, picker };
+  const contextControl = el('label', { class: 'chat-context-control' },
+    el('span', { text: 'Context:' }), picker, el('span', { class: 'chat-context-chevron', 'aria-hidden': 'true', text: '⌄' }));
+  return { snapshot, picker: contextControl };
+}
+
+function renderProposalDiff(before, after) {
+  const lines = diffMarkdownLines(before, after);
+  const added = lines.filter((line) => line.kind === 'added').length;
+  const removed = lines.filter((line) => line.kind === 'removed').length;
+  const view = el('div', { class: 'chat-diff-view', role: 'region', 'aria-label': 'Markdown change diff' });
+  for (const line of lines) {
+    view.append(el('div', { class: `chat-diff-line chat-diff-${line.kind}` },
+      el('span', { class: 'chat-diff-number', 'aria-hidden': 'true', text: line.beforeLine ?? '' }),
+      el('span', { class: 'chat-diff-number', 'aria-hidden': 'true', text: line.afterLine ?? '' }),
+      el('span', { class: 'chat-diff-sign', 'aria-hidden': 'true', text: line.kind === 'removed' ? '−' : line.kind === 'added' ? '+' : '' }),
+      el('span', { class: 'chat-diff-code', text: line.text || ' ' })));
+  }
+  return { view, added, removed };
 }
 
 function renderProposalCard(proposal, item) {
   const status = proposalStatus(item, proposal);
-  const target = proposal.targetId === 'article' ? 'Master article' : item.nodes.find((node) => node.id === proposal.targetId)?.title || 'Removed node';
+  const node = item.nodes.find((entry) => entry.id === proposal.targetId);
+  const target = proposal.targetId === 'article' ? 'Master article' : node ? nodeLabel(node) : 'Removed node';
   const card = el('div', { class: 'chat-proposal' }, el('div', { class: 'chat-proposal-heading' },
     el('strong', { text: `Proposed edit · ${target}` }), el('span', { text: status === 'accepted' ? 'Applied' : status === 'undone' ? 'Undone' : status === 'discarded' ? 'Discarded' : 'Needs review' })));
-  if (status === 'proposed' || status === 'undone') {
-    card.append(button('Review change', () => { aiPanel.previewId = proposal.id; aiPanel.previewText = proposal.after; aiPanel.error = ''; renderAiPanel(); }, 'chat-review-button'),
+  const reviewing = aiPanel.previewId === proposal.id;
+  if ((status === 'proposed' || status === 'undone') && !reviewing) {
+    card.append(button('Review diff', () => { aiPanel.previewId = proposal.id; aiPanel.previewText = proposal.after; aiPanel.previewEditing = false; aiPanel.error = ''; renderAiPanel(); }, 'chat-review-button'),
       button('Discard', () => { proposal.status = 'discarded'; persist(); renderAiPanel(); }, 'chat-text-button'));
   }
-  if (aiPanel.previewId === proposal.id) {
-    const before = el('textarea', { class: 'ai-diff', readonly: '', 'aria-label': 'Current content before proposed edit' });
-    before.value = proposal.before;
-    const after = el('textarea', { class: 'ai-diff', 'aria-label': 'Proposed Markdown' });
-    after.value = aiPanel.previewText ?? proposal.after;
-    after.addEventListener('input', () => { aiPanel.previewText = after.value; });
-    card.append(el('p', { class: 'ai-muted', text: 'Review the full Markdown. You can edit the proposed version before applying it.' }),
-      el('label', { text: 'BEFORE' }), before, el('label', { text: 'AFTER · EDITABLE' }), after,
-      button('Apply change', () => {
+  if (reviewing) {
+    const proposedText = aiPanel.previewText ?? proposal.after;
+    const diff = renderProposalDiff(proposal.before, proposedText);
+    const diffMount = el('div', { class: 'chat-diff-mount' }, diff.view);
+    const summary = el('div', { class: 'chat-diff-summary' },
+      el('span', { text: 'Markdown changes' }),
+      el('span', { class: 'chat-diff-counts' },
+        el('span', { class: 'chat-diff-removed-count', text: `−${diff.removed}` }),
+        el('span', { class: 'chat-diff-added-count', text: `+${diff.added}` })));
+    const editor = el('textarea', { class: 'chat-diff-editor', 'aria-label': 'Edit proposed Markdown', spellcheck: 'false' });
+    editor.value = proposedText;
+    editor.hidden = !aiPanel.previewEditing;
+    editor.addEventListener('input', () => {
+      aiPanel.previewText = editor.value;
+      const next = renderProposalDiff(proposal.before, editor.value);
+      diffMount.replaceChildren(next.view);
+      summary.querySelector('.chat-diff-removed-count').textContent = `−${next.removed}`;
+      summary.querySelector('.chat-diff-added-count').textContent = `+${next.added}`;
+    });
+    const edit = button(aiPanel.previewEditing ? 'Hide editor' : 'Edit proposed Markdown', () => {
+      aiPanel.previewEditing = !aiPanel.previewEditing;
+      editor.hidden = !aiPanel.previewEditing;
+      edit.textContent = aiPanel.previewEditing ? 'Hide editor' : 'Edit proposed Markdown';
+      if (aiPanel.previewEditing) editor.focus();
+    }, 'chat-text-button');
+    card.append(summary, diffMount, edit, editor,
+      el('div', { class: 'chat-diff-actions' }, button('Apply change', () => {
         const workspace = work();
         const targetObject = proposal.targetId === 'article' ? workspace?.article : workspace?.nodes.find((node) => node.id === proposal.targetId);
         const currentMarkdown = proposal.targetId === 'article' ? targetObject?.markdown : targetObject?.document?.markdown;
@@ -2257,19 +2376,21 @@ function renderProposalCard(proposal, item) {
           aiPanel.error = 'This content changed since the proposal was made. Ask chat for an updated edit.';
           aiPanel.previewId = null; renderAiPanel(); return;
         }
-        if (!after.value.trim()) { aiPanel.error = 'Proposed Markdown cannot be empty.'; renderAiPanel(); return; }
+        const nextMarkdown = aiPanel.previewText ?? proposal.after;
+        if (!nextMarkdown.trim()) { aiPanel.error = 'Proposed Markdown cannot be empty.'; renderAiPanel(); return; }
         const acceptedAt = new Date().toISOString();
-        proposal.after = after.value; proposal.status = 'accepted'; proposal.acceptedAt = acceptedAt;
+        proposal.after = nextMarkdown; proposal.status = 'accepted'; proposal.acceptedAt = acceptedAt;
         change((entry) => {
           const edited = proposal.targetId === 'article' ? entry.article : entry.nodes.find((node) => node.id === proposal.targetId);
-          if (proposal.targetId === 'article') edited.markdown = after.value;
-          else edited.document.markdown = after.value;
+          if (proposal.targetId === 'article') edited.markdown = nextMarkdown;
+          else edited.document.markdown = nextMarkdown;
           (edited.origins ||= []).push({ kind: 'ai', proposalId: proposal.id, acceptedAt, model: proposal.model });
         }, { article: proposal.targetId === 'article' });
-        aiPanel.previewId = null; aiPanel.previewText = null;
+        aiPanel.previewId = null; aiPanel.previewText = null; aiPanel.previewEditing = false;
         renderWorkspace(); announce(`${target} updated. Undo is available.`);
       }, 'chat-apply-button'),
-      button('Cancel', () => { aiPanel.previewId = null; renderAiPanel(); }, 'chat-text-button'));
+      button('Discard', () => { proposal.status = 'discarded'; aiPanel.previewId = null; aiPanel.previewText = null; persist(); renderAiPanel(); }, 'chat-text-button'),
+      button('Close review', () => { aiPanel.previewId = null; aiPanel.previewText = null; renderAiPanel(); }, 'chat-text-button')));
   }
   return card;
 }
@@ -2400,15 +2521,23 @@ function renderAiPanel() {
   panel.addEventListener('pointerdown', (event) => {
     if (event.clientX - panel.getBoundingClientRect().left <= 8) startChatResize(event, panel);
   });
-  const heading = el('div', { class: 'ai-heading' },
-    el('div', {}, el('span', { class: 'chat-eyebrow', text: 'WORKSPACE ASSISTANT' }), el('h2', { text: aiPanel.tab === 'chat' ? chat.title : aiPanel.tab === 'history' ? 'Chat history' : 'Model settings' })),
-    button('×', () => { aiPanel = null; renderWorkspace(); }, 'panel-close', { 'aria-label': 'Close chat' }));
-  panel.append(heading);
-  const tabs = el('nav', { class: 'chat-tabs', 'aria-label': 'Chat sections' });
-  for (const [tab, label] of [['chat', 'Chat'], ['history', 'History'], ['settings', 'Model settings']]) {
-    tabs.append(button(label, () => { aiPanel.tab = tab; aiPanel.error = ''; renderAiPanel(); }, `chat-tab ${aiPanel.tab === tab ? 'active' : ''}`, { 'aria-current': aiPanel.tab === tab ? 'page' : 'false' }));
+  const navigate = (page) => { aiPanel.tab = page; aiPanel.error = ''; renderAiPanel(); };
+  const heading = el('header', { class: 'ai-heading chat-page-heading' });
+  const left = el('div', { class: 'chat-heading-left' });
+  if (aiPanel.tab === 'chat') {
+    left.append(button('☰', () => navigate('history'), 'chat-header-icon', { 'aria-label': 'Chat history', title: 'Chat history' }));
+  } else {
+    left.append(button('←', () => navigate('chat'), 'chat-header-icon', { 'aria-label': 'Back to chat', title: 'Back to chat' }));
   }
-  panel.append(tabs);
+  left.append(el('h2', { text: aiPanel.tab === 'chat' ? chat.title : aiPanel.tab === 'history' ? 'Chat history' : 'Model settings' }));
+  const actions = el('div', { class: 'chat-heading-actions' });
+  if (aiPanel.tab === 'chat') {
+    actions.append(button('＋', () => newChat(), 'chat-header-icon', { 'aria-label': 'New chat', title: 'New chat' }),
+      button('⚙', () => navigate('settings'), 'chat-header-icon', { 'aria-label': 'Model settings', title: 'Model settings' }));
+  }
+  actions.append(button('×', () => { aiPanel = null; renderWorkspace(); }, 'panel-close', { 'aria-label': 'Close chat' }));
+  heading.append(left, actions);
+  panel.append(heading);
   if (aiPanel.tab === 'settings') renderSettings(panel);
   else if (aiPanel.tab === 'history') {
     const list = el('div', { class: 'chat-history-list' });
@@ -2420,10 +2549,6 @@ function renderAiPanel() {
     }
     panel.append(list);
   } else {
-    const toolbar = el('div', { class: 'ai-chat-toolbar' },
-      el('span', { class: 'chat-toolbar-label', text: `${chat.messages.length} messages · ${new Date(chat.updatedAt).toLocaleDateString()}` }),
-      button('＋ New chat', () => newChat(), 'ai-new-chat'));
-    panel.append(toolbar);
     const { snapshot, picker } = renderContextPicker(item, chat);
     renderChatTranscript(panel, item, chat);
     renderChatComposer(panel, item, chat, snapshot, picker);
@@ -2452,7 +2577,7 @@ document.addEventListener('keydown', (event) => {
   }
   if (event.key === 'Escape') { selectedId = null; selectedIds.clear(); selectedPassage = null; renderWorkspace(); return; }
   if (event.key === 'Tab' && selectedId) { event.preventDefault(); addNode(selectedId); }
-  else if (event.key === 'Enter' && selectedId) { event.preventDefault(); addNode(work().nodes.find((node) => node.id === selectedId)?.parentId || null); }
+  else if (event.key === 'Enter' && selectedId) { event.preventDefault(); addSibling(work().nodes.find((node) => node.id === selectedId)); }
   else if (key === 'f2' && selectedId) { event.preventDefault(); beginNodeMarkdownEdit(selectedId); }
   else if ((key === 'backspace' || key === 'delete') && (selectedId || selectedIds.size) && window.getSelection()?.isCollapsed) { event.preventDefault(); removeNodes(selectedId ? [selectedId] : [...selectedIds]); }
   else if (event.key === ' ' && !selectedId && !selectedIds.size) { event.preventDefault(); fitCanvas(); }

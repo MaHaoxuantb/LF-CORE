@@ -8,14 +8,14 @@ Aim for a modern, Apple-like experience in **clarity, typography, responsiveness
 
 - **Library:** a small list of workspaces, a prominent “I want to learn …” entry, and import controls. Avoid folders in the first version.
 - **Workspace:** a pannable canvas places the full Markdown document in a resizable card and connects ideas around it. The document expands with its content instead of scrolling inside the card. A floating upper-left control opens its heading outline; save status and history sit at the upper right. Sources will open without discarding the canvas position.
-- **Selection toolbar:** appears near selected content with a freeform Ask field and a few helpful suggestions. On narrow screens, use a compact action sheet.
+- **Selection toolbar:** appears beside selected content. A selected node exposes editing, structure, chat, source, passage, and deletion actions directly on the canvas; selected text exposes its contextual actions near the passage. On narrow screens, wrap controls compactly rather than opening a detached details panel.
 - **Proposal review:** answer and suggested change stay separate from the article until accepted. “Put this in the article” opens an edit preview at the intended location.
 - **Return view:** reopen at the article, with a discreet summary of unresolved questions and changes since the last session.
 
 ## Interaction rules
 
 1. **One primary action at a time.** Keep reading surfaces quiet; reveal tools when text or a node is selected.
-2. **Direct manipulation with an alternative.** Selecting a passage shows creation at the selection point; its directed line begins at the highlight. Enlarging a card reveals notes. Clicking a connection reveals its endpoint handles on the canvas; dragging a handle to a side of its node previews and sets the attachment. A bidirectional connection has an independent handle at each end and equally visible arrowheads. Do not use a detached side-selection menu for this spatial task. Arrow keys move a focused handle to a side, and Home restores automatic placement, so dragging is not required for precision.
+2. **Direct manipulation with an alternative.** Selecting a passage shows creation at the selection point; its directed line begins at the highlight. Persist that highlight directly in Markdown with `==…==` while retaining its stable graph endpoint ID. Enlarging a card reveals notes. Clicking a connection reveals its endpoint handles on the canvas; dragging a handle to a side of its node previews and sets the attachment. A bidirectional connection has an independent handle at each end and equally visible arrowheads. Do not use a detached side-selection menu for this spatial task. Arrow keys move a focused handle to a side, and Home restores automatic placement, so dragging is not required for precision.
 3. **Preserve place.** Opening a node, source, or AI answer should not reset article scroll or selection.
 4. **Show where a change will land.** An AI article edit names the target passage or heading and previews additions and removals before acceptance.
 5. **Make origin available without visual noise.** Use subtle markers for source and AI provenance; reveal details on click or hover. Never use color alone to convey origin.
