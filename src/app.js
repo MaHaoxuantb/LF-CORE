@@ -1524,7 +1524,7 @@ function renderNode(node, item) {
   if (footer) card.append(footer);
   if (link) card.append(link);
   if (resize) card.append(resize);
-  if (selectedId === node.id) card.append(renderNodeActions(node, item));
+  if (selectedId === node.id && !graphFocus) card.append(renderNodeActions(node, item));
   card.addEventListener('pointerdown', (event) => {
     if (event.button !== 0 || event.target.closest('.node-content, .anchor-mark, button, input')) return;
     startNodeDrag(event, node, card);
@@ -1797,7 +1797,7 @@ function selectNodeInPlace(id, card, node, item) {
     entry.classList.toggle('selected', entry === card);
     entry.querySelector('.node-actions')?.remove();
   });
-  card.append(renderNodeActions(node, item));
+  if (!graphFocus) card.append(renderNodeActions(node, item));
 }
 
 function selectNode(id) { selectedId = id; selectedIds.clear(); selectedPassage = null; editGroup = null; renderWorkspace(); }
@@ -2575,6 +2575,67 @@ function renderProposalDiff(before, after) {
   return { view, added, removed };
 }
 
+function chatProposals(chat) {
+  return chat.messages.flatMap((message) => message.proposals || []);
+}
+
+function pendingChatProposals(chat, item) {
+  return chatProposals(chat).filter((proposal) => ['proposed', 'undone'].includes(proposalStatus(item, proposal)));
+}
+
+function proposalMarkdown(item, proposal) {
+  const target = proposal.targetId === 'article' ? item.article : item.nodes.find((node) => node.id === proposal.targetId);
+  return proposal.targetId === 'article' ? target?.markdown : target?.document?.markdown;
+}
+
+function applyChatProposals(proposals, overrides = new Map()) {
+  const workspace = work();
+  if (!workspace || !proposals.length) return false;
+  if (graphIsReadOnly() && proposals.some((proposal) => proposal.targetId !== 'article')) {
+    aiPanel.error = 'Exit focus to apply changes to graph nodes.';
+    renderAiPanel();
+    return false;
+  }
+  const duplicate = proposals.find((proposal, index) => proposals.findIndex((entry) => entry.targetId === proposal.targetId) !== index);
+  if (duplicate) {
+    aiPanel.error = 'Multiple pending changes target the same node. Review those changes individually.';
+    renderAiPanel();
+    return false;
+  }
+  for (const proposal of proposals) {
+    if (proposalMarkdown(workspace, proposal) !== proposal.before) {
+      aiPanel.error = 'Some content changed since these proposals were made. Review the remaining changes individually.';
+      renderAiPanel();
+      return false;
+    }
+    if (!(overrides.get(proposal.id) ?? proposal.after).trim()) {
+      aiPanel.error = 'Proposed Markdown cannot be empty.';
+      renderAiPanel();
+      return false;
+    }
+  }
+  const acceptedAt = new Date().toISOString();
+  for (const proposal of proposals) {
+    proposal.after = overrides.get(proposal.id) ?? proposal.after;
+    proposal.status = 'accepted';
+    proposal.acceptedAt = acceptedAt;
+  }
+  change((entry) => {
+    for (const proposal of proposals) {
+      const edited = proposal.targetId === 'article' ? entry.article : entry.nodes.find((node) => node.id === proposal.targetId);
+      if (proposal.targetId === 'article') edited.markdown = proposal.after;
+      else edited.document.markdown = proposal.after;
+      (edited.origins ||= []).push({ kind: 'ai', proposalId: proposal.id, acceptedAt, model: proposal.model });
+    }
+  }, { article: proposals.some((proposal) => proposal.targetId === 'article') });
+  aiPanel.previewId = null;
+  aiPanel.previewText = null;
+  aiPanel.previewEditing = false;
+  aiPanel.error = '';
+  renderWorkspace();
+  return true;
+}
+
 function renderProposalCard(proposal, item) {
   const status = proposalStatus(item, proposal);
   const node = item.nodes.find((entry) => entry.id === proposal.targetId);
@@ -2582,11 +2643,13 @@ function renderProposalCard(proposal, item) {
   const card = el('div', { class: 'chat-proposal' }, el('div', { class: 'chat-proposal-heading' },
     el('strong', { text: `Proposed edit · ${target}` }), el('span', { text: status === 'accepted' ? 'Applied' : status === 'undone' ? 'Undone' : status === 'discarded' ? 'Discarded' : 'Needs review' })));
   const reviewing = aiPanel.previewId === proposal.id;
-  if ((status === 'proposed' || status === 'undone') && !reviewing) {
-    card.append(button('Review diff', () => { aiPanel.previewId = proposal.id; aiPanel.previewText = proposal.after; aiPanel.previewEditing = false; aiPanel.error = ''; renderAiPanel(); }, 'chat-review-button'),
-      button('Discard', () => { proposal.status = 'discarded'; persist(); renderAiPanel(); }, 'chat-text-button'));
+  if (!reviewing) {
+    const historical = status === 'accepted' || status === 'discarded';
+    card.append(button(historical ? 'View diff' : 'Review diff', () => { aiPanel.previewId = proposal.id; aiPanel.previewText = proposal.after; aiPanel.previewEditing = false; aiPanel.error = ''; renderAiPanel(); }, 'chat-review-button'));
+    if (!historical) card.append(button('Discard', () => { proposal.status = 'discarded'; persist(); renderAiPanel(); }, 'chat-text-button'));
   }
   if (reviewing) {
+    const historical = status === 'accepted' || status === 'discarded';
     const proposedText = aiPanel.previewText ?? proposal.after;
     const diff = renderProposalDiff(proposal.before, proposedText);
     const diffMount = el('div', { class: 'chat-diff-mount' }, diff.view);
@@ -2611,34 +2674,17 @@ function renderProposalCard(proposal, item) {
       edit.textContent = aiPanel.previewEditing ? 'Hide editor' : 'Edit proposed Markdown';
       if (aiPanel.previewEditing) editor.focus();
     }, 'chat-text-button');
-    card.append(summary, diffMount, edit, editor,
-      el('div', { class: 'chat-diff-actions' }, button('Apply change', () => {
-        if (graphIsReadOnly() && proposal.targetId !== 'article') {
-          announce('Exit focus to edit graph nodes.');
-          return;
-        }
-        const workspace = work();
-        const targetObject = proposal.targetId === 'article' ? workspace?.article : workspace?.nodes.find((node) => node.id === proposal.targetId);
-        const currentMarkdown = proposal.targetId === 'article' ? targetObject?.markdown : targetObject?.document?.markdown;
-        if (!targetObject || currentMarkdown !== proposal.before) {
-          aiPanel.error = 'This content changed since the proposal was made. Ask chat for an updated edit.';
-          aiPanel.previewId = null; renderAiPanel(); return;
-        }
-        const nextMarkdown = aiPanel.previewText ?? proposal.after;
-        if (!nextMarkdown.trim()) { aiPanel.error = 'Proposed Markdown cannot be empty.'; renderAiPanel(); return; }
-        const acceptedAt = new Date().toISOString();
-        proposal.after = nextMarkdown; proposal.status = 'accepted'; proposal.acceptedAt = acceptedAt;
-        change((entry) => {
-          const edited = proposal.targetId === 'article' ? entry.article : entry.nodes.find((node) => node.id === proposal.targetId);
-          if (proposal.targetId === 'article') edited.markdown = nextMarkdown;
-          else edited.document.markdown = nextMarkdown;
-          (edited.origins ||= []).push({ kind: 'ai', proposalId: proposal.id, acceptedAt, model: proposal.model });
-        }, { article: proposal.targetId === 'article' });
-        aiPanel.previewId = null; aiPanel.previewText = null; aiPanel.previewEditing = false;
-        renderWorkspace(); announce(`${target} updated. Undo is available.`);
+    card.append(summary, diffMount);
+    if (!historical) card.append(edit, editor);
+    const actions = el('div', { class: 'chat-diff-actions' });
+    if (!historical) {
+      actions.append(button('Apply change', () => {
+        if (applyChatProposals([proposal], new Map([[proposal.id, aiPanel.previewText ?? proposal.after]]))) announce(`${target} updated. Undo is available.`);
       }, 'chat-apply-button'),
-      button('Discard', () => { proposal.status = 'discarded'; aiPanel.previewId = null; aiPanel.previewText = null; persist(); renderAiPanel(); }, 'chat-text-button'),
-      button('Close review', () => { aiPanel.previewId = null; aiPanel.previewText = null; renderAiPanel(); }, 'chat-text-button')));
+      button('Discard', () => { proposal.status = 'discarded'; aiPanel.previewId = null; aiPanel.previewText = null; persist(); renderAiPanel(); }, 'chat-text-button'));
+    }
+    actions.append(button(historical ? 'Close diff' : 'Close review', () => { aiPanel.previewId = null; aiPanel.previewText = null; renderAiPanel(); }, 'chat-text-button'));
+    card.append(actions);
   }
   return card;
 }
@@ -2680,6 +2726,25 @@ function renderChatComposer(panel, item, chat, snapshot, picker) {
   if (snapshot.size > MAX_CONTEXT_CHARS) panel.append(el('p', { class: 'ai-error chat-error', text: 'Context is too large. Choose a smaller scope before sending.' }));
   if (aiPanel.error) panel.append(el('p', { class: 'ai-error chat-error', role: 'alert', text: aiPanel.error }));
   const form = el('form', { class: 'ai-chat-composer' });
+  const pending = pendingChatProposals(chat, item);
+  if (pending.length) {
+    const counts = pending.reduce((total, proposal) => {
+      const lines = diffMarkdownLines(proposal.before, proposal.after);
+      total.added += lines.filter((line) => line.kind === 'added').length;
+      total.removed += lines.filter((line) => line.kind === 'removed').length;
+      return total;
+    }, { added: 0, removed: 0 });
+    const targets = new Set(pending.map((proposal) => proposal.targetId)).size;
+    const label = `${targets} ${targets === 1 ? 'node' : 'nodes'} changed`;
+    form.append(el('div', { class: 'chat-pending-summary', role: 'status' },
+      el('span', { class: 'chat-pending-label', text: label }),
+      el('span', { class: 'chat-pending-counts' },
+        el('span', { class: 'chat-diff-added-count', text: `+${counts.added}` }),
+        el('span', { class: 'chat-diff-removed-count', text: `−${counts.removed}` })),
+      button('Apply all', () => {
+        if (applyChatProposals(pending)) announce(`${label} applied. Undo reverses the whole batch.`);
+      }, 'chat-apply-all')));
+  }
   const input = el('textarea', { class: 'ai-question', 'aria-label': 'Your message', title: 'Enter to send · Option + Enter for a new line', placeholder: 'Ask or describe a change…', rows: '1' });
   input.value = aiPanel.draft || '';
   const resizeInput = () => { input.style.height = 'auto'; input.style.height = `${Math.min(100, input.scrollHeight)}px`; };

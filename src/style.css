@@ -762,8 +762,14 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .chat-config-notice { display: flex; align-items: center; justify-content: space-between; gap: 7px; margin: 0 16px 6px; padding: 6px 9px; border-radius: 8px; background: #f4ece0; color: #69543c; font-size: .68rem; }
 .chat-error { margin: 3px 16px 6px; }
 .ai-chat-composer { gap: 3px; margin: 0 16px 16px; padding: 7px 8px 7px 10px; border-radius: 13px; }
-.ai-chat-composer .ai-question { min-height: 31px; max-height: 100px; padding: 2px 1px; font-size: .8rem; }
-.ai-chat-composer .panel-action { width: 28px; height: 28px; }
+.ai-chat-composer .chat-pending-summary { grid-column: 1 / -1; grid-row: 1; display: flex; align-items: center; gap: 7px; min-width: 0; margin: -1px -2px 5px; padding: 6px 7px 7px; border-bottom: 1px solid #ebe7e1; color: #625d57; font-size: .66rem; font-weight: 650; }
+.chat-pending-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-pending-counts { display: inline-flex; gap: 6px; margin-left: auto; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; white-space: nowrap; }
+.chat-apply-all { flex: none; margin-left: 2px; padding: 5px 9px; border: 1px solid #4a4036; border-radius: 999px; background: #4a4036; color: #fff; font: 650 .65rem/1 inherit; cursor: pointer; }
+.chat-apply-all:hover, .chat-apply-all:focus-visible { background: #302922; border-color: #302922; }
+.ai-chat-composer .ai-question { grid-row: 2; min-height: 31px; max-height: 100px; padding: 2px 1px; font-size: .8rem; }
+.ai-chat-composer .chat-context-control { grid-row: 3; }
+.ai-chat-composer .panel-action { grid-row: 3; width: 28px; height: 28px; }
 .chat-history-list { overflow-y: auto; padding: 12px 16px; }
 .chat-history-list .chat-new-button { margin: 0 0 12px; }
 .chat-history-row { display: block; width: 100%; margin-bottom: 5px; padding: 11px 12px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: #4e4841; text-align: left; font-size: .76rem; cursor: pointer; }
@@ -788,6 +794,9 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 :root[data-dark='true'] .chat-proposal-heading strong, :root[data-dark='true'] .chat-history-row { color: #e5ded5; }
 :root[data-dark='true'] .chat-passage, :root[data-dark='true'] .chat-history-row:hover, :root[data-dark='true'] .chat-history-row.active { background: #38342e; color: #ded3c7; }
 :root[data-dark='true'] .chat-config-notice { background: #42372b; color: #e6d5bb; }
+:root[data-dark='true'] .ai-chat-composer .chat-pending-summary { border-color: #494640; color: #ded6cc; }
+:root[data-dark='true'] .chat-apply-all { border-color: #e8e1d8; background: #e8e1d8; color: #292622; }
+:root[data-dark='true'] .chat-apply-all:hover, :root[data-dark='true'] .chat-apply-all:focus-visible { background: #fff; border-color: #fff; }
 @media (max-width: 620px) { .ai-panel { width: calc(100vw - 16px); } }
 
 /* Keep the resize affordance on the panel frame rather than adding a control. */
