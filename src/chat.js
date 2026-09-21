@@ -7,13 +7,13 @@ export function contextSnapshot(workspace, selection) {
   const nodeIds = mode === 'all' ? workspace.nodes.map((node) => node.id) : mode === 'selected' ? selection.nodeIds || [] : [];
   for (const id of [...new Set(nodeIds)]) {
     const node = workspace.nodes.find((entry) => entry.id === id);
-    if (node) targets.push({ id, title: node.title, markdown: node.document?.markdown || '' });
+    if (node) targets.push({ id, title: nodeLabel(node), markdown: node.document?.markdown || '' });
   }
   const passage = selection.passage && targets.some((target) => target.id === selection.passage.targetId)
     ? { targetId: selection.passage.targetId, quote: selection.passage.quote } : null;
   const text = [
     `Workspace: ${workspace.title}`,
-    ...targets.map((target) => `Target ID: ${target.id}\nTitle: ${target.title}\nMarkdown:\n${target.markdown}`),
+    ...targets.map((target) => `Target ID: ${target.id}\n${target.id === 'article' ? `Title: ${target.title}\n` : ''}Markdown:\n${target.markdown}`),
     ...(passage ? [`Selected passage in ${passage.targetId}:\n${passage.quote}`] : [])
   ].join('\n\n---\n\n');
   return { targets, passage, text, size: text.length };
@@ -47,3 +47,4 @@ export function proposalStatus(workspace, proposal) {
   const target = proposal.targetId === 'article' ? workspace.article : workspace.nodes.find((node) => node.id === proposal.targetId);
   return target?.origins?.some((origin) => origin.proposalId === proposal.id) ? 'accepted' : 'undone';
 }
+import { nodeLabel } from './node-content.js';

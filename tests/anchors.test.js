@@ -3,6 +3,13 @@ import assert from 'node:assert/strict';
 import { makeAnchor, resolveAnchor } from '../src/anchors.js';
 import { createWorkspace, emptyState, loadSaveMode, loadState, saveSaveMode, saveState } from '../src/storage.js';
 import { headingTokens } from '../src/markdown.js';
+import { nodeLabel } from '../src/node-content.js';
+
+test('node labels are derived from Markdown, not a separate title', () => {
+  assert.equal(nodeLabel({ document: { markdown: '# Plate motion\n\nDetails' } }), 'Plate motion');
+  assert.equal(nodeLabel({ document: { markdown: 'A plain note' } }), 'A plain note');
+  assert.equal(nodeLabel({ document: { markdown: '' } }), 'Untitled node');
+});
 
 test('multi-sentence article links survive nearby edits', () => {
   const body = 'Start. First sentence. Second sentence. End.';
@@ -45,7 +52,8 @@ test('Markdown workspace, graph sizes, history and redo reopen', () => {
   state.redo[workspace.id] = [structuredClone(workspace)];
   saveState(state, storage);
   const reopened = loadState(storage);
-  assert.equal(reopened.workspaces[0].nodes[0].title, 'Idea');
+  assert.equal(reopened.workspaces[0].nodes[0].document.markdown, '# Idea');
+  assert.equal(reopened.workspaces[0].nodes[0].title, undefined);
   assert.match(reopened.workspaces[0].article.markdown, /## Overview/);
   assert.equal(reopened.workspaces[0].layout.positions.n1.x, 800);
   assert.deepEqual(reopened.workspaces[0].layout.sizes.n1, { width: 310, height: 165 });
@@ -71,7 +79,7 @@ test('previous canvas sections migrate to Markdown without changing stored origi
   assert.equal(migrated.workspaces[0].nodes[0].anchor.start, -1);
   assert.equal(migrated.workspaces[0].nodes[0].anchor.targetId, 'article');
   assert.equal(migrated.workspaces[0].nodes[0].anchor.sectionId, undefined);
-  assert.deepEqual(migrated.workspaces[0].nodes[0].document, { type: 'markdown', markdown: '' });
+  assert.deepEqual(migrated.workspaces[0].nodes[0].document, { type: 'markdown', markdown: '# Note' });
   assert.equal(migrated.history[oldWorkspace.id].length, 1);
   assert.equal(JSON.parse(memory.get('learning-canvas:canvas-v2')).version, 2);
 });
@@ -89,12 +97,30 @@ test('saved card notes migrate to Markdown in workspaces and undo history', () =
   memory.set('learning-canvas:markdown-v3', JSON.stringify(old));
   const migrated = loadState(storage);
   for (const copy of [migrated.workspaces[0], migrated.history[workspace.id][0], migrated.redo[workspace.id][0]]) {
-    assert.deepEqual(copy.nodes[0].document, { type: 'markdown', markdown: '**Important** detail' });
-    assert.deepEqual(copy.nodes[1].document, { type: 'markdown', markdown: 'A note' });
+    assert.deepEqual(copy.nodes[0].document, { type: 'markdown', markdown: '# Parent\n\n**Important** detail' });
+    assert.deepEqual(copy.nodes[1].document, { type: 'markdown', markdown: '# Child\n\nA note' });
+    assert.equal(copy.nodes[0].title, undefined);
     assert.equal(copy.nodes[1].anchor.targetId, 'parent');
     assert.equal(copy.nodes[0].body, undefined);
   }
   assert.equal(JSON.parse(memory.get('learning-canvas:markdown-v3')).version, 3);
+});
+
+test('current saved nodes fold titles into Markdown only once, including undo snapshots', () => {
+  const memory = new Map();
+  const storage = { getItem: (key) => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value) };
+  const state = emptyState();
+  const item = createWorkspace('Saved');
+  item.nodes = [{ id: 'a', title: 'Heading', document: { type: 'markdown', markdown: '# Heading\n\nBody' } },
+    { id: 'b', title: 'Other', document: { type: 'markdown', markdown: 'Body' } }];
+  state.workspaces.push(item);
+  state.history[item.id] = [structuredClone(item)];
+  saveState(state, storage);
+  const loaded = loadState(storage);
+  assert.deepEqual(loaded.workspaces[0].nodes.map((node) => node.document.markdown), ['# Heading\n\nBody', '# Other\n\nBody']);
+  assert.deepEqual(loaded.history[item.id][0].nodes, loaded.workspaces[0].nodes);
+  saveState(loaded, storage);
+  assert.deepEqual(loadState(storage).workspaces[0].nodes, loaded.workspaces[0].nodes);
 });
 
 test('save preference is independent of workspace data', () => {

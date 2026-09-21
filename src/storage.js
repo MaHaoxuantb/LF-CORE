@@ -61,6 +61,14 @@ function normalizeWorkspace(work) {
     }
     if (!node.document) node.document = { type: 'markdown', markdown: node.body ?? '' };
     else if (!node.document.type && typeof node.document.markdown === 'string') node.document.type = 'markdown';
+    if (typeof node.title === 'string' && node.title.trim()) {
+      const title = node.title.trim();
+      const existing = node.document.markdown || '';
+      if (!existing.trimStart().startsWith(`# ${title}\n`) && existing.trim() !== `# ${title}`) {
+        node.document.markdown = `# ${title}${existing ? `\n\n${existing}` : ''}`;
+      }
+    }
+    delete node.title;
     delete node.body;
   }
   return work;

@@ -8,8 +8,8 @@ const workspace = {
   title: 'Plate tectonics',
   article: { markdown: '# Article\n\nOriginal text.', origins: [] },
   nodes: [
-    { id: 'node-a', title: 'Evidence', document: { markdown: 'Old evidence.' }, origins: [] },
-    { id: 'node-b', title: 'Motion', document: { markdown: 'Old motion.' }, origins: [] }
+    { id: 'node-a', document: { markdown: '# Evidence\n\nOld evidence.' }, origins: [] },
+    { id: 'node-b', document: { markdown: '# Motion\n\nOld motion.' }, origins: [] }
   ]
 };
 
@@ -19,6 +19,7 @@ test('all context contains the article, nodes, and passage without silent trunca
   assert.match(snapshot.text, /Original text/);
   assert.match(snapshot.text, /Old motion/);
   assert.match(snapshot.text, /Old evidence/);
+  assert.doesNotMatch(snapshot.text, /Target ID: node-a\nTitle:/);
   assert.ok(snapshot.size < MAX_CONTEXT_CHARS);
 });
 

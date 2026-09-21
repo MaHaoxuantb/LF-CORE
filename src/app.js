@@ -1,6 +1,7 @@
 import { makeAnchor, resolveAnchor, selectionOffsets } from './anchors.js';
 import { createWorkspace, emptyState, loadSaveMode, loadState, saveSaveMode, saveState, snapshotWorkspace } from './storage.js';
 import { renderMarkdown, headingTokens } from './markdown.js';
+import { nodeLabel } from './node-content.js';
 import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
 import { putPdf, getPdf, deletePdf } from './source-store.js';
 import { connectionPort, crossConnectionRoute, nearestConnectionSide, snappedConnectionSides } from './cross-connection.js';
@@ -427,7 +428,7 @@ function renderHome() {
       { title: 'Three boundary types', body: 'Divergent, convergent, and transform.' },
       { title: 'How fast do plates move?', body: 'A next study question.' }
     ];
-    for (const topic of topics) item.nodes.push({ id: crypto.randomUUID(), title: topic.title, document: { type: 'markdown', markdown: topic.body }, parentId: null, anchor: null, collapsed: false, provenance: 'learner' });
+    for (const topic of topics) item.nodes.push({ id: crypto.randomUUID(), document: { type: 'markdown', markdown: `# ${topic.title}\n\n${topic.body}` }, parentId: null, anchor: null, collapsed: false, provenance: 'learner' });
     attachExampleAnchors(item);
     ensurePositions(item); persist(); openWorkspace(item.id);
   }, 'example-link');
@@ -469,8 +470,9 @@ function attachExampleAnchors(item) {
   const text = markdownPlainText(item.article.markdown);
   let changed = false;
   for (const node of item.nodes) {
-    if (node.anchor || node.parentId || !Object.hasOwn(examplePassages, node.title)) continue;
-    const quote = examplePassages[node.title], start = text.indexOf(quote);
+    const label = nodeLabel(node);
+    if (node.anchor || node.parentId || !Object.hasOwn(examplePassages, label)) continue;
+    const quote = examplePassages[label], start = text.indexOf(quote);
     if (start < 0) continue;
     node.anchor = makeAnchor('article', text, start, start + quote.length);
     changed = true;
@@ -617,8 +619,9 @@ function renderWorkspace() {
         historyButton('undo', undo, !!state.history[item.id]?.length),
         historyButton('redo', redo, !!state.redo[item.id]?.length))),
     el('div', { class: 'header-right' },
-      button('Chat', () => openAiPanel(), 'source-toggle'),
-      button(`Sources${item.sources?.length ? ` ${item.sources.length}` : ''}`, () => openSource(openSourceId ? null : item.sources?.[0]?.id || 'library'), 'source-toggle', { 'aria-label': 'Open sources' })));
+      button('Chat', toggleAiPanel, `source-toggle ${aiPanel ? 'active' : ''}`, { 'aria-pressed': String(!!aiPanel), 'aria-label': 'Toggle chat' }),
+      button(`Sources${item.sources?.length ? ` ${item.sources.length}` : ''}`, () => openSource(openSourceId ? null : item.sources?.[0]?.id || 'library'), `source-toggle ${openSourceId ? 'active' : ''}`, { 'aria-pressed': String(!!openSourceId), 'aria-label': 'Toggle sources' })));
+
   app.replaceChildren(el('div', { class: 'workspace-shell' }, renderCanvas(item), chrome));
   updateSaveControls();
   applyView();
@@ -807,7 +810,7 @@ function openContextMenu(target, x, y) {
   const passage = selectedPassage;
   const floatingPosition = positionAtCanvasPoint(x, y);
   if (!group && !node && (selectedId || selectedIds.size)) { selectedId = null; selectedIds.clear(); renderWorkspace(); }
-  const menu = el('div', { class: 'context-menu', role: 'menu', 'aria-label': group ? 'Selection options' : node ? `${node.title} options` : onPaper ? 'Document options' : 'Canvas options' });
+  const menu = el('div', { class: 'context-menu', role: 'menu', 'aria-label': group ? 'Selection options' : node ? `${nodeLabel(node)} options` : onPaper ? 'Document options' : 'Canvas options' });
   const option = (label, action, destructive = false) => menu.append(button(label, () => { closeContextMenu(); action(); }, `context-option ${destructive ? 'destructive' : ''}`, { role: 'menuitem' }));
   if (group) {
     option(`Clear ${selectedIds.size} selected`, () => { selectedIds.clear(); renderWorkspace(); });
@@ -820,7 +823,6 @@ function openContextMenu(target, x, y) {
     if (passage?.targetId === node.id) option('Create node from highlight', () => { selectedPassage = passage; createAnchoredNode(); });
     option('Add child', () => addNode(node.id));
     option('Add sibling', () => addNode(node.parentId));
-    option('Rename', () => beginRename(node.id));
     menu.append(el('div', { class: 'context-separator', role: 'separator' }));
     option('Delete node', () => removeNode(node.id), true);
   } else if (onPaper) {
@@ -1251,11 +1253,12 @@ function positionConnectionHandles(item) {
 
 function renderNode(node, item) {
   const pos = item.layout.positions[node.id];
-  const card = el('div', { class: `topic-card ${selectedId === node.id || selectedIds.has(node.id) ? 'selected' : ''}`, 'data-node': node.id, tabindex: '0', role: 'button', 'aria-label': node.title });
+  const label = nodeLabel(node);
+  const card = el('div', { class: `topic-card ${selectedId === node.id || selectedIds.has(node.id) ? 'selected' : ''}`, 'data-node': node.id, tabindex: '0', role: 'button', 'aria-label': label });
   const size = pointFor(item, node.id);
   card.style.left = `${pos.x}px`; card.style.top = `${pos.y}px`; card.style.width = `${size.width}px`; card.style.height = `${size.height}px`;
   applyNodeSizeClass(card, size.width, size.height);
-  const grip = el('button', { type: 'button', class: 'drag-grip', text: '⠿', title: 'Move', 'aria-label': `Move ${node.title}` });
+  const grip = el('button', { type: 'button', class: 'drag-grip', text: '⠿', title: 'Move', 'aria-label': `Move ${label}` });
   grip.addEventListener('pointerdown', (event) => startNodeDrag(event, node, card, grip));
   grip.addEventListener('keydown', (event) => {
     const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
@@ -1272,8 +1275,7 @@ function renderNode(node, item) {
     }, { group: `keyboard-move:${ids.join(',')}` });
     document.querySelector(`[data-node="${node.id}"] .drag-grip`)?.focus();
   });
-  const title = el('strong', { class: 'topic-title', text: node.title || 'Untitled' });
-  const content = el('div', { class: 'node-content markdown-preview', 'data-document-id': node.id, tabindex: '0', 'aria-label': `${node.title} content` });
+  const content = el('div', { class: 'node-content markdown-preview', 'data-document-id': node.id, tabindex: '0', 'aria-label': `${label} content` });
   content.innerHTML = renderMarkdown(node.document?.markdown || '');
   content.addEventListener('mouseup', (event) => capturePassage(content, node.id, event));
   content.addEventListener('keyup', (event) => capturePassage(content, node.id, event));
@@ -1284,8 +1286,8 @@ function renderNode(node, item) {
   });
   const count = item.nodes.filter((entry) => entry.parentId === node.id).length;
   const footer = count ? el('div', { class: 'topic-footer' }, button(node.collapsed ? `＋ ${count}` : `− ${count}`, (event) => { event.stopPropagation(); change((entry) => { entry.nodes.find((n) => n.id === node.id).collapsed = !node.collapsed; }); }, 'collapse-button', { 'aria-label': node.collapsed ? 'Expand children' : 'Collapse children' })) : null;
-  const resize = button('', () => {}, 'resize-grip node-resize', { 'aria-label': `Resize ${node.title}`, title: 'Drag to resize; arrow keys also work' });
-  const link = button('↔', () => {}, 'link-grip', { 'aria-label': `Connect ${node.title} to another node or create one`, title: 'Drag to a node to connect, or empty space to create a node' });
+  const resize = button('', () => {}, 'resize-grip node-resize', { 'aria-label': `Resize ${label}`, title: 'Drag to resize; arrow keys also work' });
+  const link = button('↔', () => {}, 'link-grip', { 'aria-label': `Connect ${label} to another node or create one`, title: 'Drag to a node to connect, or empty space to create a node' });
   link.addEventListener('pointerdown', (event) => startEdgeDrag(event, node, link));
   link.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -1294,7 +1296,7 @@ function renderNode(node, item) {
   });
   resize.addEventListener('pointerdown', (event) => startNodeResize(event, node, card, resize));
   resize.addEventListener('keydown', (event) => resizeNodeWithKeys(event, node));
-  card.append(el('div', { class: 'topic-top' }, grip), title, content);
+  card.append(el('div', { class: 'topic-top' }, grip), content);
   if (footer) card.append(footer);
   card.append(link, resize);
   card.addEventListener('click', (event) => {
@@ -1303,7 +1305,7 @@ function renderNode(node, item) {
     if (event.target.closest('.node-content, .anchor-mark, button, input') || !window.getSelection()?.isCollapsed) return;
     selectNode(node.id);
   });
-  card.addEventListener('dblclick', (event) => { if (!event.target.closest('.node-content')) beginRename(node.id); });
+  card.addEventListener('dblclick', (event) => { if (!event.target.closest('.node-content')) beginNodeMarkdownEdit(node.id); });
   card.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); selectNode(node.id); } });
   return card;
 }
@@ -1312,7 +1314,7 @@ function openLinkMenu(sourceId, grip) {
   closeContextMenu();
   const item = work();
   const candidates = [
-    ...item.nodes.map((node) => ({ id: node.id, title: node.title })),
+    ...item.nodes.map((node) => ({ id: node.id, title: nodeLabel(node) })),
     ...item.highlights.map((highlight) => ({ id: `h:${highlight.id}`, title: `“${shortTitle(highlight.quote)}”` })),
   ];
   const available = candidates.filter((candidate) => candidate.id !== sourceId &&
@@ -1394,7 +1396,7 @@ function startEdgeDrag(event, node, grip, preserveClick = false) {
       let newId = target;
       if (!newId) {
         newId = crypto.randomUUID();
-        entry.nodes.push({ id: newId, parentId: null, title: 'Untitled', document: { type: 'markdown', markdown: '' }, anchor: null, collapsed: false, provenance: 'learner' });
+        entry.nodes.push({ id: newId, parentId: null, document: { type: 'markdown', markdown: '' }, anchor: null, collapsed: false, provenance: 'learner' });
         entry.layout.positions[newId] = { x: destination.x - NODE.width / 2, y: destination.y - NODE.height / 2 };
       }
       const incoming = entry.edges.some((edge) => edge.toId === newId) || entry.nodes.some((candidate) => candidate.id === newId && candidate.parentId);
@@ -1503,7 +1505,7 @@ function beginNodeMarkdownEdit(id) {
   if (!node || !card) return;
   const preview = card.querySelector('.node-content');
   if (!preview || preview.querySelector('.node-markdown-editor')) return;
-  const editor = el('textarea', { class: 'node-markdown-editor', 'aria-label': `${node.title} Markdown`, spellcheck: 'true' });
+  const editor = el('textarea', { class: 'node-markdown-editor', 'aria-label': `${nodeLabel(node)} Markdown`, spellcheck: 'true' });
   editor.value = node.document?.markdown || '';
   const originalMarkdown = editor.value;
   preview.replaceChildren(editor);
@@ -1546,26 +1548,15 @@ function resizeNodeEditor(editor) {
   editor.style.height = `${Math.max(60, Math.min(editor.scrollHeight + 2, 360))}px`;
 }
 
-function beginRename(id) {
-  const card = document.querySelector(`[data-node="${id}"]`); if (!card) return;
-  const title = card.querySelector('.topic-title');
-  const node = work().nodes.find((entry) => entry.id === id);
-  const input = el('input', { class: 'inline-title', value: node.title, 'aria-label': 'Rename node' });
-  title.replaceWith(input); input.focus(); input.select();
-  const finish = () => { const value = input.value.trim() || 'Untitled'; if (value !== node.title) change((entry) => { entry.nodes.find((n) => n.id === id).title = value; }); else renderWorkspace(); };
-  input.addEventListener('blur', finish, { once: true });
-  input.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); input.blur(); } if (event.key === 'Escape') { input.value = node.title; input.blur(); } });
-}
-
 function addNode(parentId = null, anchor = null, preferredPosition = null) {
   const item = work(); if (!item) return;
-  const node = { id: crypto.randomUUID(), parentId, title: anchor ? shortTitle(anchor.quote) : 'Untitled', document: { type: 'markdown', markdown: '' }, anchor, collapsed: false, provenance: 'learner' };
+  const node = { id: crypto.randomUUID(), parentId, document: { type: 'markdown', markdown: anchor ? `# ${shortTitle(anchor.quote)}` : '' }, anchor, collapsed: false, provenance: 'learner' };
   const position = preferredPosition || suggestedPosition(item, parentId);
   change((entry) => { entry.nodes.push(node); entry.layout.positions[node.id] = position; });
   selectedPassage = null; selectedId = node.id; editingMarkdown = false; renderWorkspace();
   if (anchor) focusSourceAndNode(node.id);
   else focusNode(node.id);
-  beginRename(node.id);
+  beginNodeMarkdownEdit(node.id);
 }
 
 function shortTitle(text) { const clean = text.replace(/\s+/g, ' ').trim(); return clean.length > 58 ? `${clean.slice(0, 55)}…` : clean; }
@@ -1656,12 +1647,6 @@ function removeNodes(ids) {
 function renderDetails(node, item) {
   const anchorRange = resolveAnchor(node.anchor, sourcePlainText(item, node.anchor?.targetId));
   const panel = el('aside', { class: 'details-panel', 'aria-label': 'Node details' }, el('div', { class: 'panel-heading' }, el('span', { class: 'panel-eyebrow', text: 'NODE DETAILS' }), button('×', () => { selectedId = null; renderWorkspace(); }, 'panel-close', { 'aria-label': 'Close details' })));
-  const title = el('input', { class: 'details-title', value: node.title, 'aria-label': 'Title' });
-  title.addEventListener('input', () => {
-    change((entry) => { entry.nodes.find((n) => n.id === node.id).title = title.value; }, { group: `title:${node.id}`, rerender: false });
-    const card = document.querySelector(`[data-node="${node.id}"] .topic-title`); if (card) card.textContent = title.value;
-  });
-  title.addEventListener('blur', () => { editGroup = null; });
   const markdown = el('textarea', { class: 'details-markdown', placeholder: 'Write here…', 'aria-label': 'Markdown content', spellcheck: 'true' }); markdown.value = node.document?.markdown || '';
   markdown.addEventListener('input', () => {
     change((entry) => { entry.nodes.find((n) => n.id === node.id).document.markdown = markdown.value; }, { group: `markdown:${node.id}`, rerender: false });
@@ -1674,7 +1659,7 @@ function renderDetails(node, item) {
     }
   });
   markdown.addEventListener('blur', () => { editGroup = null; });
-  panel.append(el('label', { text: 'TITLE' }), title, el('label', { text: 'CONTENT' }), markdown);
+  panel.append(el('label', { text: 'MARKDOWN' }), markdown);
   if (node.sourceRefs?.length) {
     panel.append(el('label', { text: 'SOURCES' }));
     for (const reference of node.sourceRefs) {
@@ -1695,10 +1680,23 @@ function renderDetails(node, item) {
 }
 
 function openSource(id, page = 1, anchor = null) {
+  // Chat and Sources are mutually exclusive workspace panels. Opening one
+  // always turns the other one off; clicking the active menu item passes null
+  // and simply closes it.
+  if (id !== null) aiPanel = null;
   openSourceId = id;
   sourcePage = page;
   sourceJump = anchor;
   renderWorkspace();
+}
+
+function toggleAiPanel() {
+  if (aiPanel) {
+    aiPanel = null;
+    renderWorkspace();
+    return;
+  }
+  openAiPanel();
 }
 
 function sourceReference(source, page, text, offsets) {
@@ -1712,7 +1710,7 @@ function attachSourceReference(nodeId, reference) {
 
 function createNodeFromSource(reference) {
   const item = work();
-  const node = { id: crypto.randomUUID(), title: shortTitle(reference.anchor.quote), document: { type: 'markdown', markdown: `> ${reference.anchor.quote.replace(/\n/g, '\n> ')}` }, parentId: null, anchor: null, sourceRefs: [reference], collapsed: false, provenance: 'source' };
+  const node = { id: crypto.randomUUID(), document: { type: 'markdown', markdown: `# ${shortTitle(reference.anchor.quote)}\n\n> ${reference.anchor.quote.replace(/\n/g, '\n> ')}` }, parentId: null, anchor: null, sourceRefs: [reference], collapsed: false, provenance: 'source' };
   const position = suggestedPosition(item, null);
   change((entry) => { entry.nodes.push(node); entry.layout.positions[node.id] = position; });
   openSourceId = null; sourceJump = null; selectedId = node.id; selectedPassage = null;
@@ -1730,7 +1728,7 @@ function sourceSelectionActions(source, page, textRoot, actions) {
   const nodes = work()?.nodes || [];
   if (nodes.length) {
     const chooser = el('select', { 'aria-label': 'Node to attach passage to' });
-    for (const node of nodes) chooser.append(el('option', { value: node.id, text: node.title }));
+    for (const node of nodes) chooser.append(el('option', { value: node.id, text: nodeLabel(node) }));
     if (selectedId) chooser.value = selectedId;
     actions.append(chooser, button('Attach passage', () => attachSourceReference(chooser.value, reference), 'panel-secondary'));
   }
@@ -2186,10 +2184,17 @@ function newChat(seed = {}) {
 
 function openAiPanel(seed = null) {
   if (!work()) return;
-  if (seed || selectedId || selectedIds.size || !chatList().length) return newChat(seed || {});
+  // Opening Chat from any entry point also closes Sources, not just the
+  // top-right toggle, so there can only be one workspace panel visible.
+  openSourceId = null;
+  if (seed || selectedId || selectedIds.size || !chatList().length) {
+    newChat(seed || {});
+    renderWorkspace();
+    return;
+  }
   const chat = [...chatList()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
   aiPanel = { chatId: chat.id, tab: 'chat', draft: '', busy: false, error: '', previewId: null, width: aiPanel?.width };
-  renderAiPanel();
+  renderWorkspace();
 }
 
 function getChatProposal(id) {
@@ -2397,7 +2402,7 @@ function renderAiPanel() {
   });
   const heading = el('div', { class: 'ai-heading' },
     el('div', {}, el('span', { class: 'chat-eyebrow', text: 'WORKSPACE ASSISTANT' }), el('h2', { text: aiPanel.tab === 'chat' ? chat.title : aiPanel.tab === 'history' ? 'Chat history' : 'Model settings' })),
-    button('×', () => { aiPanel = null; panel.remove(); }, 'panel-close', { 'aria-label': 'Close chat' }));
+    button('×', () => { aiPanel = null; renderWorkspace(); }, 'panel-close', { 'aria-label': 'Close chat' }));
   panel.append(heading);
   const tabs = el('nav', { class: 'chat-tabs', 'aria-label': 'Chat sections' });
   for (const [tab, label] of [['chat', 'Chat'], ['history', 'History'], ['settings', 'Model settings']]) {
@@ -2448,7 +2453,7 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') { selectedId = null; selectedIds.clear(); selectedPassage = null; renderWorkspace(); return; }
   if (event.key === 'Tab' && selectedId) { event.preventDefault(); addNode(selectedId); }
   else if (event.key === 'Enter' && selectedId) { event.preventDefault(); addNode(work().nodes.find((node) => node.id === selectedId)?.parentId || null); }
-  else if (key === 'f2' && selectedId) { event.preventDefault(); beginRename(selectedId); }
+  else if (key === 'f2' && selectedId) { event.preventDefault(); beginNodeMarkdownEdit(selectedId); }
   else if ((key === 'backspace' || key === 'delete') && (selectedId || selectedIds.size) && window.getSelection()?.isCollapsed) { event.preventDefault(); removeNodes(selectedId ? [selectedId] : [...selectedIds]); }
   else if (event.key === ' ' && !selectedId && !selectedIds.size) { event.preventDefault(); fitCanvas(); }
 });
