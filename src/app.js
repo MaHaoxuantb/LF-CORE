@@ -1429,7 +1429,7 @@ function startEdgeDrag(event, node, grip, preserveClick = false, prepareSource =
   let target = null, destination = null, moved = false, sides = {};
   const move = (next) => {
     if (!moved && Math.hypot(next.clientX - event.clientX, next.clientY - event.clientY) < 5) return;
-    if (!moved) { prepareSource?.(); moved = true; }
+    if (!moved) { prepareSource?.(); window.getSelection()?.removeAllRanges(); moved = true; }
     const rect = scene.getBoundingClientRect();
     destination = { x: (next.clientX - rect.left) / view.zoom, y: (next.clientY - rect.top) / view.zoom, width: 0, height: 0 };
     const hoveredId = endpointAtPointer(next.clientX, next.clientY);
@@ -2099,7 +2099,7 @@ function markAnchors(preview, highlights) {
         mark.addEventListener('pointerdown', (event) => {
           if (event.button !== 0) return;
           event.stopPropagation();
-          startEdgeDrag(event, `h:${match.highlight.id}`, mark, true);
+          startEdgeDrag(event, `h:${match.highlight.id}`, mark);
         });
         mark.addEventListener('keydown', (event) => {
           if (event.key === 'Enter') { event.preventDefault(); open(event); }
@@ -2130,7 +2130,7 @@ function activateMarkdownHighlightDrag(preview, targetId) {
     mark.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return;
       event.stopPropagation();
-      startEdgeDrag(event, `h:${anchor.id}`, mark, true, register);
+      startEdgeDrag(event, `h:${anchor.id}`, mark, false, register);
     });
   }
 }
