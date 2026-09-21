@@ -1018,6 +1018,8 @@ function attachPanAndZoom(viewport) {
     event.preventDefault();
   });
   viewport.addEventListener('wheel', (event) => {
+    const nodeContent = event.target.closest?.('.topic-card.selected .node-content');
+    if (!event.ctrlKey && !event.metaKey && nodeContent && (nodeContent.scrollHeight > nodeContent.clientHeight || nodeContent.scrollWidth > nodeContent.clientWidth)) return;
     event.preventDefault();
     if (event.ctrlKey || event.metaKey) zoomTo(view.zoom * (event.deltaY < 0 ? 1.08 : .92), event.clientX, event.clientY);
     else { view.x -= event.deltaX; view.y -= event.deltaY; applyView(); saveView(); }
