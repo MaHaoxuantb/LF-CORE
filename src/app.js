@@ -992,10 +992,10 @@ function renderWorkspace() {
   ensurePositions(item);
   const chrome = el('div', { class: 'workspace-chrome' },
     el('div', { class: 'header-left-group' },
-      el('div', { class: 'header-home' },
-        iconButton('M3 11 12 3l9 8v9a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z', 'Home', renderHome)),
+      el('div', { class: 'header-navigation' },
+        iconButton('M3 11 12 3l9 8v9a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z', 'Home', renderHome),
+        iconButton('M4 5h16M4 10h11M4 15h16M4 20h11', outlineOpen ? 'Hide outline' : 'Open outline', () => { outlineOpen = !outlineOpen; saveView(); renderWorkspace(); }, outlineOpen)),
       el('div', { class: 'header-left' },
-        iconButton('M4 5h16M4 10h11M4 15h16M4 20h11', outlineOpen ? 'Hide outline' : 'Open outline', () => { outlineOpen = !outlineOpen; saveView(); renderWorkspace(); }, outlineOpen),
         el('div', { class: 'document-menu-control' },
           button(item.title, () => toggleDocumentMenu(document.querySelector('.document-menu-control')), 'workspace-title document-menu-button', { 'aria-label': `Project options for ${item.title}`, 'aria-haspopup': 'menu', 'aria-expanded': 'false', title: item.title }),
         ),

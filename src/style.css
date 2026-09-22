@@ -292,8 +292,8 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .canvas-shell { height: 100vh; }
 .workspace-chrome { position: absolute; z-index: 22; inset: 16px 18px auto; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; pointer-events: none; }
 .workspace-chrome .header-left-group { display: flex; align-items: flex-start; gap: 8px; min-width: 0; max-width: min(675px, 78vw); }
-.workspace-chrome .header-home, .workspace-chrome .header-left, .workspace-chrome .header-right { pointer-events: auto; display: flex; align-items: center; gap: 4px; height: 43px; padding: 4px 6px; border: 1px solid #e5e7ee; border-radius: 12px; background: rgb(255 255 255 / 55%); box-shadow: 0 3px 16px #222a3e12; -webkit-backdrop-filter: blur(21px); backdrop-filter: blur(21px); }
-.workspace-chrome .header-home { flex: none; }
+.workspace-chrome .header-navigation, .workspace-chrome .header-left, .workspace-chrome .header-right { pointer-events: auto; display: flex; align-items: center; gap: 4px; height: 43px; padding: 4px 6px; border: 1px solid #e5e7ee; border-radius: 12px; background: rgb(255 255 255 / 55%); box-shadow: 0 3px 16px #222a3e12; -webkit-backdrop-filter: blur(21px); backdrop-filter: blur(21px); }
+.workspace-chrome .header-navigation { flex: none; }
 .workspace-chrome .header-left { min-width: 0; max-width: min(620px, 72vw); }
 .workspace-chrome .header-right { flex: none; }
 .workspace-chrome .header-left .save-menu { left: 0; right: auto; }
@@ -538,7 +538,7 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 :root[data-dark='true'] .markdown-preview pre { background: #303035; color: #e9e7ef; }
 :root[data-dark='true'] .markdown-preview blockquote { color: #bfc2cb; }
 :root[data-dark='true'] .topic-card.content-overflow:not(.selected) .node-content::after { background: linear-gradient(90deg, #1b1b1b00, #1b1b1b 35%); }
-:root[data-dark='true'] .workspace-chrome .header-home,
+:root[data-dark='true'] .workspace-chrome .header-navigation,
 :root[data-dark='true'] .workspace-chrome .header-left,
 :root[data-dark='true'] .workspace-chrome .header-right { background: rgb(27 27 27 / 55%); border-color: #454545; }
 :root[data-dark='true'] .zoom-controls button,
@@ -923,14 +923,14 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 620px) { .ai-panel { max-width: calc(100vw - 16px); } }
 
 /* Keep the compact workspace chrome translucent in every theme. */
-:root[data-theme='dark'] .workspace-chrome .header-home,
+:root[data-theme='dark'] .workspace-chrome .header-navigation,
 :root[data-theme='dark'] .workspace-chrome .header-left,
 :root[data-theme='dark'] .workspace-chrome .header-right {
   background: rgb(27 27 27 / 55%);
 }
 
 @media (prefers-color-scheme: dark) {
-  :root[data-theme='auto'] .workspace-chrome .header-home,
+  :root[data-theme='auto'] .workspace-chrome .header-navigation,
   :root[data-theme='auto'] .workspace-chrome .header-left,
   :root[data-theme='auto'] .workspace-chrome .header-right {
     background: rgb(27 27 27 / 55%);
