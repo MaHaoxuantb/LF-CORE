@@ -835,11 +835,20 @@ function activeMarkdownEditor() {
 
 function applyMarkdownEdit(transform) {
   const editor = activeMarkdownEditor(); if (!editor) return;
-  const result = transform(editor.value, editor.selectionStart, editor.selectionEnd);
-  editor.value = result.value;
+  const previous = editor.value;
+  const result = transform(previous, editor.selectionStart, editor.selectionEnd);
+  let start = 0, previousEnd = previous.length, nextEnd = result.value.length;
+  while (start < previousEnd && start < nextEnd && previous[start] === result.value[start]) start++;
+  while (previousEnd > start && nextEnd > start && previous[previousEnd - 1] === result.value[nextEnd - 1]) { previousEnd--; nextEnd--; }
+  const replacement = result.value.slice(start, nextEnd);
   editor.focus();
+  editor.setSelectionRange(start, previousEnd);
+  const inserted = document.execCommand?.('insertText', false, replacement);
+  if (!inserted) {
+    editor.setRangeText(replacement, start, previousEnd, 'end');
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+  }
   editor.setSelectionRange(result.start, result.end);
-  editor.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 function renderEditingToolbar() {
@@ -868,7 +877,6 @@ function renderEditingToolbar() {
 }
 
 function zoomTo(next, clientX, clientY) {
-  if (editingTarget) return;
   const viewport = document.querySelector('.canvas-viewport'); if (!viewport) return;
   const rect = viewport.getBoundingClientRect();
   const px = clientX == null ? rect.width / 2 : clientX - rect.left;
@@ -3383,6 +3391,9 @@ document.addEventListener('keydown', (event) => {
   // Keep this before the editable-control guard so the advertised global shortcut
   // still works after changing the relationship mode or depth.
   if (event.key === 'Escape' && graphFocus) { event.preventDefault(); exitGraphFocus(); return; }
+  // Let the textarea's native history handle writing undo/redo. Input events from
+  // those operations continue to autosave the resulting Markdown.
+  if (editingTarget && event.target === activeMarkdownEditor() && mod && (key === 'z' || key === 'y')) return;
   if (mod && key === 'z' && !event.shiftKey) { event.preventDefault(); undo(); return; }
   if (mod && ((key === 'z' && event.shiftKey) || key === 'y')) { event.preventDefault(); redo(); return; }
   if (mod && key === 'k' && selectedPassage) { event.preventDefault(); createAnchoredNode(); return; }
