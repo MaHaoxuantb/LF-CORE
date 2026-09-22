@@ -249,6 +249,13 @@ function renameWorkspace() {
   input.select();
 }
 
+function closeDocumentSubmenus(menu) {
+  menu?.querySelectorAll('.document-menu-submenu.open').forEach((item) => {
+    item.classList.remove('open');
+    item.querySelector('.submenu-trigger')?.setAttribute('aria-expanded', 'false');
+  });
+}
+
 function documentMenuSubmenu(label, values, current, action, format = (value) => value[0].toUpperCase() + value.slice(1)) {
   const wrapper = el('div', { class: 'document-menu-submenu' });
   const trigger = button(label, () => wrapper.classList.toggle('open'), 'document-menu-option submenu-trigger', { role: 'menuitem', 'aria-haspopup': 'menu', 'aria-expanded': 'false' });
@@ -278,6 +285,7 @@ function documentMenuSubmenu(label, values, current, action, format = (value) =>
   trigger.addEventListener('click', () => { cancelClose(); syncExpanded(); });
   wrapper.addEventListener('mouseenter', open);
   wrapper.addEventListener('mouseleave', closeAfterPointerTravel);
+  wrapper.addEventListener('focusin', open);
   wrapper.append(trigger, submenu);
   return wrapper;
 }
@@ -324,6 +332,18 @@ function toggleDocumentMenu(wrapper) {
   menu.append(documentMenuSubmenu('Saving', ['auto', 'manual'], saveMode, (value) => setSaveMode(value), (value) => value === 'auto' ? 'Auto save' : 'Manual save'));
   menu.append(el('div', { class: 'document-menu-separator', role: 'separator' }));
   appendAppearanceOptions(menu);
+  // A submenu belongs to the item currently under the pointer. Moving to a
+  // normal menu item must close the previously opened submenu; otherwise the
+  // old submenu remains visible beside an unrelated item.
+  const syncHoveredMenuItem = (event) => {
+    const option = event.target.closest('.document-menu-option');
+    if (!option || !menu.contains(option)) return;
+    const submenu = option.closest('.document-menu-submenu');
+    if (submenu) submenu.dispatchEvent(new Event('mouseenter'));
+    else closeDocumentSubmenus(menu);
+  };
+  menu.addEventListener('mouseover', syncHoveredMenuItem);
+  menu.addEventListener('focusin', syncHoveredMenuItem);
   wrapper.append(menu);
   wrapper.querySelector('.document-menu-button')?.setAttribute('aria-expanded', 'true');
   menu.querySelector('button')?.focus();
