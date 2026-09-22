@@ -8,6 +8,7 @@
   "main": "electron/main.js",
   "scripts": {
     "build": "node build.js",
+    "build:vercel": "npm run build && node vercel-build.js",
     "prestart": "node build.js",
     "start": "node server.js",
     "test": "node --test",
