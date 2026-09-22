@@ -2753,7 +2753,7 @@ function renderContextPicker(item, chat) {
     if (picker.value === 'selected' && liveSelection.length) context.nodeIds = liveSelection;
   }));
   const contextControl = el('label', { class: 'chat-context-control' },
-    el('span', { text: 'Context:' }), picker, el('span', { class: 'chat-context-chevron', 'aria-hidden': 'true', text: '⌄' }));
+    el('span', { text: 'Context:' }), picker, el('span', { class: 'chat-context-chevron', 'aria-hidden': 'true' }));
   return { snapshot, picker: contextControl };
 }
 
