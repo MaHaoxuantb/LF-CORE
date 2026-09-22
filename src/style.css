@@ -468,6 +468,9 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .workspace-shell.editing-mode-active .ai-panel,
 .workspace-shell.editing-mode-active .passage-toolbar,
 .workspace-shell.editing-mode-active .selection-toolbar { opacity: .1; pointer-events: none; transition: opacity .3s cubic-bezier(.22, 1, .36, 1); }
+.workspace-shell.editing-mode-active .zoom-controls { opacity: .18; pointer-events: auto; transition: opacity .2s ease; }
+.workspace-shell.editing-mode-active .zoom-controls:hover,
+.workspace-shell.editing-mode-active .zoom-controls:focus-within { opacity: .9; }
 .editing-mode-active .editing-focus-target { z-index: 9; opacity: 1 !important; pointer-events: auto !important; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent), 0 18px 48px #20283a2b; }
 .editing-mode-active .app-watermark { opacity: .012; }
 .editing-toolbar { position: absolute; z-index: 24; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; align-items: center; gap: 3px; max-width: calc(100vw - 36px); overflow-x: auto; padding: 5px; border: 1px solid #dcddec; border-radius: 11px; background: rgb(255 255 255 / 94%); box-shadow: 0 8px 28px #2739532b; color: #586178; white-space: nowrap; -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
@@ -487,7 +490,8 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) {
   .editing-mode-active .topic-card, .editing-mode-active .paper, .editing-mode-active .connectors,
   .editing-mode-active .edge-label-chip, .workspace-shell.editing-mode-active > .workspace-chrome,
-  .workspace-shell.editing-mode-active .outline-panel { transition: none; }
+  .workspace-shell.editing-mode-active .outline-panel,
+  .workspace-shell.editing-mode-active .zoom-controls { transition: none; }
 }
 @media (max-width: 620px) { .editing-toolbar { left: 8px; right: 8px; bottom: 57px; transform: none; max-width: none; } .editing-toolbar-label { display: none; } }
 
