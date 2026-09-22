@@ -1,5 +1,5 @@
 import { makeAnchor, resolveAnchor, selectionOffsets } from './anchors.js';
-import { createWorkspace, emptyState, loadSaveMode, loadState, saveSaveMode, saveState, snapshotWorkspace } from './storage.js';
+import { createWorkspace, emptyState, loadSaveMode, loadState, saveSaveMode, saveStateWithQuotaRecovery, snapshotWorkspace } from './storage.js';
 import { renderMarkdown, headingTokens, wrapMarkdownHighlight, unwrapMarkdownHighlight } from './markdown.js';
 import { nodeLabel } from './node-content.js';
 import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
@@ -100,6 +100,7 @@ if (colorSchemeQuery?.addEventListener) colorSchemeQuery.addEventListener('chang
 else if (colorSchemeQuery) colorSchemeQuery.addListener(handleSystemAppearanceChange);
 let lastSaved = JSON.stringify(state), dirty = false;
 let reportedSaveFailure = null;
+let quotaCleanupDeclined = false;
 let currentId = null, selectedId = null, selectedIds = new Set(), editingMarkdown = false, editingTarget = null, editingBeforeView = null, outlineOpen = false;
 let activeConnection = null;
 let openSourceId = null, sourcePage = 1, sourceJump = null;
@@ -152,12 +153,24 @@ function updateSaveControls() {
 
 function persist(force = false) {
   if (loadError) { saveError = 'Saved data could not be read; no data was overwritten.'; updateSaveControls(); return false; }
+  if (force) quotaCleanupDeclined = false;
   const serialized = JSON.stringify(state);
   dirty = serialized !== lastSaved;
   if (saveMode === 'manual' && !force) { updateSaveControls(); return true; }
   try {
-    saveState(state);
-    lastSaved = serialized; dirty = false; saveError = null; reportedSaveFailure = null;
+    const recovery = saveStateWithQuotaRecovery(state, localStorage, ({ snapshotCount }) => {
+      if (quotaCleanupDeclined) return false;
+      const accepted = window.confirm(
+        `The browser's local save limit has been reached. To save your current work, LF CORE needs to remove older undo/redo history${snapshotCount ? ` (${snapshotCount} snapshots are currently stored)` : ''}.\n\nYour current articles, nodes, sources, research, and chats will not be removed. Continue?`
+      );
+      quotaCleanupDeclined = !accepted;
+      return accepted;
+    });
+    lastSaved = JSON.stringify(state); dirty = false; saveError = null; reportedSaveFailure = null; quotaCleanupDeclined = false;
+    if (recovery.recovered) {
+      console.warn(`[LF CORE] Storage quota recovered by removing ${recovery.removedSnapshots} old undo/redo snapshot${recovery.removedSnapshots === 1 ? '' : 's'}.`);
+      announce('Saved. Older undo history was cleared to free browser storage.');
+    }
     for (const id of pendingPdfDeletes) {
       pendingPdfDeletes.delete(id);
       pdfDocuments.delete(id);

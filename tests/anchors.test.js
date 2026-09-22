@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { marked } from 'marked';
 import { makeAnchor, resolveAnchor } from '../src/anchors.js';
-import { createWorkspace, emptyState, loadSaveMode, loadState, saveSaveMode, saveState } from '../src/storage.js';
+import { createWorkspace, emptyState, loadSaveMode, loadState, saveSaveMode, saveState, saveStateWithQuotaRecovery } from '../src/storage.js';
 import { headingTokens, wrapMarkdownHighlight, unwrapMarkdownHighlight } from '../src/markdown.js';
 import { nodeLabel } from '../src/node-content.js';
 
@@ -201,6 +201,45 @@ test('old saved workspaces gain empty source and highlight collections without l
   assert.deepEqual(reopened.sources, []);
   assert.deepEqual(reopened.highlights, []);
   assert.deepEqual(reopened.nodes[0].sourceRefs, []);
+});
+
+test('quota recovery preserves current work while pruning old undo snapshots', () => {
+  const memory = new Map();
+  const storage = {
+    getItem: (key) => memory.get(key) ?? null,
+    setItem: (key, value) => {
+      if (value.length > 2600) { const error = new Error('Storage is full'); error.name = 'QuotaExceededError'; throw error; }
+      memory.set(key, value);
+    }
+  };
+  const workspace = createWorkspace('Large current workspace', `# Current\n\n${'important '.repeat(40)}`);
+  const state = emptyState();
+  state.workspaces.push(workspace);
+  state.history[workspace.id] = Array.from({ length: 12 }, (_, index) => ({ ...structuredClone(workspace), title: `Old ${index}` }));
+  state.redo[workspace.id] = [structuredClone(workspace)];
+  state.chats[workspace.id] = [{ id: 'chat-1', messages: [{ role: 'user', content: 'Keep this chat' }] }];
+
+  const result = saveStateWithQuotaRecovery(state, storage);
+  const reopened = loadState(storage);
+
+  assert.equal(result.recovered, true);
+  assert.ok(result.removedSnapshots > 0);
+  assert.equal(reopened.workspaces[0].article.markdown, workspace.article.markdown);
+  assert.equal(reopened.chats[workspace.id][0].messages[0].content, 'Keep this chat');
+  assert.deepEqual(reopened.redo[workspace.id], []);
+  assert.ok(reopened.history[workspace.id].length < 12);
+});
+
+test('quota recovery does not remove history without approval', () => {
+  const storage = { setItem: () => { const error = new Error('Storage is full'); error.name = 'QuotaExceededError'; throw error; } };
+  const workspace = createWorkspace('Keep history');
+  const state = emptyState(); state.workspaces.push(workspace);
+  state.history[workspace.id] = [structuredClone(workspace), structuredClone(workspace)];
+  state.redo[workspace.id] = [structuredClone(workspace)];
+
+  assert.throws(() => saveStateWithQuotaRecovery(state, storage, () => false), { name: 'QuotaExceededError' });
+  assert.equal(state.history[workspace.id].length, 2);
+  assert.equal(state.redo[workspace.id].length, 1);
 });
 
 test('outline uses headings and skips fenced code', () => {

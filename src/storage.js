@@ -117,6 +117,45 @@ export function loadState(storage = localStorage) {
 }
 
 export function saveState(state, storage = localStorage) { storage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+
+export function isStorageQuotaError(error) {
+  return error?.name === 'QuotaExceededError' || error?.code === 22 || error?.code === 1014;
+}
+
+// Undo snapshots contain complete workspace copies and are the only disposable
+// part of the saved document state. If localStorage fills up, retain as much
+// recent undo history as fits without dropping current work, chats, or sources.
+export function saveStateWithQuotaRecovery(state, storage = localStorage, confirmRecovery = () => true) {
+  let quotaError;
+  try {
+    saveState(state, storage);
+    return { recovered: false, removedSnapshots: 0 };
+  } catch (error) {
+    if (!isStorageQuotaError(error)) throw error;
+    quotaError = error;
+  }
+
+  const originalCount = [...Object.values(state.history || {}), ...Object.values(state.redo || {})]
+    .reduce((total, entries) => total + entries.length, 0);
+  if (!originalCount) throw quotaError;
+  if (!confirmRecovery({ snapshotCount: originalCount })) throw quotaError;
+  state.redo = Object.fromEntries(Object.keys(state.redo || {}).map((id) => [id, []]));
+  let lastError;
+  for (const limit of [20, 10, 5, 2, 1, 0]) {
+    for (const entries of Object.values(state.history || {})) {
+      if (entries.length > limit) entries.splice(0, entries.length - limit);
+    }
+    try {
+      saveState(state, storage);
+      const remaining = Object.values(state.history || {}).reduce((total, entries) => total + entries.length, 0);
+      return { recovered: true, removedSnapshots: originalCount - remaining };
+    } catch (error) {
+      if (!isStorageQuotaError(error)) throw error;
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
 export function loadSaveMode(storage = localStorage) { return storage.getItem(SAVE_MODE_KEY) === 'manual' ? 'manual' : 'auto'; }
 export function saveSaveMode(mode, storage = localStorage) {
   if (mode !== 'manual' && mode !== 'auto') throw new Error('Unsupported save mode.');
