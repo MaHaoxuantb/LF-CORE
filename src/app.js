@@ -11,6 +11,7 @@ import { contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, proposalStatus }
 import { normalizeGraphFocusPreferences, relatedNodeIds } from './graph-focus.js';
 import { siblingPredecessor } from './siblings.js';
 import { parseProject, projectFileName, serializeProject, PROJECT_EXTENSION } from './project.js';
+import { prefixMarkdownLines, wrapMarkdownSelection } from './markdown-edit.js';
 import { attachSourceToQuestion, compareIdeas, createResearchProposal, createResearchQuestion, discoverSources, normalizeResearch, recordCloseout, verifiedSourceFromResult } from './research.js';
 import 'katex/dist/katex.min.css';
 import './style.css';
@@ -94,7 +95,7 @@ const handleSystemAppearanceChange = () => {
 if (colorSchemeQuery?.addEventListener) colorSchemeQuery.addEventListener('change', handleSystemAppearanceChange);
 else if (colorSchemeQuery) colorSchemeQuery.addListener(handleSystemAppearanceChange);
 let lastSaved = JSON.stringify(state), dirty = false;
-let currentId = null, selectedId = null, selectedIds = new Set(), editingMarkdown = false, outlineOpen = false;
+let currentId = null, selectedId = null, selectedIds = new Set(), editingMarkdown = false, editingTarget = null, editingBeforeView = null, outlineOpen = false;
 let activeConnection = null;
 let openSourceId = null, sourcePage = 1, sourceJump = null;
 const pdfDocuments = new Map();
@@ -167,7 +168,7 @@ function persist(force = false) {
 }
 
 function flushView() {
-  if (graphFocus) { clearTimeout(viewTimer); viewTimer = null; return false; }
+  if (graphFocus || editingTarget) { clearTimeout(viewTimer); viewTimer = null; return false; }
   if (!viewTimer) return false;
   clearTimeout(viewTimer); viewTimer = null;
   const item = work();
@@ -354,7 +355,8 @@ function undo() {
   state.workspaces[state.workspaces.findIndex((entry) => entry.id === item.id)] = previous;
   if (selectedId && !previous.nodes.some((node) => node.id === selectedId)) selectedId = null;
   selectedIds = new Set([...selectedIds].filter((id) => previous.nodes.some((node) => node.id === id)));
-  editingMarkdown = false; selectedPassage = null; editGroup = null;
+  if (editingBeforeView) view = { ...editingBeforeView };
+  editingMarkdown = false; editingTarget = null; editingBeforeView = null; selectedPassage = null; editGroup = null;
   persist(); renderWorkspace(); announce('Change undone.');
 }
 
@@ -366,7 +368,8 @@ function redo() {
   state.workspaces[state.workspaces.findIndex((entry) => entry.id === item.id)] = next;
   if (selectedId && !next.nodes.some((node) => node.id === selectedId)) selectedId = null;
   selectedIds = new Set([...selectedIds].filter((id) => next.nodes.some((node) => node.id === id)));
-  editingMarkdown = false; selectedPassage = null; editGroup = null;
+  if (editingBeforeView) view = { ...editingBeforeView };
+  editingMarkdown = false; editingTarget = null; editingBeforeView = null; selectedPassage = null; editGroup = null;
   persist(); renderWorkspace(); announce('Change redone.');
 }
 
@@ -456,7 +459,7 @@ async function uploadProject(file) {
 
 function renderHome() {
   if (flushView()) persist();
-  currentId = null; selectedId = null; selectedIds.clear(); selectedPassage = null; openSourceId = null;
+  currentId = null; selectedId = null; selectedIds.clear(); editingMarkdown = false; editingTarget = null; editingBeforeView = null; selectedPassage = null; openSourceId = null;
   graphFocus = null; graphFocusNodeIds = null; spaceKeySession = null;
   const header = el('header', { class: 'home-header' }, el('div', { class: 'brand' }, el('span', { class: 'brand-mark', text: 'LF' }), el('span', { class: 'brand-name', text: 'CORE' }), el('span', { class: 'brand-company', text: 'LinecoFlow' })));
   const form = el('form', { class: 'create-form entry-form' });
@@ -550,7 +553,7 @@ function deleteWorkspace(id) {
 }
 
 function openWorkspace(id) {
-  currentId = id; aiPanel = null; selectedId = null; selectedIds.clear(); editingMarkdown = false; selectedPassage = null; editGroup = null; openSourceId = null;
+  currentId = id; aiPanel = null; selectedId = null; selectedIds.clear(); editingMarkdown = false; editingTarget = null; editingBeforeView = null; selectedPassage = null; editGroup = null; openSourceId = null;
   graphFocus = null; graphFocusNodeIds = null; spaceKeySession = null;
   const item = work(); if (!item) return renderHome();
   const needsFit = !item.layout?.articleSize;
@@ -584,7 +587,7 @@ function attachExampleAnchors(item) {
 
 function saveView() {
   clearTimeout(viewTimer);
-  if (graphFocus) { viewTimer = null; return; }
+  if (graphFocus || editingTarget) { viewTimer = null; return; }
   if (saveMode === 'manual') {
     viewTimer = null;
     const item = work(); if (!item) return;
@@ -769,7 +772,103 @@ function focusNodeFromActions(id) {
   return true;
 }
 
+function editingBounds(targetId) {
+  if (targetId === 'article') return rootBounds;
+  const item = work();
+  return item?.nodes.some((node) => node.id === targetId) ? pointFor(item, targetId) : null;
+}
+
+function panToEditingTarget(fromView = null) {
+  const viewport = document.querySelector('.canvas-viewport');
+  const bounds = editingBounds(editingTarget);
+  if (!viewport || !bounds) return;
+  const availableHeight = Math.max(180, viewport.clientHeight - 145);
+  view.x = viewport.clientWidth / 2 - (bounds.x + bounds.width / 2) * view.zoom;
+  view.y = 65 + availableHeight / 2 - (bounds.y + bounds.height / 2) * view.zoom;
+  applyView();
+  if (fromView && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    document.querySelector('.scene')?.animate(
+      [{ transform: viewTransform(fromView) }, { transform: viewTransform(view) }],
+      { duration: 320, easing: 'cubic-bezier(.22, 1, .36, 1)' }
+    );
+  }
+}
+
+function enterEditingMode(targetId) {
+  const item = work();
+  if (!item || graphFocus || (targetId !== 'article' && !item.nodes.some((node) => node.id === targetId))) return false;
+  if (editingTarget === targetId) {
+    activeMarkdownEditor()?.focus();
+    return true;
+  }
+  if (flushView()) persist();
+  const fromView = { ...view };
+  editingBeforeView = { ...view };
+  editingTarget = targetId;
+  editingMarkdown = targetId === 'article';
+  selectedId = targetId === 'article' ? null : targetId;
+  selectedIds.clear(); selectedPassage = null; activeConnection = null; editGroup = null;
+  renderWorkspace();
+  panToEditingTarget(fromView);
+  requestAnimationFrame(() => activeMarkdownEditor()?.focus());
+  return true;
+}
+
+function exitEditingMode() {
+  if (!editingTarget) return false;
+  const fromView = { ...view }, beforeView = editingBeforeView;
+  editingTarget = null; editingBeforeView = null; editingMarkdown = false; editGroup = null;
+  view = beforeView ? { ...beforeView } : view;
+  renderWorkspace();
+  if (beforeView && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    document.querySelector('.scene')?.animate(
+      [{ transform: viewTransform(fromView) }, { transform: viewTransform(view) }],
+      { duration: 320, easing: 'cubic-bezier(.22, 1, .36, 1)' }
+    );
+  }
+  return true;
+}
+
+function activeMarkdownEditor() {
+  return document.querySelector('.editing-focus-target textarea');
+}
+
+function applyMarkdownEdit(transform) {
+  const editor = activeMarkdownEditor(); if (!editor) return;
+  const result = transform(editor.value, editor.selectionStart, editor.selectionEnd);
+  editor.value = result.value;
+  editor.focus();
+  editor.setSelectionRange(result.start, result.end);
+  editor.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function renderEditingToolbar() {
+  const control = (label, title, transform, className = '') => {
+    const entry = button(label, () => applyMarkdownEdit(transform), `editing-tool ${className}`.trim(), { title, 'aria-label': title });
+    entry.addEventListener('pointerdown', (event) => event.preventDefault());
+    return entry;
+  };
+  const wrap = (before, after, placeholder) => (value, start, end) => wrapMarkdownSelection(value, start, end, before, after, placeholder);
+  const prefix = (marker) => (value, start, end) => prefixMarkdownLines(value, start, end, marker);
+  const toolbar = el('div', { class: 'editing-toolbar', role: 'toolbar', 'aria-label': 'Writing tools' },
+    el('span', { class: 'editing-toolbar-label', text: editingTarget === 'article' ? 'Editing article' : 'Editing node' }),
+    control('B', 'Bold', wrap('**', '**', 'bold text'), 'is-bold'),
+    control('I', 'Italic', wrap('*', '*', 'italic text'), 'is-italic'),
+    control('Highlight', 'Highlight', wrap('==', '==', 'highlighted text')),
+    control('Code', 'Inline code', wrap('`', '`', 'code')),
+    control('Link', 'Link', wrap('[', '](url)', 'link text')),
+    control('LaTeX', 'Inline LaTeX', wrap('$', '$', 'x^2')),
+    control('Display math', 'Display LaTeX', wrap('$$\n', '\n$$', 'x^2')),
+    control('H2', 'Heading level 2', prefix('## ')),
+    control('List', 'Bulleted list', prefix('- ')),
+    button('Done', exitEditingMode, 'editing-done', { title: 'Finish editing · Escape', 'aria-label': 'Finish editing' })
+  );
+  toolbar.addEventListener('pointerdown', (event) => event.stopPropagation());
+  return toolbar;
+}
+
 function zoomTo(next, clientX, clientY) {
+  if (editingTarget) return;
   const viewport = document.querySelector('.canvas-viewport'); if (!viewport) return;
   const rect = viewport.getBoundingClientRect();
   const px = clientX == null ? rect.width / 2 : clientX - rect.left;
@@ -900,7 +999,7 @@ function renderWorkspace() {
       button('Research', toggleResearchPanel, `source-toggle ${researchPanel ? 'active' : ''}`, { 'aria-pressed': String(!!researchPanel), 'aria-label': 'Toggle research' }),
       button(`Sources${item.sources?.length ? ` ${item.sources.length}` : ''}`, () => openSource(openSourceId ? null : item.sources?.[0]?.id || 'library'), `source-toggle ${openSourceId ? 'active' : ''}`, { 'aria-pressed': String(!!openSourceId), 'aria-label': 'Toggle sources' })));
 
-  app.replaceChildren(el('div', { class: `workspace-shell ${graphFocus ? 'graph-focus-active graph-focus-readonly' : ''}`.trim() }, renderCanvas(item), chrome));
+  app.replaceChildren(el('div', { class: `workspace-shell ${graphFocus ? 'graph-focus-active graph-focus-readonly' : ''} ${editingTarget ? 'editing-mode-active' : ''}`.trim() }, renderCanvas(item), chrome));
   updateSaveControls();
   applyView();
   for (const preview of document.querySelectorAll('.markdown-preview')) {
@@ -970,12 +1069,13 @@ function renderCanvas(item) {
   for (const level of [50, 75, 100, 125, 150, 175]) presets.append(button(`${level}%`, () => { zoomTo(level / 100); zoomMenu.classList.remove('open'); zoomMenu.querySelector('.zoom-value').setAttribute('aria-expanded', 'false'); }, 'zoom-preset', { role: 'menuitem' }));
   presets.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.stopPropagation(); zoomMenu.classList.remove('open'); zoomMenu.querySelector('.zoom-value').setAttribute('aria-expanded', 'false'); zoomMenu.querySelector('.zoom-value').focus(); } });
   const zoom = el('div', { class: 'zoom-controls' }, button('−', () => zoomTo(view.zoom - .15), '', { 'aria-label': 'Zoom out' }), zoomMenu, button('+', () => zoomTo(view.zoom + .15), '', { 'aria-label': 'Zoom in' }), el('span', { class: 'zoom-divider' }), button('Fit', fitCanvas, 'fit-button', { 'aria-label': 'Fit canvas' }));
-  const shell = el('div', { class: `canvas-shell ${graphFocus ? 'graph-focus-active graph-focus-readonly' : ''}`.trim() }, viewport, zoom);
+  const shell = el('div', { class: `canvas-shell ${graphFocus ? 'graph-focus-active graph-focus-readonly' : ''} ${editingTarget ? 'editing-mode-active' : ''}`.trim() }, viewport, zoom);
   if (outlineOpen) shell.append(renderOutline(item));
   if (!graphIsReadOnly() && !selectedId && selectedIds.size > 1) {
     shell.append(el('div', { class: 'selection-toolbar', role: 'status' }, el('span', { text: `${selectedIds.size} selected` }), button('Delete', () => removeNodes([...selectedIds]), 'selection-delete'), button('Clear', () => { selectedIds.clear(); renderWorkspace(); }, 'selection-clear')));
   }
   if (graphFocus) shell.append(renderGraphFocusToolbar(item));
+  if (editingTarget) shell.append(renderEditingToolbar());
   if (openSourceId) shell.append(renderSourcesPanel(item));
   return shell;
 }
@@ -1130,7 +1230,7 @@ function openContextMenu(target, x, y) {
   } else if (onPaper) {
     option('Chat with article', () => openAiPanel({ targetId: 'article' }));
     if (!graphIsReadOnly() && passage?.targetId === 'article') option('Create node from highlight', () => { selectedPassage = passage; createAnchoredNode(); });
-    option(editingMarkdown ? 'Done editing' : 'Edit document', () => { editingMarkdown = !editingMarkdown; selectedPassage = null; renderWorkspace(); if (editingMarkdown) document.querySelector('.markdown-editor')?.focus(); });
+    option(editingTarget === 'article' ? 'Done editing' : 'Edit document', () => editingTarget === 'article' ? exitEditingMode() : enterEditingMode('article'));
     if (!graphIsReadOnly()) option('Add node', () => addNode(null, null, floatingPosition));
     option('Fit canvas', fitCanvas);
   } else {
@@ -1588,23 +1688,37 @@ function positionConnectionHandles(item) {
 function renderNode(node, item) {
   const pos = item.layout.positions[node.id];
   const label = nodeLabel(node);
-  const card = el('div', { class: `topic-card ${selectedId === node.id || selectedIds.has(node.id) ? 'selected' : ''} ${focusNodeClass(node.id)}`.trim(), 'data-node': node.id, tabindex: '0', role: 'button', 'aria-label': label });
+  const isEditing = editingTarget === node.id;
+  const card = el('div', { class: `topic-card ${selectedId === node.id || selectedIds.has(node.id) ? 'selected' : ''} ${focusNodeClass(node.id)} ${isEditing ? 'editing-node-content editing-focus-target' : ''}`.trim(), 'data-node': node.id, tabindex: '0', role: 'button', 'aria-label': label });
   const size = pointFor(item, node.id);
   card.style.left = `${pos.x}px`; card.style.top = `${pos.y}px`; card.style.width = `${size.width}px`; card.style.height = `${size.height}px`;
   applyNodeSizeClass(card, size.width, size.height);
-  const content = el('div', { class: 'node-content markdown-preview', 'data-document-id': node.id, tabindex: '0', 'aria-label': `${label} content` });
-  content.innerHTML = renderMarkdown(node.document?.markdown || '');
-  content.addEventListener('mouseup', (event) => capturePassage(content, node.id, event));
-  content.addEventListener('keyup', (event) => capturePassage(content, node.id, event));
-  content.addEventListener('dblclick', (event) => {
-    if (event.target.closest('.anchor-mark')) return;
-    event.stopPropagation();
-    beginNodeMarkdownEdit(node.id);
-  });
+  const content = el('div', { class: `node-content ${isEditing ? '' : 'markdown-preview'}`.trim(), 'data-document-id': node.id, tabindex: '0', 'aria-label': `${label} content` });
+  if (isEditing) {
+    const editor = el('textarea', { class: 'node-markdown-editor', 'aria-label': `${label} Markdown`, spellcheck: 'true' });
+    editor.value = node.document?.markdown || '';
+    editor.addEventListener('input', () => {
+      change((entry) => { entry.nodes.find((entryNode) => entryNode.id === node.id).document.markdown = editor.value; }, { group: `markdown:${node.id}`, rerender: false });
+      resizeNodeEditor(editor); updateCardOverflow(card);
+    });
+    editor.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); exitEditingMode(); }
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); exitEditingMode(); }
+    });
+    content.append(editor);
+  } else {
+    content.innerHTML = renderMarkdown(node.document?.markdown || '');
+    content.addEventListener('mouseup', (event) => capturePassage(content, node.id, event));
+    content.addEventListener('keyup', (event) => capturePassage(content, node.id, event));
+    content.addEventListener('dblclick', (event) => {
+      if (event.target.closest('.anchor-mark')) return;
+      event.stopPropagation(); beginNodeMarkdownEdit(node.id);
+    });
+  }
   const count = item.nodes.filter((entry) => entry.parentId === node.id).length;
   const footer = count && !graphIsReadOnly() ? el('div', { class: 'topic-footer' }, button(node.collapsed ? `＋ ${count}` : `− ${count}`, (event) => { event.stopPropagation(); change((entry) => { entry.nodes.find((n) => n.id === node.id).collapsed = !node.collapsed; }); }, 'collapse-button', { 'aria-label': node.collapsed ? 'Expand children' : 'Collapse children' })) : null;
-  const resize = graphIsReadOnly() ? null : button('', () => {}, 'resize-grip node-resize', { 'aria-label': `Resize ${label}`, title: 'Drag to resize; arrow keys also work' });
-  const link = graphIsReadOnly() ? null : button('↔', () => {}, 'link-grip', { 'aria-label': `Connect ${label} to another node or create one`, title: 'Drag to a node to connect, or empty space to create a node' });
+  const resize = graphIsReadOnly() || editingTarget ? null : button('', () => {}, 'resize-grip node-resize', { 'aria-label': `Resize ${label}`, title: 'Drag to resize; arrow keys also work' });
+  const link = graphIsReadOnly() || editingTarget ? null : button('↔', () => {}, 'link-grip', { 'aria-label': `Connect ${label} to another node or create one`, title: 'Drag to a node to connect, or empty space to create a node' });
   link?.addEventListener('pointerdown', (event) => startEdgeDrag(event, node, link));
   link?.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -1617,14 +1731,14 @@ function renderNode(node, item) {
   if (footer) card.append(footer);
   if (link) card.append(link);
   if (resize) card.append(resize);
-  if (selectedId === node.id && !graphFocus) card.append(renderNodeActions(node, item));
+  if (selectedId === node.id && !graphFocus && !editingTarget) card.append(renderNodeActions(node, item));
   card.addEventListener('pointerdown', (event) => {
     if (event.button !== 0 || event.target.closest('.node-content, .anchor-mark, button, input')) return;
     startNodeDrag(event, node, card);
   });
   card.addEventListener('click', (event) => {
     if (card._nodeDragged) { card._nodeDragged = false; return; }
-    if (event.target.closest('.anchor-mark, button, input') || !window.getSelection()?.isCollapsed) return;
+    if (event.target.closest('.anchor-mark, button, input, textarea') || !window.getSelection()?.isCollapsed) return;
     selectNodeInPlace(node.id, card, node, item);
   });
   card.addEventListener('dblclick', (event) => { if (!graphIsReadOnly() && !event.target.closest('.node-content')) beginNodeMarkdownEdit(node.id); });
@@ -1927,55 +2041,13 @@ function selectNodeInPlace(id, card, node, item) {
     entry.classList.toggle('selected', entry === card);
     entry.querySelector('.node-actions')?.remove();
   });
-  if (!graphFocus) card.append(renderNodeActions(node, item));
+  if (!graphFocus && !editingTarget) card.append(renderNodeActions(node, item));
 }
 
 function selectNode(id) { selectedId = id; selectedIds.clear(); selectedPassage = null; editGroup = null; renderWorkspace(); }
 
 function beginNodeMarkdownEdit(id) {
-  if (graphIsReadOnly()) return;
-  const item = work();
-  const node = item?.nodes.find((entry) => entry.id === id);
-  const card = document.querySelector(`[data-node="${id}"]`);
-  if (!node || !card) return;
-  const preview = card.querySelector('.node-content');
-  if (!preview || preview.querySelector('.node-markdown-editor')) return;
-  const editor = el('textarea', { class: 'node-markdown-editor', 'aria-label': `${nodeLabel(node)} Markdown`, spellcheck: 'true' });
-  editor.value = node.document?.markdown || '';
-  const originalMarkdown = editor.value;
-  preview.replaceChildren(editor);
-  card.classList.add('editing-node-content');
-  const finish = (save = true) => {
-    if (!editor.isConnected) return;
-    if (!save) {
-      if (editor.value !== originalMarkdown) {
-        change((entry) => { entry.nodes.find((entryNode) => entryNode.id === id).document.markdown = originalMarkdown; }, { group: `markdown:${id}`, rerender: false });
-      }
-      editGroup = null;
-      renderWorkspace();
-      return;
-    }
-    // Persist once more on exit in case the browser did not emit an input
-    // event for the final change (for example, IME/composition input).
-    if (editor.value !== (work().nodes.find((entry) => entry.id === id)?.document?.markdown || '')) {
-      change((entry) => { entry.nodes.find((entryNode) => entryNode.id === id).document.markdown = editor.value; }, { group: `markdown:${id}`, rerender: false });
-    }
-    editGroup = null;
-    renderWorkspace();
-  };
-  editor.addEventListener('blur', () => finish(true), { once: true });
-  editor.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') { event.preventDefault(); finish(false); }
-    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); editor.blur(); }
-  });
-  editor.addEventListener('input', () => {
-    change((entry) => { entry.nodes.find((entryNode) => entryNode.id === id).document.markdown = editor.value; }, { group: `markdown:${id}`, rerender: false });
-    resizeNodeEditor(editor);
-    updateCardOverflow(card);
-  });
-  resizeNodeEditor(editor);
-  editor.focus();
-  editor.select();
+  enterEditingMode(id);
 }
 
 function resizeNodeEditor(editor) {
@@ -2390,7 +2462,7 @@ function reconnect(node) {
 }
 
 function renderPaper(item) {
-  const paper = el('article', { class: `paper ${graphFocus ? 'focus-muted' : ''}`.trim(), 'aria-label': 'Document' });
+  const paper = el('article', { class: `paper ${graphFocus ? 'focus-muted' : ''} ${editingTarget === 'article' ? 'editing-focus-target' : ''}`.trim(), 'aria-label': 'Document' });
   paper.style.left = `${ROOT.x}px`; paper.style.top = `${ROOT.y}px`;
   paper.style.width = `${item.layout.articleSize.width}px`;
   paper.style.minHeight = `${item.layout.articleSize.minHeight}px`;
@@ -2404,7 +2476,8 @@ function renderPaper(item) {
       resizeEditor(editor); refreshOutline();
     });
     editor.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') { event.preventDefault(); editingMarkdown = false; editGroup = null; renderWorkspace(); }
+      if (event.key === 'Escape') { event.preventDefault(); exitEditingMode(); }
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); exitEditingMode(); }
     });
     editor.addEventListener('blur', () => { editGroup = null; });
     scroll.append(editor);
@@ -2416,6 +2489,11 @@ function renderPaper(item) {
     scroll.append(preview);
   }
   paper.append(scroll);
+  paper.addEventListener('dblclick', (event) => {
+    if (event.target.closest('button, textarea, .anchor-mark')) return;
+    event.stopPropagation(); enterEditingMode('article');
+  });
+  if (editingTarget) return paper;
   const grip = button('', () => {}, 'resize-grip paper-resize', { 'aria-label': 'Resize article', title: 'Drag to resize article; arrow keys also work' });
   grip.addEventListener('pointerdown', (event) => startPaperResize(event, paper, grip));
   grip.addEventListener('keydown', (event) => {

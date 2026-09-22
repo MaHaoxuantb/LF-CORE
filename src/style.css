@@ -358,6 +358,7 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .topic-card.content-overflow:not(.selected) .node-content::after { content: '…'; position: absolute; right: 0; bottom: 0; padding-left: 15px; background: linear-gradient(90deg, #fff0, #fff 35%); color: #8b93a3; pointer-events: none; }
 .node-content:empty::before { content: 'Add content…'; color: #a0a8b2; }
 .node-markdown-editor { display: block; width: 100%; height: 100%; min-height: 0; resize: none; overflow: auto; border: 0; border-radius: 0; outline: 0; padding: 0; background: transparent; color: inherit; font: .72rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2; }
+.editing-focus-target textarea { user-select: text; }
 .node-markdown-editor:focus, .node-markdown-editor:focus-visible { outline: 0; box-shadow: none; background: transparent; }
 .topic-card.editing-node-content .node-content { flex: 1 1 0; overflow: hidden; }
 .node-actions { position: absolute; z-index: 12; top: calc(100% + 9px); left: -2px; display: grid; gap: 4px; min-width: max-content; padding: 5px; border: 1px solid #dddfe9; border-radius: 10px; background: #fff; box-shadow: 0 8px 24px #28324b26; cursor: default; }
@@ -453,6 +454,43 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 }
 @media (max-width: 620px) { .workspace-chrome { inset: 10px 10px auto; gap: 6px; } .workspace-chrome .header-left-group { max-width: calc(100vw - 100px); gap: 5px; } .workspace-chrome .header-left { max-width: none; flex: 1 1 auto; } .workspace-chrome .header-right { gap: 0; } .document-menu { width: min(210px, calc(100vw - 20px)); } .document-submenu { position: static; width: auto; margin: 0 5px 4px; box-shadow: none; } .workspace-chrome .workspace-title { display: block; max-width: 120px; padding: 0 5px; font-size: .76rem; } .outline-panel { top: 62px; bottom: 75px; } .details-panel { top: auto; bottom: 64px; } .zoom-controls { bottom: 12px; } }
 @media (max-width: 620px) { .graph-focus-toolbar { left: 8px; right: 8px; bottom: 57px; transform: none; max-width: none; overflow-x: auto; } .graph-focus-label { max-width: 125px; } }
+
+/* Editing mode keeps the current scale, pans the active document into view, and
+   quiets the surrounding graph so writing remains spatially grounded. */
+.editing-mode-active .topic-card,
+.editing-mode-active .paper,
+.editing-mode-active .connectors,
+.editing-mode-active .edge-label-chip,
+.workspace-shell.editing-mode-active > .workspace-chrome,
+.workspace-shell.editing-mode-active .zoom-controls,
+.workspace-shell.editing-mode-active .outline-panel,
+.workspace-shell.editing-mode-active .details-panel,
+.workspace-shell.editing-mode-active .sources-panel,
+.workspace-shell.editing-mode-active .ai-panel,
+.workspace-shell.editing-mode-active .passage-toolbar,
+.workspace-shell.editing-mode-active .selection-toolbar { opacity: .1; pointer-events: none; transition: opacity .3s cubic-bezier(.22, 1, .36, 1); }
+.editing-mode-active .editing-focus-target { z-index: 9; opacity: 1 !important; pointer-events: auto !important; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent), 0 18px 48px #20283a2b; }
+.editing-mode-active .app-watermark { opacity: .012; }
+.editing-toolbar { position: absolute; z-index: 24; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; align-items: center; gap: 3px; max-width: calc(100vw - 36px); overflow-x: auto; padding: 5px; border: 1px solid #dcddec; border-radius: 11px; background: rgb(255 255 255 / 94%); box-shadow: 0 8px 28px #2739532b; color: #586178; white-space: nowrap; -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
+.editing-toolbar-label { padding: 0 8px 0 5px; color: #777f8d; font-size: .7rem; font-weight: 650; }
+.editing-tool, .editing-done { min-height: 31px; border: 0; border-radius: 7px; background: transparent; color: #505968; padding: 6px 9px; font-size: .72rem; }
+.editing-tool:hover, .editing-tool:focus-visible { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+.editing-tool.is-bold { font-weight: 800; }
+.editing-tool.is-italic { font-style: italic; }
+.editing-done { margin-left: 3px; background: var(--accent); color: white; font-weight: 700; }
+.editing-done:hover, .editing-done:focus-visible { background: color-mix(in srgb, var(--accent) 85%, black); }
+:root[data-dark='true'] .editing-toolbar { background: rgb(27 27 27 / 94%); color: #e7eaf0; border-color: #444; }
+:root[data-dark='true'] .editing-tool { color: #d7d9df; }
+@media (prefers-color-scheme: dark) {
+  :root[data-theme='auto'] .editing-toolbar { background: rgb(27 27 27 / 94%); color: #e7eaf0; border-color: #444; }
+  :root[data-theme='auto'] .editing-tool { color: #d7d9df; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .editing-mode-active .topic-card, .editing-mode-active .paper, .editing-mode-active .connectors,
+  .editing-mode-active .edge-label-chip, .workspace-shell.editing-mode-active > .workspace-chrome,
+  .workspace-shell.editing-mode-active .zoom-controls { transition: none; }
+}
+@media (max-width: 620px) { .editing-toolbar { left: 8px; right: 8px; bottom: 57px; transform: none; max-width: none; } .editing-toolbar-label { display: none; } }
 
 /* Floating panels should reveal the canvas, not cover it from top to bottom. */
 .outline-panel { bottom: auto; max-height: min(420px, calc(100vh - 155px)); }
