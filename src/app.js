@@ -22,6 +22,7 @@ const toast = document.querySelector('#toast');
 const ROOT = { x: 0, y: 0, width: 490, height: 550 };
 let rootBounds = { ...ROOT };
 const NODE = { width: 238, height: 108 };
+const NODE_SIZE_LIMITS = { minWidth: 170, maxWidth: 680, minHeight: 100, maxHeight: 680 };
 const example = `# Plate tectonics
 
 Earth’s outer shell is divided into large plates that move slowly over the mantle. Their motion helps explain why earthquakes, volcanoes, and mountain ranges cluster in particular places.
@@ -1800,8 +1801,8 @@ function startNodeResize(event, node, card, grip) {
   const item = work(), original = { ...pointFor(item, node.id) }, x = event.clientX, y = event.clientY;
   grip.setPointerCapture(event.pointerId);
   const move = (next) => {
-    const width = clamp(Math.round(original.width + (next.clientX - x) / view.zoom), 170, 680);
-    const height = Math.max(100, Math.round(original.height + (next.clientY - y) / view.zoom));
+    const width = clamp(Math.round(original.width + (next.clientX - x) / view.zoom), NODE_SIZE_LIMITS.minWidth, NODE_SIZE_LIMITS.maxWidth);
+    const height = clamp(Math.round(original.height + (next.clientY - y) / view.zoom), NODE_SIZE_LIMITS.minHeight, NODE_SIZE_LIMITS.maxHeight);
     item.layout.sizes[node.id] = { width, height };
     card.style.width = `${width}px`; card.style.height = `${height}px`;
     applyNodeSizeClass(card, width, height);
@@ -1833,7 +1834,10 @@ function resizeNodeWithKeys(event, node) {
   event.preventDefault(); event.stopPropagation();
   change((item) => {
     const size = pointFor(item, node.id);
-    item.layout.sizes[node.id] = { width: clamp(size.width + step[0], 170, 680), height: Math.max(100, size.height + step[1]) };
+    item.layout.sizes[node.id] = {
+      width: clamp(size.width + step[0], NODE_SIZE_LIMITS.minWidth, NODE_SIZE_LIMITS.maxWidth),
+      height: clamp(size.height + step[1], NODE_SIZE_LIMITS.minHeight, NODE_SIZE_LIMITS.maxHeight)
+    };
   });
   document.querySelector(`[data-node="${node.id}"] .node-resize`)?.focus();
 }
