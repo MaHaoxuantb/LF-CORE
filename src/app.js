@@ -24,6 +24,7 @@ const ROOT = { x: 0, y: 0, width: 490, height: 550 };
 let rootBounds = { ...ROOT };
 const NODE = { width: 238, height: 108 };
 const NODE_SIZE_LIMITS = { minWidth: 170, maxWidth: 680, minHeight: 100 };
+const OUTLINE_MIN_HEIGHT = 140;
 const example = `# Plate tectonics
 
 Earth’s outer shell is divided into large plates that move slowly over the mantle. Their motion helps explain why earthquakes, volcanoes, and mountain ranges cluster in particular places.
@@ -108,6 +109,7 @@ const pdfDocuments = new Map();
 const pendingPdfDeletes = new Set();
 let selectedPassage = null, editGroup = null, view = { x: 0, y: 0, zoom: 1 };
 let viewTimer = null, toastTimer = null;
+let outlineHeight = null;
 let aiPanel = null;
 let researchPanel = null;
 let graphFocus = null, graphFocusNodeIds = null, spaceKeySession = null;
@@ -2719,9 +2721,10 @@ function activateMarkdownHighlightDrag(preview, targetId) {
 }
 
 function renderOutline(item) {
-  const panel = el('aside', { class: 'outline-panel', 'aria-label': 'Document outline' }, el('div', { class: 'outline-heading', text: 'OUTLINE' }));
+  const panel = el('aside', { class: 'outline-panel', 'aria-label': 'Document outline' });
+  const content = el('div', { class: 'outline-content' }, el('div', { class: 'outline-heading', text: 'OUTLINE' }));
   const headings = headingTokens(item.article.markdown);
-  if (!headings.length) panel.append(el('p', { class: 'outline-empty', text: 'Add headings to see the outline.' }));
+  if (!headings.length) content.append(el('p', { class: 'outline-empty', text: 'Add headings to see the outline.' }));
   headings.forEach((heading, index) => {
     const row = button(heading.title, () => {
       selectedId = null; editingMarkdown = false; selectedPassage = null; renderWorkspace();
@@ -2729,15 +2732,79 @@ function renderOutline(item) {
       if (target) { centerOnElement(target); target.classList.add('arrived'); setTimeout(() => target.classList.remove('arrived'), 1600); }
     }, 'outline-row');
     row.style.paddingLeft = `${12 + (heading.level - 1) * 14}px`;
-    panel.append(row);
+    content.append(row);
   });
+  const resize = button('', () => {}, 'outline-resize', { 'aria-label': 'Resize document outline', title: 'Drag to resize outline; arrow keys also work' });
+  resize.addEventListener('pointerdown', (event) => startOutlineResize(event, panel, resize));
+  resize.addEventListener('keydown', (event) => resizeOutlineWithKeys(event, panel));
+  panel.append(content, resize);
+  if (outlineHeight != null) panel.style.height = `${Math.max(OUTLINE_MIN_HEIGHT, outlineHeight)}px`;
+  requestAnimationFrame(() => { if (panel.isConnected) syncOutlineHeight(panel); });
   return panel;
+}
+
+function maximumOutlineHeight(panel) {
+  const freeSpace = window.innerHeight - panel.getBoundingClientRect().top;
+  return Math.max(OUTLINE_MIN_HEIGHT, Math.floor(freeSpace * 0.8));
+}
+
+function clampOutlineHeight(panel, height) {
+  return clamp(Math.round(height), OUTLINE_MIN_HEIGHT, maximumOutlineHeight(panel));
+}
+
+function syncOutlineHeight(panel) {
+  const maximum = maximumOutlineHeight(panel);
+  panel.style.maxHeight = `${maximum}px`;
+  if (outlineHeight == null) return;
+  outlineHeight = clamp(Math.round(outlineHeight), OUTLINE_MIN_HEIGHT, maximum);
+  panel.style.height = `${outlineHeight}px`;
+}
+
+function setOutlineHeight(panel, height) {
+  syncOutlineHeight(panel);
+  outlineHeight = clampOutlineHeight(panel, height);
+  panel.style.height = `${outlineHeight}px`;
+}
+
+function startOutlineResize(event, panel, grip) {
+  if (event.button !== 0) return;
+  event.preventDefault(); event.stopPropagation();
+  const startHeight = panel.getBoundingClientRect().height;
+  const startY = event.clientY;
+  grip.setPointerCapture(event.pointerId);
+  const move = (next) => setOutlineHeight(panel, startHeight + next.clientY - startY);
+  let ended = false;
+  const up = () => {
+    if (ended) return;
+    ended = true;
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    window.removeEventListener('pointercancel', up);
+    grip.removeEventListener('lostpointercapture', up);
+    if (grip.hasPointerCapture?.(event.pointerId)) grip.releasePointerCapture(event.pointerId);
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+  window.addEventListener('pointercancel', up);
+  grip.addEventListener('lostpointercapture', up);
+}
+
+function resizeOutlineWithKeys(event, panel) {
+  const direction = { ArrowDown: 24, ArrowUp: -24 }[event.key];
+  if (!direction) return;
+  event.preventDefault(); event.stopPropagation();
+  setOutlineHeight(panel, panel.getBoundingClientRect().height + direction);
 }
 
 function refreshOutline() {
   const panel = document.querySelector('.outline-panel');
   if (panel) panel.replaceWith(renderOutline(work()));
 }
+
+window.addEventListener('resize', () => {
+  const panel = document.querySelector('.outline-panel');
+  if (panel) syncOutlineHeight(panel);
+});
 
 function centerOnElement(element) {
   const viewport = document.querySelector('.canvas-viewport'); if (!viewport) return;
