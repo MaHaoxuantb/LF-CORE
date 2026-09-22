@@ -22,7 +22,7 @@ const toast = document.querySelector('#toast');
 const ROOT = { x: 0, y: 0, width: 490, height: 550 };
 let rootBounds = { ...ROOT };
 const NODE = { width: 238, height: 108 };
-const NODE_SIZE_LIMITS = { minWidth: 170, maxWidth: 680, minHeight: 100, maxHeight: 680 };
+const NODE_SIZE_LIMITS = { minWidth: 170, maxWidth: 680, minHeight: 100 };
 const example = `# Plate tectonics
 
 Earth’s outer shell is divided into large plates that move slowly over the mantle. Their motion helps explain why earthquakes, volcanoes, and mountain ranges cluster in particular places.
@@ -1795,6 +1795,37 @@ function updateCardOverflow(card) {
   if (content) card.classList.toggle('content-overflow', content.scrollHeight > content.clientHeight + 2 || content.scrollWidth > content.clientWidth + 2);
 }
 
+function maximumNodeHeight(card, width) {
+  const content = card.querySelector('.node-content');
+  if (!content) return NODE_SIZE_LIMITS.minHeight;
+  const editor = content.querySelector('.node-markdown-editor');
+  const previous = {
+    cardWidth: card.style.width,
+    cardHeight: card.style.height,
+    contentFlex: content.style.flex,
+    contentHeight: content.style.height,
+    contentOverflow: content.style.overflow,
+    editorHeight: editor?.style.height
+  };
+  card.style.width = `${width}px`;
+  card.style.height = 'auto';
+  content.style.flex = 'none';
+  content.style.height = 'auto';
+  content.style.overflow = 'visible';
+  if (editor) {
+    editor.style.height = 'auto';
+    editor.style.height = `${editor.scrollHeight}px`;
+  }
+  const height = Math.max(NODE_SIZE_LIMITS.minHeight, Math.ceil(card.offsetHeight));
+  card.style.width = previous.cardWidth;
+  card.style.height = previous.cardHeight;
+  content.style.flex = previous.contentFlex;
+  content.style.height = previous.contentHeight;
+  content.style.overflow = previous.contentOverflow;
+  if (editor) editor.style.height = previous.editorHeight;
+  return height;
+}
+
 function startNodeResize(event, node, card, grip) {
   if (graphIsReadOnly() || event.button !== 0) return;
   event.preventDefault(); event.stopPropagation();
@@ -1802,7 +1833,7 @@ function startNodeResize(event, node, card, grip) {
   grip.setPointerCapture(event.pointerId);
   const move = (next) => {
     const width = clamp(Math.round(original.width + (next.clientX - x) / view.zoom), NODE_SIZE_LIMITS.minWidth, NODE_SIZE_LIMITS.maxWidth);
-    const height = clamp(Math.round(original.height + (next.clientY - y) / view.zoom), NODE_SIZE_LIMITS.minHeight, NODE_SIZE_LIMITS.maxHeight);
+    const height = clamp(Math.round(original.height + (next.clientY - y) / view.zoom), NODE_SIZE_LIMITS.minHeight, maximumNodeHeight(card, width));
     item.layout.sizes[node.id] = { width, height };
     card.style.width = `${width}px`; card.style.height = `${height}px`;
     applyNodeSizeClass(card, width, height);
@@ -1832,11 +1863,13 @@ function resizeNodeWithKeys(event, node) {
   const steps = { ArrowRight: [20, 0], ArrowLeft: [-20, 0], ArrowDown: [0, 20], ArrowUp: [0, -20] };
   const step = steps[event.key]; if (!step) return;
   event.preventDefault(); event.stopPropagation();
+  const card = document.querySelector(`[data-node="${node.id}"]`);
   change((item) => {
     const size = pointFor(item, node.id);
+    const width = clamp(size.width + step[0], NODE_SIZE_LIMITS.minWidth, NODE_SIZE_LIMITS.maxWidth);
     item.layout.sizes[node.id] = {
-      width: clamp(size.width + step[0], NODE_SIZE_LIMITS.minWidth, NODE_SIZE_LIMITS.maxWidth),
-      height: clamp(size.height + step[1], NODE_SIZE_LIMITS.minHeight, NODE_SIZE_LIMITS.maxHeight)
+      width,
+      height: clamp(size.height + step[1], NODE_SIZE_LIMITS.minHeight, card ? maximumNodeHeight(card, width) : size.height)
     };
   });
   document.querySelector(`[data-node="${node.id}"] .node-resize`)?.focus();
