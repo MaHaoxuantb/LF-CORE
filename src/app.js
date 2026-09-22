@@ -2466,7 +2466,10 @@ function renderPaper(item) {
   paper.style.left = `${ROOT.x}px`; paper.style.top = `${ROOT.y}px`;
   paper.style.width = `${item.layout.articleSize.width}px`;
   paper.style.minHeight = `${item.layout.articleSize.minHeight}px`;
-  paper.append(el('div', { class: 'paper-heading' }, el('span', { class: 'paper-label', text: 'master article' }), button('Chat about article', () => openAiPanel({ targetId: 'article' }), 'paper-ai-action')));
+  paper.append(el('div', { class: 'paper-heading' },
+    el('span', { class: 'paper-label', text: 'master article' }),
+    button(editingTarget === 'article' ? 'Done' : 'Edit', () => editingTarget === 'article' ? exitEditingMode() : enterEditingMode('article'), 'paper-ai-action', { 'aria-label': editingTarget === 'article' ? 'Finish editing article' : 'Edit master article' }),
+    button('Chat about article', () => openAiPanel({ targetId: 'article' }), 'paper-ai-action')));
   const scroll = el('div', { class: 'paper-scroll' });
   if (editingMarkdown) {
     const editor = el('textarea', { class: 'markdown-editor', 'aria-label': 'Edit document', spellcheck: 'true' });
