@@ -1,6 +1,6 @@
 # LF CORE
 
-LF CORE by LinecoFlow is an article-first, local-first workspace for independent learning. Start with a question or source, explore ideas in a connected graph, and consolidate what matters into a master article.
+LF CORE by LinecoFlow is an article-first, local-first workspace for independent learning. LF CORE is the UI for AI. Start with a question or source, explore ideas in a connected graph, and consolidate what matters into a master article.
 
 **North Star:** Does this make the next study session easier to revisit than chat?
 
