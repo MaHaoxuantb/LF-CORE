@@ -54,7 +54,11 @@ const examplePassages = {
 };
 
 let state, loadError = null, saveError = null;
-try { state = loadState(); } catch (error) { state = emptyState(); loadError = error.message; saveError = error.message; }
+try { state = loadState(); }
+catch (error) {
+  console.error('[LF CORE] Failed to load saved workspace data.', error);
+  state = emptyState(); loadError = error.message; saveError = error.message;
+}
 let saveMode = 'auto';
 try { saveMode = loadSaveMode(); } catch { /* Browser storage can be unavailable. */ }
 const THEME_KEY = 'learning-canvas:theme-v1';
@@ -95,6 +99,7 @@ const handleSystemAppearanceChange = () => {
 if (colorSchemeQuery?.addEventListener) colorSchemeQuery.addEventListener('change', handleSystemAppearanceChange);
 else if (colorSchemeQuery) colorSchemeQuery.addListener(handleSystemAppearanceChange);
 let lastSaved = JSON.stringify(state), dirty = false;
+let reportedSaveFailure = null;
 let currentId = null, selectedId = null, selectedIds = new Set(), editingMarkdown = false, editingTarget = null, editingBeforeView = null, outlineOpen = false;
 let activeConnection = null;
 let openSourceId = null, sourcePage = 1, sourceJump = null;
@@ -138,7 +143,7 @@ function updateSaveControls() {
   for (const wrapper of document.querySelectorAll('.save-control')) wrapper.dataset.state = saveError ? 'error' : dirty ? 'dirty' : 'saved';
   for (const control of document.querySelectorAll('.save-main')) {
     control.textContent = saveLabel();
-    control.title = saveMode === 'manual' ? 'Save now · ⌘S / Ctrl+S' : 'Auto save is on';
+    control.title = saveError ? `Save failed: ${saveError}` : saveMode === 'manual' ? 'Save now · ⌘S / Ctrl+S' : 'Auto save is on';
     control.setAttribute('aria-label', `${saveLabel()}. ${saveMode === 'manual' ? 'Manual save. Click to save now.' : 'Auto save. Click for save options.'}`);
     control.disabled = !!loadError;
   }
@@ -152,7 +157,7 @@ function persist(force = false) {
   if (saveMode === 'manual' && !force) { updateSaveControls(); return true; }
   try {
     saveState(state);
-    lastSaved = serialized; dirty = false; saveError = null;
+    lastSaved = serialized; dirty = false; saveError = null; reportedSaveFailure = null;
     for (const id of pendingPdfDeletes) {
       pendingPdfDeletes.delete(id);
       pdfDocuments.delete(id);
@@ -161,7 +166,12 @@ function persist(force = false) {
     updateSaveControls();
     return true;
   } catch (error) {
-    saveError = error.message; dirty = true;
+    saveError = error instanceof Error ? error.message : String(error); dirty = true;
+    const signature = `${error?.name || typeof error}:${saveError}`;
+    if (signature !== reportedSaveFailure) {
+      reportedSaveFailure = signature;
+      console.error('[LF CORE] Failed to save workspace data.', error);
+    }
     updateSaveControls(); announce('Could not save. Check browser storage.');
     return false;
   }
