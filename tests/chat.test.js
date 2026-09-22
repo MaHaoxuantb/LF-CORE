@@ -13,12 +13,15 @@ const workspace = {
   ]
 };
 
-test('all context contains the article, nodes, and passage without silent truncation', () => {
-  const snapshot = contextSnapshot(workspace, { mode: 'all', passage: { targetId: 'article', quote: 'Original text.' } });
+test('all context contains every target while preserving the explicit selection', () => {
+  const snapshot = contextSnapshot(workspace, { mode: 'all', nodeIds: ['node-b'], passage: { targetId: 'article', quote: 'Original text.' } });
   assert.deepEqual(snapshot.targets.map((target) => target.id), ['article', 'node-a', 'node-b']);
+  assert.deepEqual(snapshot.selectedTargetIds, ['node-b', 'article']);
   assert.match(snapshot.text, /Original text/);
   assert.match(snapshot.text, /Old motion/);
   assert.match(snapshot.text, /Old evidence/);
+  assert.match(snapshot.text, /Target ID: node-a\nSelection role: REFERENCE/);
+  assert.match(snapshot.text, /Target ID: node-b\nSelection role: SELECTED/);
   assert.doesNotMatch(snapshot.text, /Target ID: node-a\nTitle:/);
   assert.ok(snapshot.size < MAX_CONTEXT_CHARS);
 });
@@ -28,8 +31,11 @@ test('three context scopes send the article, selected nodes, or the whole worksp
   const selected = contextSnapshot(workspace, { mode: 'selected', nodeIds: ['node-b'] });
   const all = contextSnapshot(workspace, { mode: 'all', nodeIds: [] });
   assert.deepEqual(article.targets.map((target) => target.id), ['article']);
+  assert.deepEqual(article.selectedTargetIds, ['article']);
   assert.deepEqual(selected.targets.map((target) => target.id), ['node-b']);
+  assert.deepEqual(selected.selectedTargetIds, ['node-b']);
   assert.deepEqual(all.targets.map((target) => target.id), ['article', 'node-a', 'node-b']);
+  assert.deepEqual(all.selectedTargetIds, []);
   assert.deepEqual(contextSnapshot(workspace, { article: true, nodeIds: ['node-b'] }).targets.map((target) => target.id), ['article']);
 });
 
@@ -54,6 +60,20 @@ test('model receives conversation and current context while preserving target bo
   assert.match(JSON.stringify(sent.messages), /Earlier question/);
   assert.match(JSON.stringify(sent.messages), /Old evidence/);
   assert.doesNotMatch(JSON.stringify(sent.messages), /Old motion/);
+});
+
+test('all context allows edits only to explicitly selected nodes', async () => {
+  let sent;
+  const settings = { endpoint: 'https://host.example/v1', models: ['model-a'], selectedModel: 'model-a' };
+  const snapshot = contextSnapshot(workspace, { mode: 'all', nodeIds: ['node-b'] });
+  const fetcher = async (_url, request) => {
+    sent = JSON.parse(request.body);
+    return { ok: true, json: async () => ({ choices: [{ message: { content: '{"reply":"Done.","edits":[{"targetId":"node-b","markdown":"Revised motion."}]}' } }] }) };
+  };
+  const result = await chatModel(settings, '', [], 'Develop the selected node', snapshot, { fetcher });
+  assert.deepEqual(result.edits.map((edit) => edit.targetId), ['node-b']);
+  assert.match(sent.messages[0].content, /explicitly selected IDs: \["node-b"\]/);
+  assert.throws(() => parseChatResponse('{"reply":"Wrong target","edits":[{"targetId":"node-a","markdown":"Changed."}]}', snapshot.selectedTargetIds), /unselected target/);
 });
 
 test('undo can be reflected from target provenance without deleting chat records', () => {

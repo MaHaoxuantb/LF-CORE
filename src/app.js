@@ -2883,10 +2883,19 @@ function changeChatContext(update) {
   persist(); renderAiPanel();
 }
 
+function liveSelectedNodeIds() {
+  return selectedId ? [selectedId] : [...selectedIds];
+}
+
+function effectiveChatContext(chat) {
+  if (chat.context.mode !== 'all') return chat.context;
+  return { ...chat.context, nodeIds: liveSelectedNodeIds() };
+}
+
 function renderContextPicker(item, chat) {
-  const snapshot = contextSnapshot(item, chat.context);
+  const snapshot = contextSnapshot(item, effectiveChatContext(chat));
   const mode = chat.context.mode || (chat.context.article ? 'article' : 'selected');
-  const liveSelection = selectedId ? [selectedId] : [...selectedIds];
+  const liveSelection = liveSelectedNodeIds();
   const availableSelected = liveSelection.length ? liveSelection : chat.context.nodeIds || [];
   const picker = el('select', { class: 'chat-context-select', 'aria-label': 'Context scope', title: `${snapshot.size.toLocaleString()} / ${MAX_CONTEXT_CHARS.toLocaleString()} context characters` });
   for (const [value, label] of [['article', 'Master article'], ['selected', 'Selected nodes'], ['all', 'All']]) {
@@ -3130,7 +3139,7 @@ function renderChatComposer(panel, item, chat, snapshot, picker) {
     event.preventDefault();
     const question = input.value.trim();
     if (!question || aiPanel.busy) return;
-    const selected = contextSnapshot(work(), chat.context);
+    const selected = contextSnapshot(work(), effectiveChatContext(chat));
     if (selected.size > MAX_CONTEXT_CHARS) { aiPanel.error = 'Context is too large. Deselect items before sending.'; renderAiPanel(); return; }
     const config = loadModelSettings();
     if (!config.models.length || (config.secret && !getApiKey())) { aiPanel.tab = 'settings'; renderAiPanel(); return; }

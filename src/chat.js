@@ -9,14 +9,19 @@ export function contextSnapshot(workspace, selection) {
     const node = workspace.nodes.find((entry) => entry.id === id);
     if (node) targets.push({ id, title: nodeLabel(node), markdown: node.document?.markdown || '' });
   }
+  const requestedSelection = mode === 'article' ? ['article'] : selection.nodeIds || [];
+  const selectedTargetIds = [...new Set(requestedSelection)].filter((id) => targets.some((target) => target.id === id));
   const passage = selection.passage && targets.some((target) => target.id === selection.passage.targetId)
     ? { targetId: selection.passage.targetId, quote: selection.passage.quote } : null;
+  if (passage && !selectedTargetIds.includes(passage.targetId)) selectedTargetIds.push(passage.targetId);
+  const selected = new Set(selectedTargetIds);
   const text = [
     `Workspace: ${workspace.title}`,
-    ...targets.map((target) => `Target ID: ${target.id}\n${target.id === 'article' ? `Title: ${target.title}\n` : ''}Markdown:\n${target.markdown}`),
+    `Context scope: ${mode === 'all' ? 'all workspace content' : mode === 'article' ? 'master article' : 'selected nodes only'}\nExplicitly selected target IDs: ${selectedTargetIds.length ? selectedTargetIds.join(', ') : 'none'}\nTargets marked REFERENCE are context only and are not selected for editing.`,
+    ...targets.map((target) => `Target ID: ${target.id}\nSelection role: ${selected.has(target.id) ? 'SELECTED' : 'REFERENCE'}\n${target.id === 'article' ? `Title: ${target.title}\n` : ''}Markdown:\n${target.markdown}`),
     ...(passage ? [`Selected passage in ${passage.targetId}:\n${passage.quote}`] : [])
   ].join('\n\n---\n\n');
-  return { targets, passage, text, size: text.length };
+  return { targets, selectedTargetIds, passage, text, size: text.length };
 }
 
 export function parseChatResponse(raw, allowedIds) {
