@@ -1885,10 +1885,25 @@ function startEdgeDrag(event, node, grip, preserveClick = false, prepareSource =
     if (next.type !== 'pointerup' || !destination || !moved) return;
     const item = work();
     if (target && item.edges.some((edge) => (edge.fromId === sourceId && edge.toId === target) || (edge.fromId === target && edge.toId === sourceId))) return announce('These endpoints are already connected.');
+    // An empty-space drop is the point where the connection should land, not
+    // the centre of the node. Put the new node on the far side of that point
+    // so its appropriate border (and the previewed line) meet the pointer.
+    let newPosition = null;
     if (!target) {
-      const newRect = { x: destination.x - NODE.width / 2, y: destination.y - NODE.height / 2, ...NODE };
-      const from = endpointPoint(item, sourceId, newRect);
-      if (from) sides = snappedConnectionSides(from, newRect);
+      const centeredRect = { x: destination.x - NODE.width / 2, y: destination.y - NODE.height / 2, ...NODE };
+      const from = endpointPoint(item, sourceId, centeredRect);
+      if (from) {
+        const fromCenter = { x: from.x + from.width / 2, y: from.y + from.height / 2 };
+        const toSide = nearestConnectionSide(centeredRect, fromCenter.x, fromCenter.y);
+        newPosition = {
+          x: toSide === 'left' ? destination.x : toSide === 'right' ? destination.x - NODE.width : destination.x - NODE.width / 2,
+          y: toSide === 'top' ? destination.y : toSide === 'bottom' ? destination.y - NODE.height : destination.y - NODE.height / 2,
+        };
+        const newRect = { ...newPosition, ...NODE };
+        const finalFrom = endpointPoint(item, sourceId, newRect);
+        if (finalFrom) sides = { ...snappedConnectionSides(finalFrom, newRect), toSide };
+      }
+      newPosition ||= { x: destination.x - NODE.width / 2, y: destination.y - NODE.height / 2 };
     }
     change((entry) => {
       let newId = target;
@@ -1896,7 +1911,7 @@ function startEdgeDrag(event, node, grip, preserveClick = false, prepareSource =
         newId = crypto.randomUUID();
         const sourceHighlight = isHighlightId(sourceId) ? highlightFor(entry, sourceId) : null;
         entry.nodes.push({ id: newId, parentId: null, document: { type: 'markdown', markdown: '' }, anchor: sourceHighlight ? { ...sourceHighlight } : null, collapsed: false, provenance: 'learner' });
-        entry.layout.positions[newId] = { x: destination.x - NODE.width / 2, y: destination.y - NODE.height / 2 };
+        entry.layout.positions[newId] = newPosition;
       }
       const incoming = entry.edges.some((edge) => edge.toId === newId) || entry.nodes.some((candidate) => candidate.id === newId && candidate.parentId);
       entry.edges.push({ id: crypto.randomUUID(), fromId: sourceId, toId: newId, label: null, direction: incoming ? 'both' : 'forward', ...sides });
