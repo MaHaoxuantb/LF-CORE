@@ -532,6 +532,13 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 :root[data-dark='true'] .node-markdown-editor,
 :root[data-dark='true'] .node-markdown-editor:focus,
 :root[data-dark='true'] .node-markdown-editor:focus-visible { background: transparent; color: inherit; }
+/* Borderless editors belong to their surrounding surface. Keep the legacy dark
+   control fill from showing through as a blue-gray rectangle behind them. */
+:root[data-dark='true'] .markdown-editor,
+:root[data-dark='true'] .document-title-input,
+:root[data-dark='true'] .edge-label-input,
+:root[data-dark='true'] .ai-chat-composer .ai-question,
+:root[data-dark='true'] .ai-chat-composer .chat-context-select { background: transparent; color: inherit; }
 :root[data-dark='true'] .node-actions-row.secondary { border-color: #454545; }
 :root[data-dark='true'] .node-action,
 :root[data-dark='true'] .node-source-item { color: #d3d5dc; }
