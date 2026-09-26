@@ -13,6 +13,7 @@ import { siblingPredecessor } from './siblings.js';
 import { parseProject, projectFileName, serializeProject, PROJECT_EXTENSION } from './project.js';
 import { prefixMarkdownLines, wrapMarkdownSelection } from './markdown-edit.js';
 import { attachSourceToQuestion, compareIdeas, createResearchProposal, createResearchQuestion, discoverSources, normalizeResearch, recordCloseout, verifiedSourceFromResult } from './research.js';
+import packageInfo from '../package.json';
 import 'katex/dist/katex.min.css';
 import './style.css';
 
@@ -20,6 +21,8 @@ GlobalWorkerOptions.workerSrc = '/dist/pdf.worker.mjs';
 
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
+const PRODUCT_NAME = packageInfo.productName || 'LF CORE';
+const PRODUCT_VERSION = packageInfo.version || '0.0.0';
 const ROOT = { x: 0, y: 0, width: 490, height: 550 };
 let rootBounds = { ...ROOT };
 const NODE = { width: 238, height: 108 };
@@ -708,7 +711,8 @@ function renderHome() {
   const main = el('main', { class: 'home-main' },
     el('div', { class: 'home-intro' }, el('div', {}, el('span', { class: 'home-eyebrow', text: 'YOUR WORKSPACE' }), el('h1', { text: 'Recent projects' }), el('p', { class: 'home-lead', text: 'Continue where you left off, or begin a focused new line of thought.' })), button('＋ New project', openNewProjectGuide, 'home-new-project home-new-project-large')),
     cards,
-    el('div', { class: 'home-secondary-actions' }, exampleButton, uploadProjectButton, projectUpload));
+    el('div', { class: 'home-secondary-actions' }, exampleButton, uploadProjectButton, projectUpload),
+    el('footer', { class: 'home-copyright', text: '©2026 LinecoFlow' }));
   if (loadError) main.prepend(el('p', { class: 'error-banner', text: `${loadError} Existing data was left untouched.` }));
   app.replaceChildren(el('div', { class: 'home' }, header, main));
   updateSaveControls();
@@ -3075,7 +3079,7 @@ function createHighlight() {
   } catch (error) { announce(error.message); }
 }
 
-function renderSettings() {
+function renderSettings(activeTab = 'ai') {
   document.querySelector('.model-settings-overlay')?.remove();
   const saved = loadModelSettings();
   const overlay = el('div', { class: 'model-settings-overlay' });
@@ -3083,8 +3087,31 @@ function renderSettings() {
   const close = () => overlay.remove();
   overlay.addEventListener('pointerdown', (event) => { if (event.target === overlay) close(); });
   const content = el('div', { class: 'settings-content' });
+  const tabs = el('nav', { class: 'settings-tabs', 'aria-label': 'Settings sections' });
+  tabs.append(
+    button('AI Settings', () => renderSettings('ai'), `settings-tab ${activeTab === 'ai' ? 'active' : ''}`, { 'aria-current': activeTab === 'ai' ? 'page' : 'false' }),
+    button('About', () => renderSettings('about'), `settings-tab settings-tab-about ${activeTab === 'about' ? 'active' : ''}`, { 'aria-current': activeTab === 'about' ? 'page' : 'false' }));
   panel.append(el('div', { class: 'settings-heading' }, el('div', {}, el('span', { class: 'settings-kicker', text: 'LF CORE' }), el('h2', { text: 'Settings' })), button('×', close, 'panel-close', { 'aria-label': 'Close settings' })),
-    el('div', { class: 'settings-layout' }, el('nav', { class: 'settings-tabs', 'aria-label': 'Settings sections' }, button('AI Settings', () => {}, 'settings-tab active', { 'aria-current': 'page' })), content));
+    el('div', { class: 'settings-layout' }, tabs, content));
+
+  if (activeTab === 'about') {
+    content.append(el('section', { class: 'about-settings' },
+      el('div', { class: 'about-aurora', 'aria-hidden': 'true' }, el('span'), el('span'), el('span')),
+      el('div', { class: 'about-sparkles', 'aria-hidden': 'true' }, ...Array.from({ length: 9 }, () => el('i'))),
+      el('div', { class: 'about-hero' },
+        el('div', { class: 'about-orbit', 'aria-hidden': 'true' }, el('span', { class: 'about-orbit-dot' }), el('div', { class: 'about-mark', text: 'LF' })),
+        el('span', { class: 'settings-kicker', text: 'ABOUT' }),
+        el('h3', { text: PRODUCT_NAME }),
+        el('p', { class: 'about-tagline', text: 'Follow the shape of a thought.' }),
+        el('span', { class: 'about-version-pill', text: `Version ${PRODUCT_VERSION}` })),
+      el('dl', { class: 'about-details' },
+        el('div', {}, el('dt', { text: 'Product' }), el('dd', { text: PRODUCT_NAME })),
+        el('div', {}, el('dt', { text: 'Release' }), el('dd', { text: PRODUCT_VERSION }))),
+      el('div', { class: 'about-signature' }, el('span', { text: 'Designed for connected thinking' }), el('strong', { text: 'LinecoFlow Lab' })),
+      el('p', { class: 'about-copyright', text: '©2026 LinecoFlow' })));
+    overlay.append(panel); document.body.append(overlay); tabs.querySelector('.settings-tab-about').focus();
+    return;
+  }
 
   const master = el('button', { type: 'button', class: `ai-master-toggle ${aiFeaturesEnabled ? 'on' : ''}`, role: 'switch', 'aria-checked': String(aiFeaturesEnabled) },
     el('span', {}, el('strong', { text: 'AI features' }), el('small', { text: aiFeaturesEnabled ? 'Chat and AI-assisted drafting are available.' : 'All AI entry points are hidden and no AI requests can be made.' })),
