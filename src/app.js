@@ -5,7 +5,7 @@ import { isSourceNode, nodeLabel, sourceNode } from './node-content.js';
 import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
 import { putPdf, getPdf, deletePdf } from './source-store.js';
 import { connectionPort, crossConnectionRoute, nearestConnectionSide, snappedConnectionSides } from './cross-connection.js';
-import { loadModelSettings, saveModelSettings, encryptApiKey, unlockApiKey, getApiKey, lockApiKey } from './model-settings.js';
+import { loadModelSettings, saveModelSettings, saveModelSecret, encryptApiKey, unlockApiKey, getApiKey, lockApiKey } from './model-settings.js';
 import { chatModel } from './ai.js';
 import { contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, proposalStatus } from './chat.js';
 import { normalizeGraphFocusPreferences, relatedNodeIds } from './graph-focus.js';
@@ -63,34 +63,42 @@ catch (error) {
 let saveMode = 'auto';
 try { saveMode = loadSaveMode(); } catch { /* Browser storage can be unavailable. */ }
 const THEME_KEY = 'learning-canvas:theme-v1';
-const COLOR_KEY = 'learning-canvas:color-v1';
+const AI_ENABLED_KEY = 'learning-canvas:ai-enabled-v1';
 const GRAPH_FOCUS_KEY = 'learning-canvas:graph-focus-v1';
 const themes = ['auto', 'light', 'dark'];
-const colors = ['violet', 'blue', 'green', 'rose', 'amber'];
+const projectAccentColors = ['gold', 'gold-bright', 'blue'];
+const projectAccentValues = { gold: '#c7a23a', 'gold-bright': '#dfba48', blue: '#24354f' };
 let theme = localStorage.getItem(THEME_KEY) || 'auto';
-let color = localStorage.getItem(COLOR_KEY) || 'violet';
+let aiFeaturesEnabled = localStorage.getItem(AI_ENABLED_KEY) !== 'false';
 let graphFocusPreferences;
 try { graphFocusPreferences = normalizeGraphFocusPreferences(JSON.parse(localStorage.getItem(GRAPH_FOCUS_KEY) || '{}')); }
 catch { graphFocusPreferences = normalizeGraphFocusPreferences(); }
 if (!themes.includes(theme)) theme = 'auto';
-if (!colors.includes(color)) color = 'violet';
 function applyAppearance() {
-  const accentColors = { violet: '#635fdb', blue: '#2563a9', green: '#287a58', rose: '#b04468', amber: '#aa6b20' };
-  const lightSoftColors = { violet: '#e9e6ff', blue: '#dcecff', green: '#dff4e8', rose: '#ffe0e9', amber: '#ffedcf' };
-  const darkSoftColors = { violet: '#39345c', blue: '#263d5a', green: '#234a38', rose: '#542d3b', amber: '#5a4324' };
+  const accent = work()?.accentColor;
+  const activeAccent = projectAccentColors.includes(accent) ? accent : 'gold';
   const dark = theme === 'dark' || (theme === 'auto' && window.matchMedia?.('(prefers-color-scheme: dark)').matches);
   document.documentElement.dataset.theme = theme;
-  document.documentElement.dataset.color = color;
+  document.documentElement.dataset.color = activeAccent;
   document.documentElement.dataset.dark = String(dark);
-  document.documentElement.style.setProperty('--accent', accentColors[color] || accentColors.violet);
-  document.documentElement.style.setProperty('--accent-soft', (dark ? darkSoftColors : lightSoftColors)[color] || (dark ? darkSoftColors : lightSoftColors).violet);
+  document.documentElement.style.setProperty('--accent', projectAccentValues[activeAccent]);
+  document.documentElement.style.setProperty('--accent-soft', activeAccent.startsWith('gold') ? 'rgba(199, 162, 58, 0.14)' : dark ? 'rgba(214, 231, 244, 0.18)' : '#d6e7f4');
 }
-function setAppearance(nextTheme = theme, nextColor = color) {
-  theme = nextTheme; color = nextColor;
-  localStorage.setItem(THEME_KEY, theme); localStorage.setItem(COLOR_KEY, color);
+function setTheme(nextTheme) {
+  theme = nextTheme;
+  localStorage.setItem(THEME_KEY, theme);
   applyAppearance(); renderWorkspace();
 }
-applyAppearance();
+function setProjectAccent(nextColor) {
+  if (!work() || !projectAccentColors.includes(nextColor)) return;
+  change((item) => { item.accentColor = nextColor; }, { rerender: false });
+  applyAppearance(); renderWorkspace();
+}
+function setAiFeaturesEnabled(enabled) {
+  aiFeaturesEnabled = !!enabled;
+  localStorage.setItem(AI_ENABLED_KEY, String(aiFeaturesEnabled));
+  if (!aiFeaturesEnabled) { aiPanel = null; lockApiKey(); }
+}
 const colorSchemeQuery = window.matchMedia?.('(prefers-color-scheme: dark)');
 const handleSystemAppearanceChange = () => {
   if (theme !== 'auto') return;
@@ -102,6 +110,8 @@ else if (colorSchemeQuery) colorSchemeQuery.addListener(handleSystemAppearanceCh
 let lastSaved = JSON.stringify(state), dirty = false;
 let reportedSaveFailure = null;
 let quotaCleanupDeclined = false;
+let quotaCleanupApproved = false;
+let quotaPromptPending = false;
 let currentId = null, selectedId = null, selectedIds = new Set(), editingMarkdown = false, editingTarget = null, editingBeforeView = null, outlineOpen = false;
 let activeConnection = null;
 let openSourceId = null, sourcePage = 1, sourceJump = null;
@@ -134,11 +144,42 @@ function el(tag, attrs = {}, ...children) {
 const button = (label, action, className = '', attrs = {}) => el('button', { type: 'button', class: className, text: label, onclick: action, ...attrs });
 const work = () => state.workspaces.find((item) => item.id === currentId);
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+applyAppearance();
 
 function announce(message) {
   toast.textContent = message;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { toast.textContent = ''; }, 3200);
+}
+
+function confirmAction({ title, message, confirmLabel = 'Continue', danger = false }) {
+  document.querySelector('.lf-confirm-overlay')?.remove();
+  return new Promise((resolve) => {
+    const overlay = el('div', { class: 'lf-confirm-overlay' });
+    const panel = el('section', { class: 'lf-confirm-dialog', role: 'alertdialog', 'aria-modal': 'true', 'aria-labelledby': 'lf-confirm-title', 'aria-describedby': 'lf-confirm-message' });
+    let settled = false;
+    const finish = (accepted) => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener('keydown', onKeydown, true);
+      overlay.remove();
+      resolve(accepted);
+    };
+    const onKeydown = (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); finish(false); }
+    };
+    const cancel = button('Cancel', () => finish(false), 'lf-confirm-cancel');
+    const confirm = button(confirmLabel, () => finish(true), `lf-confirm-accept ${danger ? 'danger' : ''}`);
+    panel.append(
+      el('div', { class: `lf-confirm-icon ${danger ? 'danger' : ''}`, 'aria-hidden': 'true', text: danger ? '!' : 'i' }),
+      el('div', { class: 'lf-confirm-copy' }, el('h2', { id: 'lf-confirm-title', text: title }), el('p', { id: 'lf-confirm-message', text: message })),
+      el('div', { class: 'lf-confirm-actions' }, cancel, confirm));
+    overlay.addEventListener('pointerdown', (event) => { if (event.target === overlay) finish(false); });
+    document.addEventListener('keydown', onKeydown, true);
+    overlay.append(panel);
+    document.body.append(overlay);
+    requestAnimationFrame(() => cancel.focus());
+  });
 }
 
 function saveLabel() { return saveError ? 'Save failed' : dirty ? 'Unsaved' : 'Saved'; }
@@ -163,13 +204,23 @@ function persist(force = false) {
   try {
     const recovery = saveStateWithQuotaRecovery(state, localStorage, ({ snapshotCount }) => {
       if (quotaCleanupDeclined) return false;
-      const accepted = window.confirm(
-        `The browser's local save limit has been reached. To save your current work, LF CORE needs to remove older undo/redo history${snapshotCount ? ` (${snapshotCount} snapshots are currently stored)` : ''}.\n\nYour current articles, nodes, sources, research, and chats will not be removed. Continue?`
-      );
-      quotaCleanupDeclined = !accepted;
-      return accepted;
+      if (quotaCleanupApproved) return true;
+      if (!quotaPromptPending) {
+        quotaPromptPending = true;
+        confirmAction({
+          title: 'Make room to save?',
+          message: `LF CORE has reached the browser's local save limit. It can remove older undo history${snapshotCount ? ` (${snapshotCount} snapshots)` : ''} without removing your current articles, nodes, sources, research, or chats.`,
+          confirmLabel: 'Clear old history'
+        }).then((accepted) => {
+          quotaPromptPending = false;
+          quotaCleanupDeclined = !accepted;
+          if (accepted) { quotaCleanupApproved = true; persist(true); }
+          else { saveError = 'Save needs more browser storage.'; updateSaveControls(); announce('Save paused. No history was removed.'); }
+        });
+      }
+      return false;
     });
-    lastSaved = JSON.stringify(state); dirty = false; saveError = null; reportedSaveFailure = null; quotaCleanupDeclined = false;
+    lastSaved = JSON.stringify(state); dirty = false; saveError = null; reportedSaveFailure = null; quotaCleanupDeclined = false; quotaCleanupApproved = false;
     if (recovery.recovered) {
       console.warn(`[LF CORE] Storage quota recovered by removing ${recovery.removedSnapshots} old undo/redo snapshot${recovery.removedSnapshots === 1 ? '' : 's'}.`);
       announce('Saved. Older undo history was cleared to free browser storage.');
@@ -183,6 +234,7 @@ function persist(force = false) {
     return true;
   } catch (error) {
     saveError = error instanceof Error ? error.message : String(error); dirty = true;
+    if (quotaPromptPending) { saveError = 'Waiting for storage confirmation.'; updateSaveControls(); return false; }
     const signature = `${error?.name || typeof error}:${saveError}`;
     if (signature !== reportedSaveFailure) {
       reportedSaveFailure = signature;
@@ -295,8 +347,8 @@ function documentMenuSubmenu(label, values, current, action, format = (value) =>
 
 function appendAppearanceOptions(menu) {
   menu.append(el('div', { class: 'document-menu-heading', text: 'Appearance' }));
-  menu.append(documentMenuSubmenu('Mode', themes, theme, (value) => setAppearance(value, color)));
-  menu.append(documentMenuSubmenu('Accent color', colors, color, (value) => setAppearance(theme, value)));
+  menu.append(documentMenuSubmenu('Mode', themes, theme, setTheme));
+  menu.append(documentMenuSubmenu('Project accent', projectAccentColors, work()?.accentColor || 'gold', setProjectAccent, (value) => ({ gold: 'LF Gold', 'gold-bright': 'LF Gold Bright', blue: 'LF Blue' })[value]));
 }
 
 async function downloadProject() {
@@ -335,6 +387,9 @@ function toggleDocumentMenu(wrapper) {
   menu.append(documentMenuSubmenu('Saving', ['auto', 'manual'], saveMode, (value) => setSaveMode(value), (value) => value === 'auto' ? 'Auto save' : 'Manual save'));
   menu.append(el('div', { class: 'document-menu-separator', role: 'separator' }));
   appendAppearanceOptions(menu);
+  menu.append(el('div', { class: 'document-menu-separator', role: 'separator' }));
+  menu.append(el('div', { class: 'document-menu-heading', text: 'Global' }));
+  menu.append(button('Settings', () => { closeDocumentMenu(); renderSettings(); }, 'document-menu-option', { role: 'menuitem' }));
   // A submenu belongs to the item currently under the pointer. Moving to a
   // normal menu item must close the previously opened submenu; otherwise the
   // old submenu remains visible beside an unrelated item.
@@ -516,18 +571,95 @@ async function uploadProject(file) {
   announce('Project uploaded.');
 }
 
+function openNewProjectGuide() {
+  document.querySelector('.project-guide-overlay')?.remove();
+  let step = 1;
+  let entryMode = 'topic';
+  const overlay = el('div', { class: 'project-guide-overlay' });
+  const panel = el('section', { class: 'project-guide', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'project-guide-title' });
+  const title = el('input', { type: 'text', placeholder: 'Project name', 'aria-label': 'Project name' });
+  const pasted = el('textarea', { class: 'entry-paste', placeholder: 'Paste the source text here. It stays separate from your article.', 'aria-label': 'Pasted source text' });
+  const pdf = el('input', { type: 'file', accept: '.pdf,application/pdf', class: 'entry-file', 'aria-label': 'Choose a local PDF' });
+  const close = () => overlay.remove();
+  overlay.addEventListener('pointerdown', (event) => { if (event.target === overlay) close(); });
+
+  const validateDetails = () => {
+    if (entryMode === 'topic' && !title.value.trim()) return 'Name your project to continue.';
+    if (entryMode === 'paste' && !pasted.value.trim()) return 'Paste some source text to continue.';
+    if (entryMode === 'paste' && pasted.value.length > 500_000) return 'Pasted text is over the 500,000 character limit. Use a PDF instead.';
+    if (entryMode === 'pdf' && !pdf.files?.[0]) return 'Choose a PDF to continue.';
+    return '';
+  };
+
+  const createProject = async (control) => {
+    const error = validateDetails();
+    if (error) return announce(error);
+    control.disabled = true;
+    try {
+      if (entryMode === 'topic') startWorkspace(title.value.trim(), null, aiFeaturesEnabled);
+      else if (entryMode === 'paste') {
+        const name = title.value.trim() || pasted.value.trim().split('\n')[0].slice(0, 80) || 'Pasted source';
+        startWorkspace(name, pastedSource(name, pasted.value));
+      } else {
+        const source = await pdfSource(pdf.files[0]);
+        startWorkspace(title.value.trim() || source.title, source);
+      }
+      close();
+    } catch (error) { announce(`Could not create project: ${error.message}`); }
+    finally { control.disabled = false; }
+  };
+
+  const renderStep = () => {
+    panel.replaceChildren();
+    const heading = el('header', { class: 'project-guide-heading' },
+      el('div', {}, el('span', { class: 'project-guide-kicker', text: `STEP ${step} OF 3` }), el('h2', { id: 'project-guide-title', text: step === 1 ? 'Start a new project' : step === 2 ? 'Add the essentials' : 'Ready to create' })),
+      button('×', close, 'panel-close', { 'aria-label': 'Close new project guide' }));
+    const body = el('div', { class: 'project-guide-body' });
+    if (step === 1) {
+      body.append(el('p', { class: 'project-guide-copy', text: 'Choose the clearest starting point. You can add more sources later.' }));
+      const choices = el('div', { class: 'project-start-choices' });
+      for (const [mode, label, detail, glyph] of [
+        ['topic', 'A topic', 'Begin with a project name and working article.', '✦'],
+        ['paste', 'Pasted text', 'Keep source text beside your own writing.', '≡'],
+        ['pdf', 'A local PDF', 'Bring a paper or document into the project.', '▱']
+      ]) {
+        choices.append(button('', () => { entryMode = mode; step = 2; renderStep(); }, 'project-start-choice', { 'aria-label': `${label}: ${detail}` }));
+        choices.lastElementChild.append(el('span', { class: 'project-choice-glyph', text: glyph }), el('span', {}, el('strong', { text: label }), el('small', { text: detail })), el('span', { text: '→' }));
+      }
+      body.append(choices);
+    } else if (step === 2) {
+      const modeLabel = { topic: 'topic', paste: 'pasted text', pdf: 'local PDF' }[entryMode];
+      body.append(el('p', { class: 'project-guide-copy', text: `Starting from ${modeLabel}. Give the project a useful name${entryMode === 'topic' ? '.' : ' or leave it blank to use the source title.'}` }), title);
+      if (entryMode === 'paste') body.append(pasted);
+      if (entryMode === 'pdf') body.append(pdf);
+    } else {
+      const sourceName = entryMode === 'pdf' ? pdf.files?.[0]?.name : entryMode === 'paste' ? 'Pasted source text' : aiFeaturesEnabled ? 'Topic with an AI drafting prompt' : 'Blank working article';
+      const projectName = title.value.trim() || (entryMode === 'pdf' ? sourceTitle(pdf.files?.[0]?.name || '') : pasted.value.trim().split('\n')[0].slice(0, 80)) || 'Untitled project';
+      body.append(el('div', { class: 'project-review' },
+        el('span', { text: 'PROJECT' }), el('strong', { text: projectName }),
+        el('span', { text: 'STARTING POINT' }), el('strong', { text: sourceName })));
+      body.append(el('p', { class: 'project-guide-copy', text: 'You can rename the project, change its accent color, and add sources at any time.' }));
+    }
+    const footer = el('footer', { class: 'project-guide-footer' });
+    if (step > 1) footer.append(button('Back', () => { step--; renderStep(); }, 'panel-secondary'));
+    if (step === 2) footer.append(button('Continue', () => { const error = validateDetails(); if (error) announce(error); else { step = 3; renderStep(); } }, 'panel-action'));
+    if (step === 3) {
+      const create = button('Create project', () => createProject(create), 'panel-action');
+      footer.append(create);
+    }
+    panel.append(heading, body, footer);
+    requestAnimationFrame(() => (step === 1 ? panel.querySelector('.project-start-choice') : step === 2 ? title : panel.querySelector('.panel-action'))?.focus());
+  };
+  renderStep();
+  overlay.append(panel);
+  document.body.append(overlay);
+}
+
 function renderHome() {
   if (flushView()) persist();
   currentId = null; selectedId = null; selectedIds.clear(); editingMarkdown = false; editingTarget = null; editingBeforeView = null; selectedPassage = null; openSourceId = null;
-  graphFocus = null; graphFocusNodeIds = null; spaceKeySession = null;
-  const header = el('header', { class: 'home-header' }, el('div', { class: 'brand' }, el('span', { class: 'brand-mark', text: 'LF' }), el('span', { class: 'brand-name', text: 'CORE' }), el('span', { class: 'brand-company', text: 'LinecoFlow' })));
-  const form = el('form', { class: 'create-form entry-form' });
-  let entryMode = 'topic';
-  const tabs = el('div', { class: 'entry-tabs', role: 'tablist', 'aria-label': 'Start from' });
-  const input = el('input', { type: 'text', placeholder: 'What are you learning?', 'aria-label': 'Project title' });
-  const pasted = el('textarea', { class: 'entry-paste', placeholder: 'Paste the original text here. It stays separate from your article.', 'aria-label': 'Pasted source text' });
-  const pdf = el('input', { type: 'file', accept: '.pdf,application/pdf', class: 'entry-file', 'aria-label': 'Choose a local PDF' });
-  const create = el('button', { type: 'submit', text: 'Create canvas  ↗' });
+  graphFocus = null; graphFocusNodeIds = null; spaceKeySession = null; aiPanel = null;
+  applyAppearance();
   const projectUpload = el('input', { type: 'file', accept: PROJECT_EXTENSION, class: 'project-upload-input', 'aria-label': 'Upload project' });
   const uploadProjectButton = button('Upload project', async () => {
     if (!window.lfcoreDesktop?.openProject) return projectUpload.click();
@@ -544,40 +676,12 @@ function renderHome() {
     catch (error) { announce(`Project upload failed: ${error.message}`); }
     finally { uploadProjectButton.disabled = false; projectUpload.value = ''; }
   });
-  const setMode = (mode) => {
-    entryMode = mode;
-    input.placeholder = mode === 'topic' ? 'What are you learning?' : mode === 'paste' ? 'Project title (optional)' : 'Project title (defaults to PDF name)';
-    pasted.hidden = mode !== 'paste'; pdf.hidden = mode !== 'pdf';
-    for (const tab of tabs.children) tab.setAttribute('aria-selected', String(tab.dataset.mode === mode));
-  };
-  for (const [mode, label] of [['topic', 'Topic'], ['paste', 'Pasted text'], ['pdf', 'Local PDF']]) tabs.append(button(label, () => setMode(mode), 'entry-tab', { role: 'tab', 'data-mode': mode, 'aria-selected': 'false' }));
-  if (loadError) { input.disabled = true; pasted.disabled = true; pdf.disabled = true; create.disabled = true; uploadProjectButton.disabled = true; }
-  form.append(tabs, input, pasted, pdf, create);
-  setMode('topic');
-  form.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    create.disabled = true;
-    try {
-      if (entryMode === 'topic') {
-        if (!input.value.trim()) return announce('Enter a topic first.');
-        startWorkspace(input.value, null, true);
-      } else if (entryMode === 'paste') {
-        if (!pasted.value.trim()) return announce('Paste some source text first.');
-        if (pasted.value.length > 500_000) return announce('Pasted text is over the 500,000 character limit. Use a PDF for longer material.');
-        const title = input.value.trim() || pasted.value.trim().split('\n')[0].slice(0, 80) || 'Pasted source';
-        startWorkspace(title, pastedSource(title, pasted.value));
-      } else {
-        if (!pdf.files?.[0]) return announce('Choose a PDF first.');
-        const source = await pdfSource(pdf.files[0]);
-        startWorkspace(input.value.trim() || source.title, source);
-      }
-    } catch (error) { announce(`Could not create workspace: ${error.message}`); }
-    finally { create.disabled = false; }
-  });
+  if (loadError) uploadProjectButton.disabled = true;
   const cards = el('div', { class: 'workspace-list' });
-  if (!state.workspaces.length) cards.append(el('p', { class: 'empty-home', text: 'Your canvas is ready. Start a topic or open the example below.' }));
+  if (!state.workspaces.length) cards.append(el('div', { class: 'empty-home' }, el('strong', { text: 'No projects yet' }), el('span', { text: 'Create one in three short steps, or explore the example.' })));
   for (const item of [...state.workspaces].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) {
     const tile = el('div', { class: 'workspace-tile' });
+    tile.style.setProperty('--project-accent', projectAccentValues[item.accentColor] || projectAccentValues.gold);
     tile.append(button('', () => openWorkspace(item.id), 'workspace-open', { 'aria-label': `Open ${item.title}` }), button('×', () => deleteWorkspace(item.id), 'workspace-delete', { 'aria-label': `Delete ${item.title}`, title: `Delete ${item.title}` }));
     tile.firstElementChild.append(el('span', { class: 'tile-glyph', text: '◈' }), el('span', {}, el('strong', { text: item.title }), el('small', { text: `${item.nodes.length} connected node${item.nodes.length === 1 ? '' : 's'}` })), el('span', { class: 'tile-arrow', text: '↗' }));
     cards.append(tile);
@@ -596,15 +700,23 @@ function renderHome() {
     ensurePositions(item); persist(); openWorkspace(item.id);
   }, 'example-link');
   if (loadError) exampleButton.disabled = true;
-  const main = el('main', { class: 'home-main' }, el('div', { class: 'home-eyebrow', text: 'YOUR WORKSPACE' }), el('h1', { text: 'Follow the shape of a thought.' }), el('p', { class: 'home-lead', text: 'Write at the center. Explore connected nodes, then return to what matters.' }), form, el('div', { class: 'home-secondary-actions' }, exampleButton, uploadProjectButton, projectUpload), el('div', { class: 'list-heading' }, el('h2', { text: 'Your canvases' })), cards);
+  const header = el('header', { class: 'home-header' },
+    el('div', { class: 'home-wordmark' }, el('strong', { text: 'LF CORE' }), el('span', { text: 'by LinecoFlow' })),
+    el('nav', { class: 'home-actions', 'aria-label': 'Landing page actions' },
+      button('Settings', () => renderSettings(), 'home-settings-button'),
+      button('New project', openNewProjectGuide, 'home-new-project')));
+  const main = el('main', { class: 'home-main' },
+    el('div', { class: 'home-intro' }, el('div', {}, el('span', { class: 'home-eyebrow', text: 'YOUR WORKSPACE' }), el('h1', { text: 'Recent projects' }), el('p', { class: 'home-lead', text: 'Continue where you left off, or begin a focused new line of thought.' })), button('＋ New project', openNewProjectGuide, 'home-new-project home-new-project-large')),
+    cards,
+    el('div', { class: 'home-secondary-actions' }, exampleButton, uploadProjectButton, projectUpload));
   if (loadError) main.prepend(el('p', { class: 'error-banner', text: `${loadError} Existing data was left untouched.` }));
   app.replaceChildren(el('div', { class: 'home' }, header, main));
   updateSaveControls();
 }
 
-function deleteWorkspace(id) {
+async function deleteWorkspace(id) {
   const item = state.workspaces.find((entry) => entry.id === id);
-  if (!item || !window.confirm(`Delete “${item.title}” and all its connected nodes? This cannot be undone.`)) return;
+  if (!item || !await confirmAction({ title: 'Delete project?', message: `“${item.title}” and all its connected nodes will be permanently deleted. This cannot be undone.`, confirmLabel: 'Delete project', danger: true })) return;
   for (const source of item.sources || []) if (source.type === 'pdf') pendingPdfDeletes.add(source.id);
   for (const node of item.nodes || []) pdfNodePages.delete(node.id);
   state.workspaces = state.workspaces.filter((entry) => entry.id !== id);
@@ -1045,6 +1157,7 @@ function edgePoints(item, edge) {
 
 function renderWorkspace() {
   const item = work(); if (!item) return renderHome();
+  applyAppearance();
   ensureUnifiedNodeEdges(item);
   syncGraphFocus(item);
   if (graphFocus && selectedId && !graphFocusNodeIds.has(selectedId)) selectedId = graphFocus.rootId;
@@ -1068,7 +1181,7 @@ function renderWorkspace() {
         historyButton('undo', undo, !!state.history[item.id]?.length),
         historyButton('redo', redo, !!state.redo[item.id]?.length))),
     el('div', { class: 'header-right' },
-      button('Chat', toggleAiPanel, `source-toggle ${aiPanel ? 'active' : ''}`, { 'aria-pressed': String(!!aiPanel), 'aria-label': 'Toggle chat' }),
+      aiFeaturesEnabled ? button('Chat', toggleAiPanel, `source-toggle ${aiPanel ? 'active' : ''}`, { 'aria-pressed': String(!!aiPanel), 'aria-label': 'Toggle chat' }) : null,
       button('Research', toggleResearchPanel, `source-toggle ${researchPanel ? 'active' : ''}`, { 'aria-pressed': String(!!researchPanel), 'aria-label': 'Toggle research' }),
       button(`Sources${item.sources?.length ? ` ${item.sources.length}` : ''}`, () => openSource(openSourceId ? null : item.sources?.[0]?.id || 'library'), `source-toggle ${openSourceId ? 'active' : ''}`, { 'aria-pressed': String(!!openSourceId), 'aria-label': 'Toggle sources' })));
 
@@ -1089,24 +1202,6 @@ function renderWorkspace() {
   if (researchPanel) renderResearchPanel();
 }
 
-function appearanceControl() {
-  const wrapper = el('div', { class: 'appearance-control' });
-  const control = button('◐', () => wrapper.classList.toggle('open'), 'header-icon', { 'aria-label': 'Appearance', title: 'Appearance' });
-  const menu = el('div', { class: 'appearance-menu', role: 'menu', 'aria-label': 'Appearance settings' });
-  menu.append(el('strong', { text: 'Appearance' }));
-  const modeIcons = { auto: '◐', light: '☀', dark: '☾' };
-  const colorIcons = { violet: '●', blue: '●', green: '●', rose: '●', amber: '●' };
-  const choice = (value, current, icon, action) => {
-    const option = button('', action, 'appearance-option', { role: 'menuitemradio', 'aria-checked': current === value });
-    option.append(el('span', { class: 'appearance-option-icon', text: icon }), el('span', { text: value[0].toUpperCase() + value.slice(1) }), el('span', { class: 'appearance-option-check', text: current === value ? '✓' : '' }));
-    if (colorIcons[value]) option.dataset.color = value;
-    return option;
-  };
-  menu.append(el('label', { text: 'MODE' }), ...themes.map((value) => choice(value, theme, modeIcons[value], () => { setAppearance(value, color); wrapper.classList.remove('open'); })));
-  menu.append(el('label', { text: 'ACCENT COLOR' }), ...colors.map((value) => choice(value, color, colorIcons[value], () => { setAppearance(theme, value); wrapper.classList.remove('open'); })));
-  wrapper.append(control, menu); return wrapper;
-}
-
 function iconButton(path, label, action, active = false) {
   const svg = el('svg', { viewBox: '0 0 24 24', width: '19', height: '19', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' });
   svg.append(el('path', { d: path }));
@@ -1125,7 +1220,7 @@ function historyButton(kind, action, enabled) {
 }
 
 function renderCanvas(item) {
-  const viewport = el('main', { class: 'canvas-viewport', 'aria-label': 'Knowledge canvas', 'aria-readonly': String(graphIsReadOnly()) });
+  const viewport = el('main', { class: 'canvas-viewport', 'aria-label': 'Project workspace', 'aria-readonly': String(graphIsReadOnly()) });
   const scene = el('div', { class: 'scene' });
   scene.append(renderPaper(item));
   scene.append(renderConnectors(item));
@@ -1141,7 +1236,7 @@ function renderCanvas(item) {
   const zoomMenu = el('div', { class: 'zoom-menu' }, button('100%', () => { const open = zoomMenu.classList.toggle('open'); zoomMenu.querySelector('.zoom-value').setAttribute('aria-expanded', String(open)); if (open) presets.querySelector('button')?.focus(); }, 'zoom-value', { 'aria-label': 'Zoom level; choose a preset', 'aria-haspopup': 'menu', 'aria-expanded': 'false' }), presets);
   for (const level of [50, 75, 100, 125, 150, 175]) presets.append(button(`${level}%`, () => { zoomTo(level / 100); zoomMenu.classList.remove('open'); zoomMenu.querySelector('.zoom-value').setAttribute('aria-expanded', 'false'); }, 'zoom-preset', { role: 'menuitem' }));
   presets.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.stopPropagation(); zoomMenu.classList.remove('open'); zoomMenu.querySelector('.zoom-value').setAttribute('aria-expanded', 'false'); zoomMenu.querySelector('.zoom-value').focus(); } });
-  const zoom = el('div', { class: 'zoom-controls' }, button('−', () => zoomTo(view.zoom - .15), '', { 'aria-label': 'Zoom out' }), zoomMenu, button('+', () => zoomTo(view.zoom + .15), '', { 'aria-label': 'Zoom in' }), el('span', { class: 'zoom-divider' }), button('Fit', fitCanvas, 'fit-button', { 'aria-label': 'Fit canvas' }));
+  const zoom = el('div', { class: 'zoom-controls' }, button('−', () => zoomTo(view.zoom - .15), '', { 'aria-label': 'Zoom out' }), zoomMenu, button('+', () => zoomTo(view.zoom + .15), '', { 'aria-label': 'Zoom in' }), el('span', { class: 'zoom-divider' }), button('Fit', fitCanvas, 'fit-button', { 'aria-label': 'Fit project view' }));
   const shell = el('div', { class: `canvas-shell ${graphFocus ? 'graph-focus-active graph-focus-readonly' : ''} ${editingTarget ? 'editing-mode-active' : ''}`.trim() }, viewport, zoom);
   if (outlineOpen) shell.append(renderOutline(item));
   if (!graphIsReadOnly() && !selectedId && selectedIds.size > 1) {
@@ -1285,16 +1380,16 @@ function openContextMenu(target, x, y) {
   const passage = selectedPassage;
   const floatingPosition = positionAtCanvasPoint(x, y);
   if (!group && !node && (selectedId || selectedIds.size)) { selectedId = null; selectedIds.clear(); renderWorkspace(); }
-  const menu = el('div', { class: 'context-menu', role: 'menu', 'aria-label': group ? 'Selection options' : node ? `${nodeLabel(node, item.sources)} options` : onPaper ? 'Document options' : 'Canvas options' });
+  const menu = el('div', { class: 'context-menu', role: 'menu', 'aria-label': group ? 'Selection options' : node ? `${nodeLabel(node, item.sources)} options` : onPaper ? 'Document options' : 'Project options' });
   const option = (label, action, destructive = false) => menu.append(button(label, () => { closeContextMenu(); action(); }, `context-option ${destructive ? 'destructive' : ''}`, { role: 'menuitem' }));
   if (group) {
     if (!graphIsReadOnly()) option('Delete selected nodes', () => removeNodes([...selectedIds]), true);
   } else if (node) {
     option('Show node actions', () => selectNode(node.id));
     if (isSourceNode(node)) option('Open PDF source', () => openSource(node.document.sourceId));
-    else option('Chat with node', () => openAiPanel({ targetId: node.id }));
+    else if (aiFeaturesEnabled) option('Chat with node', () => openAiPanel({ targetId: node.id }));
     if (!graphIsReadOnly()) {
-      if (!isSourceNode(node)) option('Edit content on canvas', () => beginNodeMarkdownEdit(node.id));
+      if (!isSourceNode(node)) option('Edit content in project', () => beginNodeMarkdownEdit(node.id));
       if (!isSourceNode(node) && passage?.targetId === node.id) option('Create node from highlight', () => { selectedPassage = passage; createAnchoredNode(); });
       option('Add child', () => addNode(node.id));
       if (siblingPredecessor(item, node.id)) option('Add sibling', () => addSibling(node));
@@ -1302,14 +1397,14 @@ function openContextMenu(target, x, y) {
       option('Delete node', () => removeNode(node.id), true);
     }
   } else if (onPaper) {
-    option('Chat with article', () => openAiPanel({ targetId: 'article' }));
+    if (aiFeaturesEnabled) option('Chat with article', () => openAiPanel({ targetId: 'article' }));
     if (!graphIsReadOnly() && passage?.targetId === 'article') option('Create node from highlight', () => { selectedPassage = passage; createAnchoredNode(); });
     option(editingTarget === 'article' ? 'Done editing' : 'Edit document', () => editingTarget === 'article' ? exitEditingMode() : enterEditingMode('article'));
     if (!graphIsReadOnly()) option('Add node', () => addNode(null, null, floatingPosition));
-    option('Fit canvas', fitCanvas);
+    option('Fit view', fitCanvas);
   } else {
     if (!graphIsReadOnly()) option('Add node', () => addNode(null, null, floatingPosition));
-    option('Fit canvas', fitCanvas);
+    option('Fit view', fitCanvas);
     option('Zoom in', () => zoomTo(view.zoom + .15, x, y));
     option('Zoom out', () => zoomTo(view.zoom - .15, x, y));
   }
@@ -1906,7 +2001,7 @@ function renderNodeActions(node, item) {
       button('＋ Child', () => addNode(node.id), 'node-action'),
       ...(canAddSibling ? [button('＋ Sibling', () => addSibling(node), 'node-action')] : []),
     ]),
-    ...(!isSourceNode(node) ? [button('Chat', () => openAiPanel({ targetId: node.id }), 'node-action')] : []));
+    ...(!isSourceNode(node) && aiFeaturesEnabled ? [button('Chat', () => openAiPanel({ targetId: node.id }), 'node-action')] : []));
   toolbar.append(primary);
 
   const contextual = el('div', { class: 'node-actions-row secondary' });
@@ -2465,7 +2560,7 @@ function showPdfSourceNode(source) {
   let node = item.nodes.find((entry) => isSourceNode(entry) && entry.document.sourceId === source.id);
   if (!node) {
     change((entry) => { node = addPdfSourceNode(entry, source); }, { rerender: false });
-    announce('PDF source added to the canvas.');
+    announce('PDF source added to the project.');
   }
   openSourceId = null;
   selectedId = node.id;
@@ -2544,7 +2639,7 @@ function renderSourceContent(body, source) {
   const heading = el('div', { class: 'source-reader-heading' }, el('strong', { text: source.title }), el('small', { text: description }));
   if (source.type === 'pdf') {
     const onCanvas = work()?.nodes.some((node) => isSourceNode(node) && node.document.sourceId === source.id);
-    heading.append(button(onCanvas ? 'Show on canvas' : 'Add to canvas', () => showPdfSourceNode(source), 'panel-secondary source-canvas-action'));
+    heading.append(button(onCanvas ? 'Show in project' : 'Add to project', () => showPdfSourceNode(source), 'panel-secondary source-canvas-action'));
   }
   body.append(heading);
   const actions = el('div', { class: 'source-selection-actions', 'aria-live': 'polite' });
@@ -2665,7 +2760,7 @@ function renderPaper(item) {
   paper.append(el('div', { class: 'paper-heading' },
     el('span', { class: 'paper-label', text: 'master article' }),
     button(editingTarget === 'article' ? 'Done' : 'Edit', () => editingTarget === 'article' ? exitEditingMode() : enterEditingMode('article'), 'paper-ai-action', { 'aria-label': editingTarget === 'article' ? 'Finish editing article' : 'Edit master article' }),
-    button('Chat about article', () => openAiPanel({ targetId: 'article' }), 'paper-ai-action')));
+    aiFeaturesEnabled ? button('Chat about article', () => openAiPanel({ targetId: 'article' }), 'paper-ai-action') : null));
   const scroll = el('div', { class: 'paper-scroll' });
   if (editingMarkdown) {
     const editor = el('textarea', { class: 'markdown-editor', 'aria-label': 'Edit document', spellcheck: 'true' });
@@ -2839,7 +2934,7 @@ function activateMarkdownHighlightDrag(preview, targetId) {
       mark.dataset.highlight = anchor.id;
     };
     mark.classList.add('connectable-highlight');
-    mark.title = 'Drag to connect; drop on empty canvas to create a node';
+    mark.title = 'Drag to connect; drop on empty space to create a node';
     mark.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return;
       event.stopPropagation();
@@ -2946,7 +3041,7 @@ function renderPassageToolbar() {
   document.querySelector('.passage-toolbar')?.remove();
   if (!selectedPassage) return;
   const actions = graphIsReadOnly() ? [] : [button('＋ Node', createAnchoredNode, 'passage-create', { 'aria-label': 'Create connected node' }), button('Highlight', createHighlight, 'passage-create', { 'aria-label': 'Save highlight for connections' })];
-  actions.push(button('Chat', () => openAiPanel({ targetId: selectedPassage.targetId, quote: sourcePlainText(work(), selectedPassage.targetId).slice(selectedPassage.start, selectedPassage.end) }), 'passage-create'));
+  if (aiFeaturesEnabled) actions.push(button('Chat', () => openAiPanel({ targetId: selectedPassage.targetId, quote: sourcePlainText(work(), selectedPassage.targetId).slice(selectedPassage.start, selectedPassage.end) }), 'passage-create'));
   actions.push(button('×', () => { selectedPassage = null; toolbar.remove(); }, 'passage-close', { 'aria-label': 'Dismiss selection action' }));
   const toolbar = el('div', { class: 'passage-toolbar' }, actions);
   toolbar.style.left = `${clamp(selectedPassage.x + 12, 12, window.innerWidth - 135)}px`;
@@ -2980,15 +3075,26 @@ function createHighlight() {
   } catch (error) { announce(error.message); }
 }
 
-function renderSettings(container = null) {
+function renderSettings() {
   document.querySelector('.model-settings-overlay')?.remove();
   const saved = loadModelSettings();
-  const overlay = container ? null : el('div', { class: 'model-settings-overlay' });
-  const panel = el('section', { class: `model-settings-card ${container ? 'chat-settings' : ''}`, ...(container ? {} : { role: 'dialog', 'aria-modal': 'true' }), 'aria-label': 'Model settings' });
-  const close = () => { if (container) { aiPanel.tab = 'chat'; renderAiPanel(); } else overlay.remove(); };
-  overlay?.addEventListener('pointerdown', (event) => { if (event.target === overlay) close(); });
-  if (!container) panel.append(el('div', { class: 'ai-heading' }, el('h2', { text: 'Model settings' }), button('×', close, 'panel-close', { 'aria-label': 'Close settings' })));
-  panel.append(el('p', { text: 'OpenAI compatible chat completions. Only the context shown before a request is sent to this endpoint. The key is encrypted locally with your passphrase and unlocked for this tab session.' }));
+  const overlay = el('div', { class: 'model-settings-overlay' });
+  const panel = el('section', { class: 'model-settings-card', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Settings' });
+  const close = () => overlay.remove();
+  overlay.addEventListener('pointerdown', (event) => { if (event.target === overlay) close(); });
+  const content = el('div', { class: 'settings-content' });
+  panel.append(el('div', { class: 'settings-heading' }, el('div', {}, el('span', { class: 'settings-kicker', text: 'LF CORE' }), el('h2', { text: 'Settings' })), button('×', close, 'panel-close', { 'aria-label': 'Close settings' })),
+    el('div', { class: 'settings-layout' }, el('nav', { class: 'settings-tabs', 'aria-label': 'Settings sections' }, button('AI Settings', () => {}, 'settings-tab active', { 'aria-current': 'page' })), content));
+
+  const master = el('button', { type: 'button', class: `ai-master-toggle ${aiFeaturesEnabled ? 'on' : ''}`, role: 'switch', 'aria-checked': String(aiFeaturesEnabled) },
+    el('span', {}, el('strong', { text: 'AI features' }), el('small', { text: aiFeaturesEnabled ? 'Chat and AI-assisted drafting are available.' : 'All AI entry points are hidden and no AI requests can be made.' })),
+    el('span', { class: 'toggle-track', 'aria-hidden': 'true' }, el('span', { class: 'toggle-thumb' })));
+  master.addEventListener('click', () => {
+    setAiFeaturesEnabled(!aiFeaturesEnabled);
+    if (currentId) renderWorkspace();
+    renderSettings();
+  });
+  content.append(master, el('div', { class: 'settings-section-heading' }, el('h3', { text: 'AI Settings' }), el('p', { text: 'Connect an OpenAI-compatible chat endpoint. Only the context shown before a request is sent.' })));
   const endpoint = el('input', { type: 'url', value: saved.endpoint, 'aria-label': 'API endpoint', placeholder: 'https://api.openai.com/v1' });
   const models = el('textarea', { 'aria-label': 'Models, one per line', placeholder: 'One model ID per line' }); models.value = saved.models.join('\n');
   const selected = el('input', { value: saved.selectedModel, 'aria-label': 'Selected model', placeholder: 'First listed model is used by default' });
@@ -2999,34 +3105,42 @@ function renderSettings(container = null) {
   const apiKey = el('input', { type: 'password', autocomplete: 'new-password', 'aria-label': 'New API key', placeholder: saved.secret ? 'Stored encrypted; leave blank to keep' : 'Optional for a local endpoint' });
   const passphrase = el('input', { type: 'password', autocomplete: 'new-password', 'aria-label': 'Encryption passphrase', placeholder: 'At least 12 characters to store or unlock a key' });
   const status = el('p', { class: 'ai-status', role: 'status', text: saved.secret ? getApiKey() ? 'Key unlocked for this tab.' : 'Encrypted key is locked. Unlock before requesting.' : 'No stored key. Local endpoints may allow requests without one.' });
-  panel.append(el('label', { text: 'ENDPOINT' }), endpoint, el('label', { text: 'MODELS · ONE ID PER LINE' }), models, el('label', { text: 'ACTIVE MODEL' }), selected, el('label', { text: 'API KEY' }), apiKey, el('label', { text: 'PASSPHRASE' }), passphrase, status);
+  const fields = el('fieldset', { class: 'ai-settings-fields' });
+  fields.disabled = !aiFeaturesEnabled;
+  fields.append(el('label', { text: 'ENDPOINT' }), endpoint, el('label', { text: 'MODELS · ONE ID PER LINE' }), models, el('label', { text: 'ACTIVE MODEL' }), selected, el('label', { text: 'API KEY' }), apiKey, el('label', { text: 'PASSPHRASE' }), passphrase, status);
   const controls = el('div', { class: 'ai-actions' });
-  controls.append(button('Save settings', async () => {
+  controls.append(button('Save AI settings', () => {
     try {
       const ids = models.value.split(/\r?\n/).map((id) => id.trim()).filter(Boolean);
       if (!ids.length) throw new Error('Add at least one model ID.');
       if (!selected.value.trim()) selected.value = ids[0];
       if (!ids.includes(selected.value.trim())) throw new Error('Select a model from the list.');
-      let secret = loadModelSettings().secret;
-      if (apiKey.value) secret = await encryptApiKey(apiKey.value, passphrase.value);
-      saveModelSettings({ endpoint: endpoint.value, models: ids, selectedModel: selected.value.trim(), secret });
-      apiKey.value = ''; passphrase.value = '';
-      status.textContent = 'Settings saved locally.';
-      announce('Model settings saved.');
+      saveModelSettings({ endpoint: endpoint.value, models: ids, selectedModel: selected.value.trim(), secret: loadModelSettings().secret });
+      status.textContent = 'AI endpoint and model settings saved locally.';
+      announce('AI settings saved.');
     } catch (error) { status.textContent = error.message; }
   }, 'panel-action'));
+  controls.append(button('Store & unlock key', async () => {
+    try {
+      const secret = await encryptApiKey(apiKey.value, passphrase.value);
+      saveModelSecret(secret);
+      apiKey.value = ''; passphrase.value = '';
+      status.textContent = 'Key encrypted, stored, and unlocked for this tab.';
+      announce('API key stored and unlocked.');
+    } catch (error) { status.textContent = error.message; }
+  }, 'panel-secondary'));
   controls.append(button('Unlock key', async () => {
-    try { await unlockApiKey(loadModelSettings().secret, passphrase.value); passphrase.value = ''; status.textContent = 'Key unlocked for this tab.'; }
+    try { await unlockApiKey(loadModelSettings().secret, passphrase.value); passphrase.value = ''; status.textContent = 'Key unlocked for this tab. AI requests are ready.'; announce('API key unlocked.'); }
     catch (error) { status.textContent = error.message; }
   }, 'panel-secondary'));
   controls.append(button('Lock key', () => { lockApiKey(); status.textContent = 'Key locked.'; }, 'panel-secondary'));
   controls.append(button('Remove key', () => {
-    try { const next = loadModelSettings(); next.secret = null; saveModelSettings(next); lockApiKey(); apiKey.value = ''; status.textContent = 'Stored key removed.'; }
+    try { saveModelSecret(null); lockApiKey(); apiKey.value = ''; passphrase.value = ''; status.textContent = 'Stored key removed.'; }
     catch (error) { status.textContent = error.message; }
   }, 'panel-secondary'));
-  panel.append(controls, el('p', { class: 'ai-muted', text: 'The endpoint and model IDs are stored in browser storage. Your key is stored only as AES-GCM ciphertext; losing the passphrase means replacing the key. Browser site data can be cleared to remove settings. Use a trusted endpoint that permits browser CORS requests.' }));
-  if (container) container.append(panel);
-  else { overlay.append(panel); document.body.append(overlay); endpoint.focus(); }
+  fields.append(controls, el('p', { class: 'ai-muted', text: 'The endpoint and model IDs are stored in browser storage. Your key is stored only as AES-GCM ciphertext; losing the passphrase means replacing the key. Browser site data can be cleared to remove settings. Use a trusted endpoint that permits browser CORS requests.' }));
+  content.append(fields);
+  overlay.append(panel); document.body.append(overlay); (aiFeaturesEnabled ? endpoint : master).focus();
 }
 
 function chatList() { return state.chats[currentId] ||= []; }
@@ -3052,7 +3166,7 @@ function newChat(seed = {}) {
 }
 
 function openAiPanel(seed = null) {
-  if (!work()) return;
+  if (!work() || !aiFeaturesEnabled) return;
   // Opening Chat from any entry point also closes Sources, not just the
   // top-right toggle, so there can only be one workspace panel visible.
   openSourceId = null;
@@ -3300,7 +3414,7 @@ function renderChatComposer(panel, item, chat, snapshot, picker) {
   const unavailable = !settings.models.length || !!(settings.secret && !getApiKey());
   if (unavailable) panel.append(el('div', { class: 'chat-config-notice' },
     el('span', { text: !settings.models.length ? 'Choose an endpoint and model to start chatting.' : 'Unlock your API key to continue chatting.' }),
-    button('Model settings', () => { aiPanel.tab = 'settings'; renderAiPanel(); }, 'chat-text-button')));
+    button('Open Settings', renderSettings, 'chat-text-button')));
   if (snapshot.size > MAX_CONTEXT_CHARS) panel.append(el('p', { class: 'ai-error chat-error', text: 'Context is too large. Choose a smaller scope before sending.' }));
   if (aiPanel.error) panel.append(el('p', { class: 'ai-error chat-error', role: 'alert', text: aiPanel.error }));
   const form = el('form', { class: 'ai-chat-composer' });
@@ -3345,7 +3459,7 @@ function renderChatComposer(panel, item, chat, snapshot, picker) {
     const selected = contextSnapshot(work(), effectiveChatContext(chat));
     if (selected.size > MAX_CONTEXT_CHARS) { aiPanel.error = 'Context is too large. Deselect items before sending.'; renderAiPanel(); return; }
     const config = loadModelSettings();
-    if (!config.models.length || (config.secret && !getApiKey())) { aiPanel.tab = 'settings'; renderAiPanel(); return; }
+    if (!config.models.length || (config.secret && !getApiKey())) { renderSettings(); return; }
     const scope = aiPanel, workspaceId = item.id, chatId = chat.id;
     const prior = chat.messages.filter((message) => message.role === 'user' || message.role === 'assistant').map((message) => ({ role: message.role, content: message.content }));
     const userMessage = { id: crypto.randomUUID(), role: 'user', content: question, contextSnapshot: selected, createdAt: new Date().toISOString() };
@@ -3623,17 +3737,16 @@ function renderAiPanel() {
   } else {
     left.append(button('←', () => navigate('chat'), 'chat-header-icon', { 'aria-label': 'Back to chat', title: 'Back to chat' }));
   }
-  left.append(el('h2', { text: aiPanel.tab === 'chat' ? chat.title : aiPanel.tab === 'history' ? 'Chat history' : 'Model settings' }));
+  left.append(el('h2', { text: aiPanel.tab === 'chat' ? chat.title : 'Chat history' }));
   const actions = el('div', { class: 'chat-heading-actions' });
   if (aiPanel.tab === 'chat') {
     actions.append(button('＋', () => newChat(), 'chat-header-icon', { 'aria-label': 'New chat', title: 'New chat' }),
-      button('⚙', () => navigate('settings'), 'chat-header-icon', { 'aria-label': 'Model settings', title: 'Model settings' }));
+      button('⚙', renderSettings, 'chat-header-icon', { 'aria-label': 'Open Settings', title: 'Open Settings' }));
   }
   actions.append(button('×', () => { aiPanel = null; renderWorkspace(); }, 'panel-close', { 'aria-label': 'Close chat' }));
   heading.append(left, actions);
   panel.append(heading);
-  if (aiPanel.tab === 'settings') renderSettings(panel);
-  else if (aiPanel.tab === 'history') {
+  if (aiPanel.tab === 'history') {
     const list = el('div', { class: 'chat-history-list' });
     list.append(button('＋ New chat', () => newChat(), 'chat-new-button'));
     for (const entry of [...chatList()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) {
@@ -3652,6 +3765,8 @@ function renderAiPanel() {
 
 document.addEventListener('keydown', (event) => {
   const key = event.key.toLowerCase(), mod = event.metaKey || event.ctrlKey;
+  if (event.key === 'Escape' && document.querySelector('.project-guide-overlay')) { event.preventDefault(); document.querySelector('.project-guide-overlay').remove(); return; }
+  if (event.key === 'Escape' && document.querySelector('.model-settings-overlay')) { event.preventDefault(); document.querySelector('.model-settings-overlay').remove(); return; }
   if (event.key === 'Escape' && document.querySelector('.save-menu')) { event.preventDefault(); closeSaveMenu(); return; }
   if (event.key === 'Escape' && document.querySelector('.document-menu')) { event.preventDefault(); closeDocumentMenu(); return; }
   if (mod && key === 's') { event.preventDefault(); saveNow(); return; }

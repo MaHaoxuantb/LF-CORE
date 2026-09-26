@@ -203,12 +203,14 @@ test('old saved workspaces gain empty source and highlight collections without l
   const workspace = createWorkspace('Old');
   delete workspace.sources;
   delete workspace.highlights;
+  delete workspace.accentColor;
   workspace.nodes.push({ id: 'n', title: 'Existing node' });
   const state = emptyState(); state.workspaces.push(workspace);
   saveState(state, storage);
   const reopened = loadState(storage).workspaces[0];
   assert.deepEqual(reopened.sources, []);
   assert.deepEqual(reopened.highlights, []);
+  assert.equal(reopened.accentColor, 'gold');
   assert.deepEqual(reopened.nodes[0].sourceRefs, []);
 });
 

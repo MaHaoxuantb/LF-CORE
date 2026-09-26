@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
-import { completionUrl, encryptApiKey, unlockApiKey, getApiKey, lockApiKey, saveModelSettings, loadModelSettings } from '../src/model-settings.js';
+import { completionUrl, encryptApiKey, unlockApiKey, getApiKey, lockApiKey, saveModelSettings, saveModelSecret, loadModelSettings } from '../src/model-settings.js';
 import { complete, generateArticle, askModel, partialChatReply, proposeInsertion } from '../src/ai.js';
 
 globalThis.crypto ||= webcrypto;
@@ -14,7 +14,20 @@ test('settings keep only encrypted key material; unlocking is session scoped', a
   assert.ok(!JSON.stringify([...data]).includes('sk-private-example'));
   lockApiKey(); assert.equal(getApiKey(), '');
   await assert.rejects(unlockApiKey(loadModelSettings(storage).secret, 'wrong passphrase'));
+  await assert.rejects(unlockApiKey(loadModelSettings(storage).secret, ''), /Enter the passphrase/);
   assert.equal(await unlockApiKey(secret, 'a strong passphrase'), 'sk-private-example');
+  lockApiKey();
+});
+
+test('an encrypted key can be stored before model configuration and unlocked later', async () => {
+  const data = new Map();
+  const storage = { setItem: (key, value) => data.set(key, value), getItem: (key) => data.get(key) };
+  const secret = await encryptApiKey('sk-first', 'another strong passphrase');
+  saveModelSecret(secret, storage);
+  lockApiKey();
+  assert.equal(await unlockApiKey(loadModelSettings(storage).secret, 'another strong passphrase'), 'sk-first');
+  saveModelSecret(null, storage);
+  assert.equal(loadModelSettings(storage).secret, null);
   lockApiKey();
 });
 

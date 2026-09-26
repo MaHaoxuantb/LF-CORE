@@ -3,6 +3,7 @@ export const SAVE_MODE_KEY = 'learning-canvas:save-mode-v1';
 const MARKDOWN_KEY = 'learning-canvas:markdown-v3';
 const CANVAS_KEY = 'learning-canvas:canvas-v2';
 const FIRST_KEY = 'learning-canvas:v1';
+const PROJECT_ACCENTS = ['gold', 'gold-bright', 'blue'];
 
 export function emptyState() { return { version: 4, workspaces: [], history: {}, redo: {}, chats: {} }; }
 
@@ -11,7 +12,7 @@ export function createWorkspace(title, markdown = '') {
   const name = title.trim() || 'Untitled workspace';
   const now = new Date().toISOString();
   return {
-    id, title: name, createdAt: now, updatedAt: now,
+    id, title: name, createdAt: now, updatedAt: now, accentColor: 'gold',
     article: { id: crypto.randomUUID(), revision: 1, markdown: markdown || `# ${name}\n\n` },
     nodes: [], highlights: [], edges: [], sources: [],
     research: { questions: [], findings: [], comparisons: [], closeouts: [] },
@@ -53,6 +54,7 @@ function migrateWorkspace(old) {
 }
 
 function normalizeWorkspace(work) {
+  if (!PROJECT_ACCENTS.includes(work.accentColor)) work.accentColor = 'gold';
   work.sources ||= [];
   work.highlights ||= [];
   work.research ||= {};

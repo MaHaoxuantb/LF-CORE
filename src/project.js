@@ -83,11 +83,12 @@ export function parseProject(serialized, { uuid = () => crypto.randomUUID(), now
   assertObject(bundle, 'This is not a valid LinecoFlow project file.');
   if (bundle.format !== PROJECT_FORMAT || bundle.version !== PROJECT_VERSION) throw new Error('This project file uses an unsupported format or version.');
   assertObject(bundle.project, 'This project file is missing its project data.');
-  assertObject(bundle.project.workspace, 'This project file is missing its canvas.');
+  assertObject(bundle.project.workspace, 'This project file is missing its project content.');
   const workspace = structuredClone(bundle.project.workspace);
   if (typeof workspace.title !== 'string' || !workspace.article || typeof workspace.article.markdown !== 'string' || !Array.isArray(workspace.nodes) || !Array.isArray(workspace.sources)) {
-    throw new Error('This project file contains invalid canvas data.');
+    throw new Error('This project file contains invalid project data.');
   }
+  if (!['gold', 'gold-bright', 'blue'].includes(workspace.accentColor)) workspace.accentColor = 'gold';
   const files = bundle.files ?? {};
   assertObject(files, 'This project file contains invalid embedded files.');
   const pdfs = [];

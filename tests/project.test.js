@@ -5,6 +5,7 @@ import { parseProject, projectFileName, serializeProject } from '../src/project.
 
 test('a project round trip preserves content and remaps storage identities', () => {
   const workspace = createWorkspace('Ocean / currents', '# Ocean currents\n\nNotes.');
+  workspace.accentColor = 'blue';
   workspace.sources.push({ id: 'pdf-old', type: 'pdf', title: 'Reader', fileName: 'reader.pdf', pages: 2 });
   workspace.nodes.push({ id: 'node-1', document: { type: 'markdown', markdown: '# Gyres' }, sourceRefs: [{ sourceId: 'pdf-old', anchor: { targetId: 'pdf-old', quote: 'water' } }] });
   workspace.nodes.push({ id: 'source-node-1', document: { type: 'source', sourceId: 'pdf-old' }, sourceRefs: [] });
@@ -22,6 +23,7 @@ test('a project round trip preserves content and remaps storage identities', () 
   assert.deepEqual(imported.workspace.research.findings[0].sourceIds, ['pdf-new']);
   assert.deepEqual(imported.pdfs[0], { id: 'pdf-new', bytes: new Uint8Array([37, 80, 68, 70]) });
   assert.equal(imported.chats[0].title, 'Question');
+  assert.equal(imported.workspace.accentColor, 'blue');
   assert.equal(workspace.id === imported.workspace.id, false);
 });
 

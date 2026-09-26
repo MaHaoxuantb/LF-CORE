@@ -27,6 +27,12 @@ export function saveModelSettings(settings, storage = localStorage) {
   return { ...settings, models, selectedModel };
 }
 
+export function saveModelSecret(secret, storage = localStorage) {
+  const settings = loadModelSettings(storage);
+  storage.setItem(MODEL_SETTINGS_KEY, JSON.stringify({ ...settings, secret: secret || null }));
+  return { ...settings, secret: secret || null };
+}
+
 const bytes = (array) => Array.from(array, (n) => n.toString(16).padStart(2, '0')).join('');
 const fromHex = (hex) => new Uint8Array(hex.match(/.{2}/g)?.map((part) => parseInt(part, 16)) || []);
 async function derive(passphrase, salt) {
@@ -45,6 +51,7 @@ export async function encryptApiKey(key, passphrase) {
 
 export async function unlockApiKey(secret, passphrase) {
   if (!secret || secret.version !== 1) throw new Error('No stored key to unlock.');
+  if (!passphrase) throw new Error('Enter the passphrase used when the key was stored.');
   try {
     const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromHex(secret.iv) }, await derive(passphrase, fromHex(secret.salt)), fromHex(secret.ciphertext));
     unlockedKey = new TextDecoder().decode(plaintext);
