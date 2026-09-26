@@ -1,7 +1,7 @@
 import { makeAnchor, resolveAnchor, selectionOffsets } from './anchors.js';
 import { createWorkspace, emptyState, loadSaveMode, loadState, saveSaveMode, saveStateWithQuotaRecovery, snapshotWorkspace } from './storage.js';
 import { renderMarkdown, headingTokens, wrapMarkdownHighlight, unwrapMarkdownHighlight } from './markdown.js';
-import { nodeLabel } from './node-content.js';
+import { isSourceNode, nodeLabel, sourceNode } from './node-content.js';
 import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
 import { putPdf, getPdf, deletePdf } from './source-store.js';
 import { connectionPort, crossConnectionRoute, nearestConnectionSide, snappedConnectionSides } from './cross-connection.js';
@@ -106,6 +106,7 @@ let currentId = null, selectedId = null, selectedIds = new Set(), editingMarkdow
 let activeConnection = null;
 let openSourceId = null, sourcePage = 1, sourceJump = null;
 const pdfDocuments = new Map();
+const pdfNodePages = new Map();
 const pendingPdfDeletes = new Set();
 let selectedPassage = null, editGroup = null, view = { x: 0, y: 0, zoom: 1 };
 let viewTimer = null, toastTimer = null;
@@ -440,6 +441,16 @@ function suggestedPosition(item, parentId, index = item.nodes.length) {
   return { x: side > 0 ? 760 : -380, y: 22 + sideCount * 154 };
 }
 
+function addPdfSourceNode(item, source, preferredPosition = null) {
+  if (!source || source.type !== 'pdf') return null;
+  const existing = item.nodes.find((node) => isSourceNode(node) && node.document.sourceId === source.id);
+  if (existing) return existing;
+  const node = sourceNode(source);
+  item.nodes.push(node);
+  item.layout.positions[node.id] = preferredPosition || suggestedPosition(item, null, item.nodes.length - 1);
+  return node;
+}
+
 function positionAtCanvasPoint(clientX, clientY) {
   const scene = document.querySelector('.scene');
   if (!scene || !view.zoom) return null;
@@ -470,7 +481,10 @@ async function pdfSource(file, id = crypto.randomUUID(), expectedChecksum = null
 
 function startWorkspace(title, source = null, generate = false) {
   const item = createWorkspace(title, `# ${title.trim() || 'Untitled workspace'}\n\n## Working notes\n\n`);
-  if (source) item.sources.push(source);
+  if (source) {
+    item.sources.push(source);
+    addPdfSourceNode(item, source);
+  }
   state.workspaces.unshift(item); state.history[item.id] = [];
   persist(); openWorkspace(item.id);
   if (source) openSource(source.id);
@@ -592,6 +606,7 @@ function deleteWorkspace(id) {
   const item = state.workspaces.find((entry) => entry.id === id);
   if (!item || !window.confirm(`Delete “${item.title}” and all its connected nodes? This cannot be undone.`)) return;
   for (const source of item.sources || []) if (source.type === 'pdf') pendingPdfDeletes.add(source.id);
+  for (const node of item.nodes || []) pdfNodePages.delete(node.id);
   state.workspaces = state.workspaces.filter((entry) => entry.id !== id);
   delete state.history[id]; delete state.redo[id]; delete state.chats[id];
   persist(); renderHome();
@@ -620,7 +635,7 @@ function attachExampleAnchors(item) {
   const text = markdownPlainText(item.article.markdown);
   let changed = false;
   for (const node of item.nodes) {
-    const label = nodeLabel(node);
+    const label = nodeLabel(node, item.sources);
     if (node.anchor || node.parentId || !Object.hasOwn(examplePassages, label)) continue;
     const quote = examplePassages[label], start = text.indexOf(quote);
     if (start < 0) continue;
@@ -842,6 +857,11 @@ function panToEditingTarget(fromView = null) {
 function enterEditingMode(targetId) {
   const item = work();
   if (!item || graphFocus || (targetId !== 'article' && !item.nodes.some((node) => node.id === targetId))) return false;
+  const targetNode = targetId === 'article' ? null : item.nodes.find((node) => node.id === targetId);
+  if (targetNode && isSourceNode(targetNode)) {
+    openSource(targetNode.document.sourceId);
+    return false;
+  }
   if (editingTarget === targetId) {
     activeMarkdownEditor()?.focus();
     return true;
@@ -1147,7 +1167,7 @@ function renderGraphFocusToolbar(item) {
   const applyDepth = () => updateGraphFocus({ depth: depth.value });
   depth.addEventListener('change', applyDepth);
   toolbar.append(
-    el('span', { class: 'graph-focus-label', text: `Focused: ${root ? nodeLabel(root) : 'node'}`, title: root ? nodeLabel(root) : '' }),
+    el('span', { class: 'graph-focus-label', text: `Focused: ${root ? nodeLabel(root, item.sources) : 'node'}`, title: root ? nodeLabel(root, item.sources) : '' }),
     mode,
     el('label', { class: 'graph-focus-depth' }, el('span', { text: 'Depth' }), depth),
     button('×', exitGraphFocus, 'graph-focus-exit', { 'aria-label': 'Exit related-node focus', title: 'Exit focus · Space or Escape' })
@@ -1265,16 +1285,17 @@ function openContextMenu(target, x, y) {
   const passage = selectedPassage;
   const floatingPosition = positionAtCanvasPoint(x, y);
   if (!group && !node && (selectedId || selectedIds.size)) { selectedId = null; selectedIds.clear(); renderWorkspace(); }
-  const menu = el('div', { class: 'context-menu', role: 'menu', 'aria-label': group ? 'Selection options' : node ? `${nodeLabel(node)} options` : onPaper ? 'Document options' : 'Canvas options' });
+  const menu = el('div', { class: 'context-menu', role: 'menu', 'aria-label': group ? 'Selection options' : node ? `${nodeLabel(node, item.sources)} options` : onPaper ? 'Document options' : 'Canvas options' });
   const option = (label, action, destructive = false) => menu.append(button(label, () => { closeContextMenu(); action(); }, `context-option ${destructive ? 'destructive' : ''}`, { role: 'menuitem' }));
   if (group) {
     if (!graphIsReadOnly()) option('Delete selected nodes', () => removeNodes([...selectedIds]), true);
   } else if (node) {
     option('Show node actions', () => selectNode(node.id));
-    option('Chat with node', () => openAiPanel({ targetId: node.id }));
+    if (isSourceNode(node)) option('Open PDF source', () => openSource(node.document.sourceId));
+    else option('Chat with node', () => openAiPanel({ targetId: node.id }));
     if (!graphIsReadOnly()) {
-      option('Edit content on canvas', () => beginNodeMarkdownEdit(node.id));
-      if (passage?.targetId === node.id) option('Create node from highlight', () => { selectedPassage = passage; createAnchoredNode(); });
+      if (!isSourceNode(node)) option('Edit content on canvas', () => beginNodeMarkdownEdit(node.id));
+      if (!isSourceNode(node) && passage?.targetId === node.id) option('Create node from highlight', () => { selectedPassage = passage; createAnchoredNode(); });
       option('Add child', () => addNode(node.id));
       if (siblingPredecessor(item, node.id)) option('Add sibling', () => addSibling(node));
       menu.append(el('div', { class: 'context-separator', role: 'separator' }));
@@ -1738,16 +1759,90 @@ function positionConnectionHandles(item) {
   }
 }
 
+function pdfNodeViewer(node, source, card) {
+  const viewer = el('div', { class: 'pdf-node-viewer', 'aria-label': `${source.title} PDF preview` });
+  const stage = el('div', { class: 'pdf-node-stage' });
+  const pageLabel = el('span', { class: 'pdf-node-page-label' });
+  const previous = button('←', () => showPage(currentPage() - 1), 'pdf-node-page-button', { 'aria-label': 'Previous PDF page' });
+  const next = button('→', () => showPage(currentPage() + 1), 'pdf-node-page-button', { 'aria-label': 'Next PDF page' });
+  let renderVersion = 0;
+
+  const currentPage = () => clamp(pdfNodePages.get(node.id) || 1, 1, source.pages);
+  const updateControls = (page) => {
+    pageLabel.textContent = `${page} / ${source.pages}`;
+    previous.disabled = page <= 1;
+    next.disabled = page >= source.pages;
+  };
+  const showPage = async (requestedPage) => {
+    const pageNumber = clamp(requestedPage, 1, source.pages);
+    pdfNodePages.set(node.id, pageNumber);
+    updateControls(pageNumber);
+    const version = ++renderVersion;
+    stage.replaceChildren(el('div', { class: 'pdf-node-loading', text: 'Rendering page…' }));
+    try {
+      let document = pdfDocuments.get(source.id);
+      if (!document) {
+        const bytes = await getPdf(source.id);
+        if (!bytes) throw new Error('PDF bytes are missing. Open Sources to reattach the file.');
+        document = await getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
+        pdfDocuments.set(source.id, document);
+      }
+      const page = await document.getPage(pageNumber);
+      const base = page.getViewport({ scale: 1 });
+      const measuredWidth = stage.clientWidth || card.clientWidth - 28;
+      const availableWidth = Math.max(180, measuredWidth - 14);
+      const viewport = page.getViewport({ scale: Math.min(1.5, availableWidth / base.width) });
+      const canvas = el('canvas', { 'aria-label': `${source.title}, page ${pageNumber}` });
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.round(viewport.width * ratio);
+      canvas.height = Math.round(viewport.height * ratio);
+      canvas.style.width = `${viewport.width}px`;
+      canvas.style.height = `${viewport.height}px`;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport, transform: ratio === 1 ? undefined : [ratio, 0, 0, ratio, 0, 0] }).promise;
+      if (version === renderVersion && card.isConnected) stage.replaceChildren(canvas);
+    } catch (error) {
+      if (version !== renderVersion || !card.isConnected) return;
+      stage.replaceChildren(el('div', { class: 'pdf-node-error' },
+        el('span', { text: error.message }),
+        button('Open Sources', () => openSource(source.id), 'pdf-node-open-source')));
+    }
+  };
+
+  viewer.append(el('div', { class: 'pdf-node-controls' }, previous, pageLabel, next), stage);
+  card._ensurePdfPreview = () => {
+    if (viewer.dataset.started) return;
+    viewer.dataset.started = 'true';
+    showPage(currentPage());
+  };
+  updateControls(currentPage());
+  return viewer;
+}
+
 function renderNode(node, item) {
   const pos = item.layout.positions[node.id];
-  const label = nodeLabel(node);
+  const label = nodeLabel(node, item.sources);
+  const referencedSource = isSourceNode(node) ? item.sources.find((source) => source.id === node.document.sourceId) : null;
   const isEditing = editingTarget === node.id;
-  const card = el('div', { class: `topic-card ${selectedId === node.id || selectedIds.has(node.id) ? 'selected' : ''} ${focusNodeClass(node.id)} ${isEditing ? 'editing-node-content editing-focus-target' : ''}`.trim(), 'data-node': node.id, tabindex: '0', role: 'button', 'aria-label': label });
+  const card = el('div', { class: `topic-card ${isSourceNode(node) ? 'source-node' : ''} ${selectedId === node.id || selectedIds.has(node.id) ? 'selected' : ''} ${focusNodeClass(node.id)} ${isEditing ? 'editing-node-content editing-focus-target' : ''}`.trim(), 'data-node': node.id, tabindex: '0', role: 'button', 'aria-label': label });
   const size = pointFor(item, node.id);
   card.style.left = `${pos.x}px`; card.style.top = `${pos.y}px`; card.style.width = `${size.width}px`; card.style.height = `${size.height}px`;
   applyNodeSizeClass(card, size.width, size.height);
-  const content = el('div', { class: `node-content ${isEditing ? '' : 'markdown-preview'}`.trim(), 'data-document-id': node.id, tabindex: '0', 'aria-label': `${label} content` });
-  if (isEditing) {
+  const content = el('div', { class: `node-content ${isSourceNode(node) ? 'source-node-content' : isEditing ? '' : 'markdown-preview'}`.trim(), 'data-document-id': node.id, tabindex: '0', 'aria-label': `${label} content` });
+  if (isSourceNode(node)) {
+    const preview = button('', () => referencedSource && openSource(referencedSource.id), 'pdf-node-preview', {
+      'aria-label': referencedSource ? `Open PDF source ${label}` : 'PDF source is missing',
+      ...(referencedSource ? {} : { disabled: '' })
+    });
+    preview.append(
+      el('span', { class: 'pdf-node-icon', 'aria-hidden': 'true', text: 'PDF' }),
+      el('span', { class: 'pdf-node-copy' },
+        el('strong', { text: label }),
+        el('small', { text: referencedSource ? `${referencedSource.pages} page PDF · stored in Sources` : 'The referenced source is missing' })),
+      el('span', { class: 'pdf-node-open', 'aria-hidden': 'true', text: '↗' })
+    );
+    content.append(preview);
+    if (referencedSource) content.append(pdfNodeViewer(node, referencedSource, card));
+  } else if (isEditing) {
     const editor = el('textarea', { class: 'node-markdown-editor', 'aria-label': `${label} Markdown`, spellcheck: 'true' });
     editor.value = node.document?.markdown || '';
     editor.addEventListener('input', () => {
@@ -1785,6 +1880,7 @@ function renderNode(node, item) {
   if (link) card.append(link);
   if (resize) card.append(resize);
   if (selectedId === node.id && !graphFocus && !editingTarget) card.append(renderNodeActions(node, item));
+  if (card.classList.contains('pdf-content-visible')) queueMicrotask(() => card._ensurePdfPreview?.());
   card.addEventListener('pointerdown', (event) => {
     if (event.button !== 0 || event.target.closest('.node-content, .anchor-mark, button, input')) return;
     startNodeDrag(event, node, card);
@@ -1800,15 +1896,17 @@ function renderNode(node, item) {
 }
 
 function renderNodeActions(node, item) {
-  const toolbar = el('div', { class: 'node-actions', role: 'toolbar', 'aria-label': `${nodeLabel(node)} actions` });
+  const toolbar = el('div', { class: 'node-actions', role: 'toolbar', 'aria-label': `${nodeLabel(node, item.sources)} actions` });
+  const referencedSource = isSourceNode(node) ? item.sources.find((source) => source.id === node.document.sourceId) : null;
   const canAddSibling = !!siblingPredecessor(item, node.id);
   const primary = el('div', { class: 'node-actions-row' },
+    ...(isSourceNode(node) && referencedSource ? [button('Open PDF', () => openSource(referencedSource.id), 'node-action primary')] : []),
     ...(graphIsReadOnly() ? [] : [
-      button('Edit', () => beginNodeMarkdownEdit(node.id), 'node-action primary', { title: 'Edit Markdown on the card' }),
+      ...(!isSourceNode(node) ? [button('Edit', () => beginNodeMarkdownEdit(node.id), 'node-action primary', { title: 'Edit Markdown on the card' })] : []),
       button('＋ Child', () => addNode(node.id), 'node-action'),
       ...(canAddSibling ? [button('＋ Sibling', () => addSibling(node), 'node-action')] : []),
     ]),
-    button('Chat', () => openAiPanel({ targetId: node.id }), 'node-action'));
+    ...(!isSourceNode(node) ? [button('Chat', () => openAiPanel({ targetId: node.id }), 'node-action')] : []));
   toolbar.append(primary);
 
   const contextual = el('div', { class: 'node-actions-row secondary' });
@@ -1855,7 +1953,7 @@ function openLinkMenu(sourceId, grip) {
   closeContextMenu();
   const item = work();
   const candidates = [
-    ...item.nodes.map((node) => ({ id: node.id, title: nodeLabel(node) })),
+    ...item.nodes.map((node) => ({ id: node.id, title: nodeLabel(node, item.sources) })),
     ...item.highlights.map((highlight) => ({ id: `h:${highlight.id}`, title: `“${shortTitle(highlight.quote)}”` })),
   ];
   const available = candidates.filter((candidate) => candidate.id !== sourceId &&
@@ -1970,6 +2068,9 @@ function startEdgeDrag(event, node, grip, preserveClick = false, prepareSource =
 function applyNodeSizeClass(card, width, height) {
   const expanded = width >= 280 || height >= 180;
   card.classList.toggle('expanded', expanded);
+  const showPdfContent = card.classList.contains('source-node') && width >= 320 && height >= 260;
+  card.classList.toggle('pdf-content-visible', showPdfContent);
+  if (showPdfContent) queueMicrotask(() => card._ensurePdfPreview?.());
 }
 
 function updateCardOverflow(card) {
@@ -1978,6 +2079,7 @@ function updateCardOverflow(card) {
 }
 
 function maximumNodeHeight(card, width) {
+  if (card.classList.contains('source-node')) return 920;
   const content = card.querySelector('.node-content');
   if (!content) return NODE_SIZE_LIMITS.minHeight;
   const editor = content.querySelector('.node-markdown-editor');
@@ -2263,6 +2365,7 @@ function removeNodes(ids) {
   const item = work(); if (!item) return;
   const roots = ids.map((id) => item.nodes.find((entry) => entry.id === id)).filter(Boolean);
   if (!roots.length) return;
+  const removedSourceNodes = roots.filter((node) => isSourceNode(node)).length;
   const removed = new Set(roots.map((node) => node.id));
   let growing = true;
   while (growing) {
@@ -2276,9 +2379,10 @@ function removeNodes(ids) {
     entry.edges = entry.edges.filter((edge) => !removed.has(edge.fromId) && !removed.has(edge.toId) && !removedHighlights.has(edge.fromId) && !removedHighlights.has(edge.toId));
     for (const nodeId of removed) { delete entry.layout.positions[nodeId]; delete entry.layout.sizes[nodeId]; }
   });
+  for (const nodeId of removed) pdfNodePages.delete(nodeId);
   selectedId = roots.length === 1 && !removed.has(roots[0].parentId) ? roots[0].parentId : null;
   selectedIds.clear(); selectedPassage = null;
-  renderWorkspace(); announce(`${removed.size} node${removed.size === 1 ? '' : 's'} deleted. Undo is available.`);
+  renderWorkspace(); announce(`${removed.size} node${removed.size === 1 ? '' : 's'} deleted. Undo is available.${removedSourceNodes ? ' The PDF remains in Sources.' : ''}`);
 }
 
 function openSource(id, page = 1, anchor = null) {
@@ -2346,13 +2450,28 @@ function sourceSelectionActions(source, page, textRoot, actions) {
     el('span', { class: 'source-selection-quote', text: `“${shortTitle(reference.anchor.quote)}”` }),
     button('Create node', () => createNodeFromSource(reference), 'panel-action'),
   );
-  const nodes = work()?.nodes || [];
+  const nodes = (work()?.nodes || []).filter((node) => !isSourceNode(node));
   if (nodes.length) {
     const chooser = el('select', { 'aria-label': 'Node to attach passage to' });
-    for (const node of nodes) chooser.append(el('option', { value: node.id, text: nodeLabel(node) }));
+    for (const node of nodes) chooser.append(el('option', { value: node.id, text: nodeLabel(node, work()?.sources || []) }));
     if (selectedId) chooser.value = selectedId;
     actions.append(chooser, button('Attach passage', () => attachSourceReference(chooser.value, reference), 'panel-secondary'));
   }
+}
+
+function showPdfSourceNode(source) {
+  const item = work();
+  if (!item || source?.type !== 'pdf') return;
+  let node = item.nodes.find((entry) => isSourceNode(entry) && entry.document.sourceId === source.id);
+  if (!node) {
+    change((entry) => { node = addPdfSourceNode(entry, source); }, { rerender: false });
+    announce('PDF source added to the canvas.');
+  }
+  openSourceId = null;
+  selectedId = node.id;
+  selectedIds.clear();
+  renderWorkspace();
+  focusNode(node.id);
 }
 
 function textRangeAt(root, start, end) {
@@ -2402,7 +2521,11 @@ function renderSourcesPanel(item) {
   const addPdf = el('input', { type: 'file', accept: '.pdf,application/pdf', 'aria-label': 'Import PDF', class: 'source-file-input' });
   addPdf.addEventListener('change', async () => {
     if (!addPdf.files?.[0]) return;
-    try { const source = await pdfSource(addPdf.files[0]); change((entry) => { entry.sources ||= []; entry.sources.push(source); }); openSource(source.id); }
+    try {
+      const source = await pdfSource(addPdf.files[0]);
+      change((entry) => { entry.sources ||= []; entry.sources.push(source); addPdfSourceNode(entry, source); });
+      openSource(source.id);
+    }
     catch (error) { announce(`PDF import failed: ${error.message}`); }
   });
   sidebar.append(el('div', { class: 'source-add-heading', text: 'ADD SOURCE' }), addText, addPdf);
@@ -2418,7 +2541,12 @@ function renderSourceContent(body, source) {
   const description = source.type === 'pdf' ? `${source.pages} page PDF · stored locally`
     : source.type === 'web' ? `Metadata verified via ${source.discovery?.provider || 'source discovery'} · ${source.publishedAt || 'date unknown'}`
       : 'Pasted text · stored locally';
-  body.append(el('div', { class: 'source-reader-heading' }, el('strong', { text: source.title }), el('small', { text: description })));
+  const heading = el('div', { class: 'source-reader-heading' }, el('strong', { text: source.title }), el('small', { text: description }));
+  if (source.type === 'pdf') {
+    const onCanvas = work()?.nodes.some((node) => isSourceNode(node) && node.document.sourceId === source.id);
+    heading.append(button(onCanvas ? 'Show on canvas' : 'Add to canvas', () => showPdfSourceNode(source), 'panel-secondary source-canvas-action'));
+  }
+  body.append(heading);
   const actions = el('div', { class: 'source-selection-actions', 'aria-live': 'polite' });
   body.append(actions);
   if (source.type === 'web') {
@@ -2906,10 +3034,14 @@ function chatList() { return state.chats[currentId] ||= []; }
 function currentChat() { return chatList().find((chat) => chat.id === aiPanel?.chatId); }
 
 function newChat(seed = {}) {
-  const nodeIds = seed.targetId && seed.targetId !== 'article' ? [seed.targetId]
+  const requestedNodeIds = seed.targetId && seed.targetId !== 'article' ? [seed.targetId]
     : selectedIds.size ? [...selectedIds] : selectedId ? [selectedId] : [];
-  const mode = seed.targetId === 'article' || (!seed.targetId && !nodeIds.length) ? 'article' : 'selected';
-  const passage = seed.quote && seed.targetId ? { targetId: seed.targetId, quote: seed.quote } : null;
+  const nodeIds = requestedNodeIds.filter((id) => {
+    const node = work()?.nodes.find((entry) => entry.id === id);
+    return node && !isSourceNode(node);
+  });
+  const mode = seed.targetId === 'article' || !nodeIds.length ? 'article' : 'selected';
+  const passage = seed.quote && (seed.targetId === 'article' || nodeIds.includes(seed.targetId)) ? { targetId: seed.targetId, quote: seed.quote } : null;
   const now = new Date().toISOString();
   const chat = { id: crypto.randomUUID(), title: 'New chat', createdAt: now, updatedAt: now,
     context: { mode, nodeIds, passage }, messages: [] };
@@ -2951,7 +3083,11 @@ function changeChatContext(update) {
 }
 
 function liveSelectedNodeIds() {
-  return selectedId ? [selectedId] : [...selectedIds];
+  const ids = selectedId ? [selectedId] : [...selectedIds];
+  return ids.filter((id) => {
+    const node = work()?.nodes.find((entry) => entry.id === id);
+    return node && !isSourceNode(node);
+  });
 }
 
 function effectiveChatContext(chat) {
@@ -3059,7 +3195,7 @@ function applyChatProposals(proposals, overrides = new Map()) {
 function renderProposalCard(proposal, item) {
   const status = proposalStatus(item, proposal);
   const node = item.nodes.find((entry) => entry.id === proposal.targetId);
-  const target = proposal.targetId === 'article' ? 'Master article' : node ? nodeLabel(node) : 'Removed node';
+  const target = proposal.targetId === 'article' ? 'Master article' : node ? nodeLabel(node, item.sources) : 'Removed node';
   const card = el('div', { class: 'chat-proposal' }, el('div', { class: 'chat-proposal-heading' },
     el('strong', { text: `Proposed edit · ${target}` }), el('span', { text: status === 'accepted' ? 'Applied' : status === 'undone' ? 'Undone' : status === 'discarded' ? 'Discarded' : 'Needs review' })));
   const reviewing = aiPanel.previewId === proposal.id;
@@ -3410,7 +3546,7 @@ function renderResearchQuestions(panel, item) {
 }
 
 function renderResearchCompare(panel, item) {
-  const ideas = [{ id: 'article', title: 'Master article', text: item.article.markdown }, ...item.nodes.map((node) => ({ id: node.id, title: nodeLabel(node), text: node.document?.markdown || '' }))];
+  const ideas = [{ id: 'article', title: 'Master article', text: item.article.markdown }, ...item.nodes.filter((node) => !isSourceNode(node)).map((node) => ({ id: node.id, title: nodeLabel(node, item.sources), text: node.document?.markdown || '' }))];
   const list = el('div', { class: 'research-idea-list' });
   for (const idea of ideas) {
     const checkbox = el('input', { type: 'checkbox', value: idea.id, ...(researchPanel.ideaIds?.has(idea.id) ? { checked: '' } : {}) });

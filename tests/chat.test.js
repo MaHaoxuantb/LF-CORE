@@ -7,9 +7,11 @@ import { emptyState, loadState, saveState, snapshotWorkspace } from '../src/stor
 const workspace = {
   title: 'Plate tectonics',
   article: { markdown: '# Article\n\nOriginal text.', origins: [] },
+  sources: [{ id: 'pdf-a', type: 'pdf', title: 'Reader' }],
   nodes: [
     { id: 'node-a', document: { markdown: '# Evidence\n\nOld evidence.' }, origins: [] },
-    { id: 'node-b', document: { markdown: '# Motion\n\nOld motion.' }, origins: [] }
+    { id: 'node-b', document: { markdown: '# Motion\n\nOld motion.' }, origins: [] },
+    { id: 'source-node', document: { type: 'source', sourceId: 'pdf-a' } }
   ]
 };
 
@@ -37,6 +39,15 @@ test('three context scopes send the article, selected nodes, or the whole worksp
   assert.deepEqual(all.targets.map((target) => target.id), ['article', 'node-a', 'node-b']);
   assert.deepEqual(all.selectedTargetIds, []);
   assert.deepEqual(contextSnapshot(workspace, { article: true, nodeIds: ['node-b'] }).targets.map((target) => target.id), ['article']);
+});
+
+test('PDF source nodes never enter Markdown chat context automatically or as edit targets', () => {
+  const selected = contextSnapshot(workspace, { mode: 'selected', nodeIds: ['source-node'] });
+  const all = contextSnapshot(workspace, { mode: 'all', nodeIds: ['source-node'] });
+  assert.deepEqual(selected.targets, []);
+  assert.deepEqual(selected.selectedTargetIds, []);
+  assert.deepEqual(all.targets.map((target) => target.id), ['article', 'node-a', 'node-b']);
+  assert.doesNotMatch(all.text, /Reader|source-node/);
 });
 
 test('chat edits are limited to selected targets and valid complete Markdown', () => {

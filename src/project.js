@@ -59,6 +59,7 @@ export function serializeProject(workspace, chats = [], pdfBytes = new Map(), ex
 function remapPdfSourceIds(workspace, idMap) {
   for (const source of workspace.sources || []) if (idMap.has(source.id)) source.id = idMap.get(source.id);
   for (const node of workspace.nodes || []) {
+    if (node.document?.type === 'source' && idMap.has(node.document.sourceId)) node.document.sourceId = idMap.get(node.document.sourceId);
     for (const reference of node.sourceRefs || []) {
       if (idMap.has(reference.sourceId)) reference.sourceId = idMap.get(reference.sourceId);
       if (reference.anchor && idMap.has(reference.anchor.targetId)) reference.anchor.targetId = idMap.get(reference.anchor.targetId);

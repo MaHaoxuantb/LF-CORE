@@ -4,10 +4,10 @@ export function contextSnapshot(workspace, selection) {
   const targets = [];
   const mode = selection.mode || (selection.article ? 'article' : 'selected');
   if (mode === 'article' || mode === 'all') targets.push({ id: 'article', title: 'Master article', markdown: workspace.article.markdown });
-  const nodeIds = mode === 'all' ? workspace.nodes.map((node) => node.id) : mode === 'selected' ? selection.nodeIds || [] : [];
+  const nodeIds = mode === 'all' ? workspace.nodes.filter((node) => !isSourceNode(node)).map((node) => node.id) : mode === 'selected' ? selection.nodeIds || [] : [];
   for (const id of [...new Set(nodeIds)]) {
     const node = workspace.nodes.find((entry) => entry.id === id);
-    if (node) targets.push({ id, title: nodeLabel(node), markdown: node.document?.markdown || '' });
+    if (node && !isSourceNode(node)) targets.push({ id, title: nodeLabel(node, workspace.sources), markdown: node.document?.markdown || '' });
   }
   const requestedSelection = mode === 'article' ? ['article'] : selection.nodeIds || [];
   const selectedTargetIds = [...new Set(requestedSelection)].filter((id) => targets.some((target) => target.id === id));
@@ -92,4 +92,4 @@ export function diffMarkdownLines(before, after) {
     afterLine: kind === 'removed' ? null : newNumber++
   }));
 }
-import { nodeLabel } from './node-content.js';
+import { isSourceNode, nodeLabel } from './node-content.js';

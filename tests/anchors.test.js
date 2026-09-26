@@ -4,12 +4,21 @@ import { marked } from 'marked';
 import { makeAnchor, resolveAnchor } from '../src/anchors.js';
 import { createWorkspace, emptyState, loadSaveMode, loadState, saveSaveMode, saveState, saveStateWithQuotaRecovery } from '../src/storage.js';
 import { headingTokens, wrapMarkdownHighlight, unwrapMarkdownHighlight } from '../src/markdown.js';
-import { nodeLabel } from '../src/node-content.js';
+import { isSourceNode, nodeLabel, sourceNode } from '../src/node-content.js';
 
 test('node labels are derived from Markdown, not a separate title', () => {
   assert.equal(nodeLabel({ document: { markdown: '# Plate motion\n\nDetails' } }), 'Plate motion');
   assert.equal(nodeLabel({ document: { markdown: 'A plain note' } }), 'A plain note');
   assert.equal(nodeLabel({ document: { markdown: '' } }), 'Untitled node');
+});
+
+test('PDF source nodes store only a source reference and derive their label from Sources', () => {
+  const source = { id: 'pdf-1', type: 'pdf', title: 'Field guide', pages: 12 };
+  const node = sourceNode(source, 'source-node-1');
+  assert.equal(isSourceNode(node), true);
+  assert.deepEqual(node.document, { type: 'source', sourceId: 'pdf-1' });
+  assert.equal(nodeLabel(node, [source]), 'Field guide');
+  assert.equal(JSON.stringify(node).includes('pages'), false);
 });
 
 test('Markdown highlights use == marks without changing visible anchor text', () => {

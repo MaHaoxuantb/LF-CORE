@@ -7,6 +7,7 @@ test('a project round trip preserves content and remaps storage identities', () 
   const workspace = createWorkspace('Ocean / currents', '# Ocean currents\n\nNotes.');
   workspace.sources.push({ id: 'pdf-old', type: 'pdf', title: 'Reader', fileName: 'reader.pdf', pages: 2 });
   workspace.nodes.push({ id: 'node-1', document: { type: 'markdown', markdown: '# Gyres' }, sourceRefs: [{ sourceId: 'pdf-old', anchor: { targetId: 'pdf-old', quote: 'water' } }] });
+  workspace.nodes.push({ id: 'source-node-1', document: { type: 'source', sourceId: 'pdf-old' }, sourceRefs: [] });
   workspace.research.questions.push({ id: 'q1', text: 'Why?', sourceIds: ['pdf-old'] });
   workspace.research.findings.push({ id: 'f1', sourceIds: ['pdf-old'], status: 'proposed' });
   const serialized = serializeProject(workspace, [{ id: 'chat-1', title: 'Question' }], new Map([['pdf-old', new Uint8Array([37, 80, 68, 70])]]), '2026-09-21T00:00:00.000Z');
@@ -16,6 +17,7 @@ test('a project round trip preserves content and remaps storage identities', () 
   assert.equal(imported.workspace.sources[0].id, 'pdf-new');
   assert.equal(imported.workspace.nodes[0].sourceRefs[0].sourceId, 'pdf-new');
   assert.equal(imported.workspace.nodes[0].sourceRefs[0].anchor.targetId, 'pdf-new');
+  assert.deepEqual(imported.workspace.nodes[1].document, { type: 'source', sourceId: 'pdf-new' });
   assert.deepEqual(imported.workspace.research.questions[0].sourceIds, ['pdf-new']);
   assert.deepEqual(imported.workspace.research.findings[0].sourceIds, ['pdf-new']);
   assert.deepEqual(imported.pdfs[0], { id: 'pdf-new', bytes: new Uint8Array([37, 80, 68, 70]) });
