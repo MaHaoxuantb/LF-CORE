@@ -1086,6 +1086,9 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .toggle-thumb { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px #0003; transition: transform .15s ease; }
 .ai-master-toggle.on .toggle-track { background: var(--lf-gold); }
 .ai-master-toggle.on .toggle-thumb { transform: translateX(16px); }
+.developer-mode-toggle.on { border-color: color-mix(in srgb, #b65b3e 45%, white); background: color-mix(in srgb, #b65b3e 7%, white); }
+.developer-mode-toggle.on .toggle-track { background: #b65b3e; }
+.developer-settings-heading h3 { margin-top: 0; }
 .ai-settings-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
 .ai-settings-fields:disabled { opacity: .48; }
 .model-settings-card .settings-content label { display: block; margin: 13px 0 5px; color: #687486; font-size: .68rem; font-weight: 750; letter-spacing: .07em; }

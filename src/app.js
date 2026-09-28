@@ -5,7 +5,7 @@ import { isSourceNode, nodeLabel, sourceNode } from './node-content.js';
 import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
 import { putPdf, getPdf, deletePdf } from './source-store.js';
 import { connectionPort, crossConnectionRoute, nearestConnectionSide, snappedConnectionSides } from './cross-connection.js';
-import { loadModelSettings, saveModelSettings, saveModelSecret, encryptApiKey, unlockApiKey, getApiKey, lockApiKey } from './model-settings.js';
+import { loadModelSettings, saveModelSettings, saveModelSecret, saveDeveloperMode, encryptApiKey, unlockApiKey, getApiKey, lockApiKey } from './model-settings.js';
 import { chatModel } from './ai.js';
 import { contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, proposalStatus } from './chat.js';
 import { normalizeGraphFocusPreferences, relatedNodeIds } from './graph-focus.js';
@@ -3090,6 +3090,7 @@ function renderSettings(activeTab = 'ai') {
   const tabs = el('nav', { class: 'settings-tabs', 'aria-label': 'Settings sections' });
   tabs.append(
     button('AI Settings', () => renderSettings('ai'), `settings-tab ${activeTab === 'ai' ? 'active' : ''}`, { 'aria-current': activeTab === 'ai' ? 'page' : 'false' }),
+    button('Developer', () => renderSettings('developer'), `settings-tab ${activeTab === 'developer' ? 'active' : ''}`, { 'aria-current': activeTab === 'developer' ? 'page' : 'false' }),
     button('About', () => renderSettings('about'), `settings-tab settings-tab-about ${activeTab === 'about' ? 'active' : ''}`, { 'aria-current': activeTab === 'about' ? 'page' : 'false' }));
   panel.append(el('div', { class: 'settings-heading' }, el('div', {}, el('span', { class: 'settings-kicker', text: 'LF CORE' }), el('h2', { text: 'Settings' })), button('×', close, 'panel-close', { 'aria-label': 'Close settings' })),
     el('div', { class: 'settings-layout' }, tabs, content));
@@ -3110,6 +3111,27 @@ function renderSettings(activeTab = 'ai') {
       el('div', { class: 'about-signature' }, el('span', { text: 'Designed for connected thinking' }), el('strong', { text: 'LinecoFlow Lab' })),
       el('p', { class: 'about-copyright', text: '©2026 LinecoFlow' })));
     overlay.append(panel); document.body.append(overlay); tabs.querySelector('.settings-tab-about').focus();
+    return;
+  }
+
+  if (activeTab === 'developer') {
+    let developerMode = saved.developerMode;
+    const developerToggle = el('button', { type: 'button', class: `ai-master-toggle developer-mode-toggle ${developerMode ? 'on' : ''}`, role: 'switch', 'aria-checked': String(developerMode) },
+      el('span', {}, el('strong', { text: 'Developer mode' }), el('small', { text: developerMode ? 'HTTP model endpoints are allowed. Requests and API keys may travel unencrypted.' : 'Enable only when testing a model endpoint that does not support HTTPS.' })),
+      el('span', { class: 'toggle-track', 'aria-hidden': 'true' }, el('span', { class: 'toggle-thumb' })));
+    developerToggle.addEventListener('click', () => {
+      developerMode = !developerMode;
+      saveDeveloperMode(developerMode);
+      developerToggle.classList.toggle('on', developerMode);
+      developerToggle.setAttribute('aria-checked', String(developerMode));
+      developerToggle.querySelector('small').textContent = developerMode ? 'HTTP model endpoints are allowed. Requests and API keys may travel unencrypted.' : 'Enable only when testing a model endpoint that does not support HTTPS.';
+      announce(`Developer mode ${developerMode ? 'enabled' : 'disabled'}.`);
+    });
+    content.append(
+      el('div', { class: 'settings-section-heading developer-settings-heading' }, el('h3', { text: 'Developer' }), el('p', { text: 'Advanced model connection options for local development and testing.' })),
+      developerToggle,
+      el('p', { class: 'ai-muted', text: 'Developer mode allows non-local HTTP model endpoints. Prefer HTTPS whenever possible. Browsers may still block HTTP requests from an HTTPS-hosted build as mixed content.' }));
+    overlay.append(panel); document.body.append(overlay); developerToggle.focus();
     return;
   }
 
@@ -3142,7 +3164,7 @@ function renderSettings(activeTab = 'ai') {
       if (!ids.length) throw new Error('Add at least one model ID.');
       if (!selected.value.trim()) selected.value = ids[0];
       if (!ids.includes(selected.value.trim())) throw new Error('Select a model from the list.');
-      saveModelSettings({ endpoint: endpoint.value, models: ids, selectedModel: selected.value.trim(), secret: loadModelSettings().secret });
+      saveModelSettings({ endpoint: endpoint.value, models: ids, selectedModel: selected.value.trim(), secret: loadModelSettings().secret, developerMode: loadModelSettings().developerMode });
       status.textContent = 'AI endpoint and model settings saved locally.';
       announce('AI settings saved.');
     } catch (error) { status.textContent = error.message; }

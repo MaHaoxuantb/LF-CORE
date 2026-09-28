@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
-import { completionUrl, encryptApiKey, unlockApiKey, getApiKey, lockApiKey, saveModelSettings, saveModelSecret, loadModelSettings } from '../src/model-settings.js';
+import { completionUrl, encryptApiKey, unlockApiKey, getApiKey, lockApiKey, saveModelSettings, saveModelSecret, saveDeveloperMode, loadModelSettings } from '../src/model-settings.js';
 import { complete, generateArticle, askModel, partialChatReply, proposeInsertion } from '../src/ai.js';
 
 globalThis.crypto ||= webcrypto;
@@ -35,7 +35,22 @@ test('completion endpoint validates transport and preserves compatible paths', (
   assert.equal(completionUrl('https://host.example/v1/'), 'https://host.example/v1/chat/completions');
   assert.equal(completionUrl('http://127.0.0.1:8080/v1/chat/completions'), 'http://127.0.0.1:8080/v1/chat/completions');
   assert.throws(() => completionUrl('http://host.example/v1'));
+  assert.equal(completionUrl('http://host.example/v1', true), 'http://host.example/v1/chat/completions');
   assert.throws(() => completionUrl('https://host.example/v1?key=secret'));
+});
+
+test('developer mode persists and opts model requests into HTTP transport', async () => {
+  const data = new Map();
+  const storage = { setItem: (key, value) => data.set(key, value), getItem: (key) => data.get(key) };
+  saveDeveloperMode(true, storage);
+  const settings = saveModelSettings({ endpoint: 'http://model.lan/v1', models: ['local-model'], selectedModel: '', developerMode: loadModelSettings(storage).developerMode }, storage);
+  assert.equal(loadModelSettings(storage).developerMode, true);
+  let requestedUrl;
+  await complete(settings, '', [], { fetcher: async (url) => {
+    requestedUrl = url;
+    return { ok: true, json: async () => ({ choices: [{ message: { content: 'Ready.' } }] }) };
+  } });
+  assert.equal(requestedUrl, 'http://model.lan/v1/chat/completions');
 });
 
 test('single listed model becomes active when selection is empty', () => {

@@ -83,7 +83,7 @@ export async function complete(settings, key, messages, { signal, fetcher = fetc
   keepAlive();
   signal?.addEventListener('abort', cancel, { once: true });
   try {
-    const response = await fetcher(completionUrl(settings.endpoint), {
+    const response = await fetcher(completionUrl(settings.endpoint, settings.developerMode === true), {
       method: 'POST', mode: 'cors', signal: controller.signal,
       headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) },
       body: JSON.stringify({ model: settings.selectedModel, messages, stream: !!onDelta })

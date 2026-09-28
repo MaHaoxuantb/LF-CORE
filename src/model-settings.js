@@ -1,11 +1,11 @@
 export const MODEL_SETTINGS_KEY = 'learning-canvas:model-settings-v1';
 let unlockedKey = '';
 
-export function completionUrl(value) {
+export function completionUrl(value, allowHttp = false) {
   const url = new URL(value.trim());
   if (url.username || url.password || url.search || url.hash) throw new Error('Use an endpoint without credentials, query, or fragment.');
   const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) throw new Error('Use HTTPS, or HTTP on localhost.');
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && (loopback || allowHttp))) throw new Error('Use HTTPS, HTTP on localhost, or enable Developer mode for another HTTP endpoint.');
   const path = url.pathname.replace(/\/+$/, '');
   url.pathname = path.endsWith('/chat/completions') ? path : `${path || ''}/chat/completions`;
   return url.href;
@@ -13,24 +13,33 @@ export function completionUrl(value) {
 
 export function loadModelSettings(storage = localStorage) {
   const parsed = JSON.parse(storage.getItem(MODEL_SETTINGS_KEY) || 'null');
-  if (!parsed) return { endpoint: 'https://api.openai.com/v1', models: [], selectedModel: '', secret: null };
-  return { endpoint: parsed.endpoint || '', models: Array.isArray(parsed.models) ? parsed.models : [], selectedModel: parsed.selectedModel || '', secret: parsed.secret || null };
+  if (!parsed) return { endpoint: 'https://api.openai.com/v1', models: [], selectedModel: '', secret: null, developerMode: false };
+  return { endpoint: parsed.endpoint || '', models: Array.isArray(parsed.models) ? parsed.models : [], selectedModel: parsed.selectedModel || '', secret: parsed.secret || null, developerMode: parsed.developerMode === true };
 }
 
 export function saveModelSettings(settings, storage = localStorage) {
   const models = [...new Set(settings.models.map((name) => name.trim()).filter(Boolean))];
   if (!models.length) throw new Error('Add at least one model.');
-  completionUrl(settings.endpoint);
+  const developerMode = settings.developerMode === true;
+  completionUrl(settings.endpoint, developerMode);
   const selectedModel = settings.selectedModel?.trim() || models[0];
   if (!models.includes(selectedModel)) throw new Error('The active model must match a model in the list.');
-  storage.setItem(MODEL_SETTINGS_KEY, JSON.stringify({ endpoint: settings.endpoint.trim(), models, selectedModel, secret: settings.secret || null }));
-  return { ...settings, models, selectedModel };
+  const saved = { endpoint: settings.endpoint.trim(), models, selectedModel, secret: settings.secret || null, developerMode };
+  storage.setItem(MODEL_SETTINGS_KEY, JSON.stringify(saved));
+  return saved;
 }
 
 export function saveModelSecret(secret, storage = localStorage) {
   const settings = loadModelSettings(storage);
   storage.setItem(MODEL_SETTINGS_KEY, JSON.stringify({ ...settings, secret: secret || null }));
   return { ...settings, secret: secret || null };
+}
+
+export function saveDeveloperMode(enabled, storage = localStorage) {
+  const settings = loadModelSettings(storage);
+  const developerMode = enabled === true;
+  storage.setItem(MODEL_SETTINGS_KEY, JSON.stringify({ ...settings, developerMode }));
+  return { ...settings, developerMode };
 }
 
 const bytes = (array) => Array.from(array, (n) => n.toString(16).padStart(2, '0')).join('');
