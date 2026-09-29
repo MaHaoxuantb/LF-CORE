@@ -1,5 +1,6 @@
 import { makeAnchor, resolveAnchor, selectionOffsets } from './anchors.js';
-import { createWorkspace, emptyState, loadSaveMode, loadState, saveSaveMode, saveStateWithQuotaRecovery, snapshotWorkspace } from './storage.js';
+import { createWorkspace, emptyState, loadSaveMode, saveSaveMode, snapshotWorkspace } from './storage.js';
+import { loadDatabaseState, requestPersistentStorage, writeDatabaseState } from './state-store.js';
 import { renderMarkdown, headingTokens, wrapMarkdownHighlight, unwrapMarkdownHighlight } from './markdown.js';
 import { isSourceNode, nodeLabel, sourceNode } from './node-content.js';
 import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
@@ -59,7 +60,10 @@ const examplePassages = {
 };
 
 let state, loadError = null, saveError = null;
-try { state = loadState(); }
+try {
+  state = await loadDatabaseState();
+  requestPersistentStorage();
+}
 catch (error) {
   console.error('[LF CORE] Failed to load saved workspace data.', error);
   state = emptyState(); loadError = error.message; saveError = error.message;
@@ -124,9 +128,8 @@ if (colorSchemeQuery?.addEventListener) colorSchemeQuery.addEventListener('chang
 else if (colorSchemeQuery) colorSchemeQuery.addListener(handleSystemAppearanceChange);
 let lastSaved = JSON.stringify(state), dirty = false;
 let reportedSaveFailure = null;
-let quotaCleanupDeclined = false;
-let quotaCleanupApproved = false;
-let quotaPromptPending = false;
+let pendingStateSave = null;
+let stateSaveLoop = null;
 let currentId = null, selectedId = null, selectedIds = new Set(), editingMarkdown = false, editingTarget = null, editingBeforeView = null, outlineOpen = false;
 let activeConnection = null;
 let openSourceId = null, sourcePage = 1, sourceJump = null;
@@ -210,54 +213,69 @@ function updateSaveControls() {
   for (const control of document.querySelectorAll('.save-mode-button')) control.title = `Save options · ${saveMode === 'auto' ? 'Auto save' : 'Manual save'}`;
 }
 
-function persist(force = false) {
-  if (loadError) { saveError = 'Saved data could not be read; no data was overwritten.'; updateSaveControls(); return false; }
-  if (force) quotaCleanupDeclined = false;
-  const serialized = JSON.stringify(state);
-  dirty = serialized !== lastSaved;
-  if (saveMode === 'manual' && !force) { updateSaveControls(); return true; }
-  try {
-    const recovery = saveStateWithQuotaRecovery(state, localStorage, ({ snapshotCount }) => {
-      if (quotaCleanupDeclined) return false;
-      if (quotaCleanupApproved) return true;
-      if (!quotaPromptPending) {
-        quotaPromptPending = true;
-        confirmAction({
-          title: 'Make room to save?',
-          message: `LF CORE has reached the browser's local save limit. It can remove older undo history${snapshotCount ? ` (${snapshotCount} snapshots)` : ''} without removing your current articles, nodes, sources, research, or chats.`,
-          confirmLabel: 'Clear old history'
-        }).then((accepted) => {
-          quotaPromptPending = false;
-          quotaCleanupDeclined = !accepted;
-          if (accepted) { quotaCleanupApproved = true; persist(true); }
-          else { saveError = 'Save needs more browser storage.'; updateSaveControls(); announce('Save paused. No history was removed.'); }
-        });
+function reportSaveFailure(error) {
+  saveError = error instanceof Error ? error.message : String(error);
+  dirty = true;
+  const signature = `${error?.name || typeof error}:${saveError}`;
+  if (signature !== reportedSaveFailure) {
+    reportedSaveFailure = signature;
+    console.error('[LF CORE] Failed to save workspace data.', error);
+  }
+  updateSaveControls(); announce('Could not save. Check browser storage.');
+}
+
+async function runStateSaveLoop() {
+  while (pendingStateSave) {
+    const job = pendingStateSave;
+    pendingStateSave = null;
+    try {
+      await writeDatabaseState(job.snapshot);
+      lastSaved = job.serialized;
+      dirty = JSON.stringify(state) !== lastSaved;
+      saveError = null;
+      reportedSaveFailure = null;
+      if (!pendingStateSave && !dirty) {
+        for (const id of pendingPdfDeletes) {
+          pendingPdfDeletes.delete(id);
+          pdfDocuments.delete(id);
+          deletePdf(id).catch(() => announce('A removed PDF could not be cleared from browser storage.'));
+        }
       }
-      return false;
-    });
-    lastSaved = JSON.stringify(state); dirty = false; saveError = null; reportedSaveFailure = null; quotaCleanupDeclined = false; quotaCleanupApproved = false;
-    if (recovery.recovered) {
-      console.warn(`[LF CORE] Storage quota recovered by removing ${recovery.removedSnapshots} old undo/redo snapshot${recovery.removedSnapshots === 1 ? '' : 's'}.`);
-      announce('Saved. Older undo history was cleared to free browser storage.');
-    }
-    for (const id of pendingPdfDeletes) {
-      pendingPdfDeletes.delete(id);
-      pdfDocuments.delete(id);
-      deletePdf(id).catch(() => announce('A removed PDF could not be cleared from local storage.'));
+      job.waiters.forEach((resolve) => resolve(true));
+    } catch (error) {
+      reportSaveFailure(error);
+      job.waiters.forEach((resolve) => resolve(false));
     }
     updateSaveControls();
-    return true;
-  } catch (error) {
-    saveError = error instanceof Error ? error.message : String(error); dirty = true;
-    if (quotaPromptPending) { saveError = 'Waiting for storage confirmation.'; updateSaveControls(); return false; }
-    const signature = `${error?.name || typeof error}:${saveError}`;
-    if (signature !== reportedSaveFailure) {
-      reportedSaveFailure = signature;
-      console.error('[LF CORE] Failed to save workspace data.', error);
-    }
-    updateSaveControls(); announce('Could not save. Check browser storage.');
-    return false;
   }
+  stateSaveLoop = null;
+}
+
+function queueStateSave(snapshot, serialized) {
+  return new Promise((resolve) => {
+    if (pendingStateSave) {
+      pendingStateSave.snapshot = snapshot;
+      pendingStateSave.serialized = serialized;
+      pendingStateSave.waiters.push(resolve);
+    } else {
+      pendingStateSave = { snapshot, serialized, waiters: [resolve] };
+    }
+    if (!stateSaveLoop) stateSaveLoop = runStateSaveLoop();
+  });
+}
+
+function persist(force = false) {
+  if (loadError) {
+    saveError = 'Saved data could not be read; no data was overwritten.';
+    updateSaveControls();
+    return Promise.resolve(false);
+  }
+  const serialized = JSON.stringify(state);
+  dirty = serialized !== lastSaved;
+  if (saveMode === 'manual' && !force) { updateSaveControls(); return Promise.resolve(true); }
+  if (!dirty && !force && !pendingStateSave) { updateSaveControls(); return Promise.resolve(true); }
+  updateSaveControls();
+  return queueStateSave(structuredClone(state), serialized);
 }
 
 function flushView() {
@@ -269,20 +287,20 @@ function flushView() {
   return !!item;
 }
 
-function saveNow() {
+async function saveNow() {
   flushView();
-  const saved = persist(true);
+  const saved = await persist(true);
   if (saved) announce('Saved.');
   return saved;
 }
 
-function setSaveMode(mode) {
+async function setSaveMode(mode) {
   if (mode === saveMode) return;
-  if (mode === 'manual' && !saveNow()) return;
+  if (mode === 'manual' && !await saveNow()) return;
   try { saveSaveMode(mode); }
   catch { announce('Could not save this preference. Check browser storage.'); return; }
   saveMode = mode;
-  if (mode === 'auto') saveNow();
+  if (mode === 'auto') await saveNow();
   updateSaveControls();
 }
 
@@ -575,7 +593,7 @@ async function uploadProject(file) {
     state.history[imported.workspace.id] = [];
     state.redo[imported.workspace.id] = [];
     state.chats[imported.workspace.id] = imported.chats;
-    if (!persist(true)) throw new Error('The project could not be saved in browser storage.');
+    if (!await persist(true)) throw new Error('The project could not be saved in browser storage.');
   } catch (error) {
     state.workspaces = state.workspaces.filter((entry) => entry.id !== imported.workspace.id);
     delete state.history[imported.workspace.id]; delete state.redo[imported.workspace.id]; delete state.chats[imported.workspace.id];

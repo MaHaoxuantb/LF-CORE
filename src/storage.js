@@ -3,6 +3,7 @@ export const SAVE_MODE_KEY = 'learning-canvas:save-mode-v1';
 const MARKDOWN_KEY = 'learning-canvas:markdown-v3';
 const CANVAS_KEY = 'learning-canvas:canvas-v2';
 const FIRST_KEY = 'learning-canvas:v1';
+export const LEGACY_STATE_KEYS = [STORAGE_KEY, MARKDOWN_KEY, CANVAS_KEY, FIRST_KEY];
 const PROJECT_ACCENTS = ['gold', 'gold-bright', 'blue'];
 
 export function emptyState() { return { version: 4, workspaces: [], history: {}, redo: {}, chats: {} }; }
@@ -26,6 +27,16 @@ function validate(parsed, version) {
     throw new Error('The saved library has an unsupported format.');
   }
   return parsed;
+}
+
+export function normalizeState(parsed) {
+  const state = validate(parsed, 4);
+  state.redo ||= {};
+  state.chats ||= {};
+  state.workspaces.forEach(normalizeWorkspace);
+  Object.values(state.history).flat().forEach(normalizeWorkspace);
+  Object.values(state.redo).flat().forEach(normalizeWorkspace);
+  return state;
 }
 
 function migrateWorkspace(old) {
@@ -86,13 +97,7 @@ function normalizeWorkspace(work) {
 export function loadState(storage = localStorage) {
   const current = storage.getItem(STORAGE_KEY);
   if (current) {
-    const parsed = validate(JSON.parse(current), 4);
-    parsed.redo ||= {};
-    parsed.chats ||= {};
-    parsed.workspaces.forEach(normalizeWorkspace);
-    Object.values(parsed.history).flat().forEach(normalizeWorkspace);
-    Object.values(parsed.redo).flat().forEach(normalizeWorkspace);
-    return parsed;
+    return normalizeState(JSON.parse(current));
   }
   const markdown = storage.getItem(MARKDOWN_KEY);
   if (markdown) {
@@ -116,6 +121,14 @@ export function loadState(storage = localStorage) {
     return { version: 4, workspaces: parsed.workspaces.map(migrateWorkspace).map(normalizeWorkspace), history: {}, redo: {}, chats: {} };
   }
   return emptyState();
+}
+
+export function hasLegacyState(storage = localStorage) {
+  return LEGACY_STATE_KEYS.some((key) => storage.getItem(key) != null);
+}
+
+export function clearLegacyState(storage = localStorage) {
+  for (const key of LEGACY_STATE_KEYS) storage.removeItem(key);
 }
 
 export function saveState(state, storage = localStorage) { storage.setItem(STORAGE_KEY, JSON.stringify(state)); }
