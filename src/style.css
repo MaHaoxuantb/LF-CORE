@@ -1031,12 +1031,14 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 :root[data-dark='true'] .geometry-controls,
 :root[data-theme='dark'] .geometry-controls {
   background: rgb(27 27 27 / 55%);
+  border-color: #3b4250;
 }
 
 @media (prefers-color-scheme: dark) {
   :root[data-theme='auto'] .zoom-controls,
   :root[data-theme='auto'] .geometry-controls {
     background: rgb(27 27 27 / 55%);
+    border-color: #3b4250;
   }
 }
 
