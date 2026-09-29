@@ -13,6 +13,7 @@ import { siblingPredecessor } from './siblings.js';
 import { parseProject, projectFileName, serializeProject, PROJECT_EXTENSION } from './project.js';
 import { prefixMarkdownLines, wrapMarkdownSelection } from './markdown-edit.js';
 import { attachSourceToQuestion, compareIdeas, createResearchProposal, createResearchQuestion, discoverSources, normalizeResearch, recordCloseout, verifiedSourceFromResult } from './research.js';
+import { resolveMoveGeometry, resolveResizeGeometry, selectionBounds } from './node-geometry.js';
 import packageInfo from '../package.json';
 import 'katex/dist/katex.min.css';
 import './style.css';
@@ -68,6 +69,7 @@ try { saveMode = loadSaveMode(); } catch { /* Browser storage can be unavailable
 const THEME_KEY = 'learning-canvas:theme-v1';
 const AI_ENABLED_KEY = 'learning-canvas:ai-enabled-v1';
 const GRAPH_FOCUS_KEY = 'learning-canvas:graph-focus-v1';
+const GEOMETRY_GUIDES_KEY = 'learning-canvas:geometry-guides-v1';
 const themes = ['auto', 'light', 'dark'];
 const projectAccentColors = ['gold', 'gold-bright', 'blue'];
 const projectAccentValues = { gold: '#c7a23a', 'gold-bright': '#dfba48', blue: '#24354f' };
@@ -76,6 +78,11 @@ let aiFeaturesEnabled = localStorage.getItem(AI_ENABLED_KEY) !== 'false';
 let graphFocusPreferences;
 try { graphFocusPreferences = normalizeGraphFocusPreferences(JSON.parse(localStorage.getItem(GRAPH_FOCUS_KEY) || '{}')); }
 catch { graphFocusPreferences = normalizeGraphFocusPreferences(); }
+let geometryPreferences;
+try {
+  const savedGeometry = JSON.parse(localStorage.getItem(GEOMETRY_GUIDES_KEY) || '{}');
+  geometryPreferences = { snapping: savedGeometry.snapping !== false, alignment: savedGeometry.alignment !== false };
+} catch { geometryPreferences = { snapping: true, alignment: true }; }
 if (!themes.includes(theme)) theme = 'auto';
 function applyAppearance() {
   const accent = work()?.accentColor;
@@ -101,6 +108,11 @@ function setAiFeaturesEnabled(enabled) {
   aiFeaturesEnabled = !!enabled;
   localStorage.setItem(AI_ENABLED_KEY, String(aiFeaturesEnabled));
   if (!aiFeaturesEnabled) { aiPanel = null; lockApiKey(); }
+}
+function setGeometryPreference(name, enabled) {
+  geometryPreferences = { ...geometryPreferences, [name]: !!enabled };
+  localStorage.setItem(GEOMETRY_GUIDES_KEY, JSON.stringify(geometryPreferences));
+  renderWorkspace();
 }
 const colorSchemeQuery = window.matchMedia?.('(prefers-color-scheme: dark)');
 const handleSystemAppearanceChange = () => {
@@ -1229,6 +1241,7 @@ function renderCanvas(item) {
   scene.append(renderPaper(item));
   scene.append(renderConnectors(item));
   for (const node of item.nodes) if (isVisible(item, node)) scene.append(renderNode(node, item));
+  scene.append(el('div', { class: 'alignment-guides', 'aria-hidden': 'true' }));
   // Lines that meet passage marks sit above the document and cards.
   scene.append(renderAnchorConnectors(item));
   for (const edge of item.edges) {
@@ -1240,7 +1253,20 @@ function renderCanvas(item) {
   const zoomMenu = el('div', { class: 'zoom-menu' }, button('100%', () => { const open = zoomMenu.classList.toggle('open'); zoomMenu.querySelector('.zoom-value').setAttribute('aria-expanded', String(open)); if (open) presets.querySelector('button')?.focus(); }, 'zoom-value', { 'aria-label': 'Zoom level; choose a preset', 'aria-haspopup': 'menu', 'aria-expanded': 'false' }), presets);
   for (const level of [50, 75, 100, 125, 150, 175]) presets.append(button(`${level}%`, () => { zoomTo(level / 100); zoomMenu.classList.remove('open'); zoomMenu.querySelector('.zoom-value').setAttribute('aria-expanded', 'false'); }, 'zoom-preset', { role: 'menuitem' }));
   presets.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.stopPropagation(); zoomMenu.classList.remove('open'); zoomMenu.querySelector('.zoom-value').setAttribute('aria-expanded', 'false'); zoomMenu.querySelector('.zoom-value').focus(); } });
-  const zoom = el('div', { class: 'zoom-controls' }, button('−', () => zoomTo(view.zoom - .15), '', { 'aria-label': 'Zoom out' }), zoomMenu, button('+', () => zoomTo(view.zoom + .15), '', { 'aria-label': 'Zoom in' }), el('span', { class: 'zoom-divider' }), button('Fit', fitCanvas, 'fit-button', { 'aria-label': 'Fit project view' }));
+  const geometryToggle = (name, label) => button(label, () => setGeometryPreference(name, !geometryPreferences[name]), `geometry-toggle ${geometryPreferences[name] ? 'active' : ''}`, {
+    'aria-label': `Toggle ${label.toLowerCase()}`,
+    'aria-pressed': String(geometryPreferences[name]),
+    title: `${label} ${name === 'snapping' ? 'nodes to the canvas grid' : 'nodes to other nodes'}`
+  });
+  const zoom = el('div', { class: 'zoom-controls', role: 'toolbar', 'aria-label': 'Canvas controls' },
+    geometryToggle('snapping', 'Snap'),
+    geometryToggle('alignment', 'Align'),
+    el('span', { class: 'zoom-divider' }),
+    button('−', () => zoomTo(view.zoom - .15), '', { 'aria-label': 'Zoom out' }),
+    zoomMenu,
+    button('+', () => zoomTo(view.zoom + .15), '', { 'aria-label': 'Zoom in' }),
+    el('span', { class: 'zoom-divider' }),
+    button('Fit', fitCanvas, 'fit-button', { 'aria-label': 'Fit project view' }));
   const shell = el('div', { class: `canvas-shell ${graphFocus ? 'graph-focus-active graph-focus-readonly' : ''} ${editingTarget ? 'editing-mode-active' : ''}`.trim() }, viewport, zoom);
   if (outlineOpen) shell.append(renderOutline(item));
   if (!graphIsReadOnly() && !selectedId && selectedIds.size > 1) {
@@ -1839,6 +1865,32 @@ function updateConnectors() {
   positionConnectionHandles(item);
 }
 
+function nodeGeometryTargets(item, excludedIds = []) {
+  const excluded = new Set(excludedIds);
+  return item.nodes
+    .filter((node) => !excluded.has(node.id) && isVisible(item, node))
+    .map((node) => ({ id: node.id, ...pointFor(item, node.id) }));
+}
+
+function showAlignmentGuides(guides = []) {
+  const layer = document.querySelector('.alignment-guides');
+  if (!layer) return;
+  layer.replaceChildren(...guides.map((guide) => {
+    const line = el('span', { class: `alignment-guide ${guide.axis === 'x' ? 'vertical' : 'horizontal'}` });
+    if (guide.axis === 'x') Object.assign(line.style, {
+      left: `${guide.value}px`,
+      top: `${guide.from}px`,
+      height: `${Math.max(0, guide.to - guide.from)}px`
+    });
+    else Object.assign(line.style, {
+      left: `${guide.from}px`,
+      top: `${guide.value}px`,
+      width: `${Math.max(0, guide.to - guide.from)}px`
+    });
+    return line;
+  }));
+}
+
 function positionConnectionHandles(item) {
   if (!activeConnection) return;
   const { id } = activeConnection;
@@ -2213,31 +2265,48 @@ function startNodeResize(event, node, card, grip) {
   if (graphIsReadOnly() || event.button !== 0) return;
   event.preventDefault(); event.stopPropagation();
   const item = work(), original = { ...pointFor(item, node.id) }, x = event.clientX, y = event.clientY;
+  const targets = nodeGeometryTargets(item, [node.id]);
   grip.setPointerCapture(event.pointerId);
   const move = (next) => {
-    const width = clamp(Math.round(original.width + (next.clientX - x) / view.zoom), NODE_SIZE_LIMITS.minWidth, NODE_SIZE_LIMITS.maxWidth);
-    const height = clamp(Math.round(original.height + (next.clientY - y) / view.zoom), NODE_SIZE_LIMITS.minHeight, maximumNodeHeight(card, width));
+    const proposedWidth = clamp(Math.round(original.width + (next.clientX - x) / view.zoom), NODE_SIZE_LIMITS.minWidth, NODE_SIZE_LIMITS.maxWidth);
+    const proposedHeight = clamp(Math.round(original.height + (next.clientY - y) / view.zoom), NODE_SIZE_LIMITS.minHeight, maximumNodeHeight(card, proposedWidth));
+    const resolved = resolveResizeGeometry({
+      rect: original,
+      width: proposedWidth,
+      height: proposedHeight,
+      targets,
+      snapping: geometryPreferences.snapping,
+      alignment: geometryPreferences.alignment,
+      zoom: view.zoom
+    });
+    const width = clamp(Math.round(resolved.width), NODE_SIZE_LIMITS.minWidth, NODE_SIZE_LIMITS.maxWidth);
+    const height = clamp(Math.round(resolved.height), NODE_SIZE_LIMITS.minHeight, maximumNodeHeight(card, width));
     item.layout.sizes[node.id] = { width, height };
     card.style.width = `${width}px`; card.style.height = `${height}px`;
     applyNodeSizeClass(card, width, height);
     updateCardOverflow(card);
+    showAlignmentGuides(resolved.guides.filter((guide) => guide.axis === 'x' ? width === Math.round(resolved.width) : height === Math.round(resolved.height)));
     updateConnectors();
   };
   let ended = false;
-  const up = () => {
+  const up = (next) => {
     if (ended) return;
     ended = true;
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
     window.removeEventListener('mouseup', up);
+    window.removeEventListener('pointercancel', up);
     grip.removeEventListener('lostpointercapture', up);
+    showAlignmentGuides();
     const final = item.layout.sizes[node.id] || { width: original.width, height: original.height };
     item.layout.sizes[node.id] = { width: original.width, height: original.height };
+    if (next?.type === 'pointercancel') { renderWorkspace(); return; }
     if (final.width !== original.width || final.height !== original.height) change((entry) => { entry.layout.sizes[node.id] = final; });
   };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
   window.addEventListener('mouseup', up);
+  window.addEventListener('pointercancel', up);
   grip.addEventListener('lostpointercapture', up);
 }
 
@@ -2249,10 +2318,22 @@ function resizeNodeWithKeys(event, node) {
   const card = document.querySelector(`[data-node="${node.id}"]`);
   change((item) => {
     const size = pointFor(item, node.id);
-    const width = clamp(size.width + step[0], NODE_SIZE_LIMITS.minWidth, NODE_SIZE_LIMITS.maxWidth);
+    const proposedWidth = clamp(size.width + step[0], NODE_SIZE_LIMITS.minWidth, NODE_SIZE_LIMITS.maxWidth);
+    const proposedHeight = clamp(size.height + step[1], NODE_SIZE_LIMITS.minHeight, card ? maximumNodeHeight(card, proposedWidth) : size.height);
+    const resolved = resolveResizeGeometry({
+      rect: size,
+      width: proposedWidth,
+      height: proposedHeight,
+      targets: nodeGeometryTargets(item, [node.id]),
+      snapping: geometryPreferences.snapping,
+      alignment: geometryPreferences.alignment,
+      zoom: view.zoom,
+      axes: step[0] ? ['x'] : ['y']
+    });
+    const width = clamp(Math.round(resolved.width), NODE_SIZE_LIMITS.minWidth, NODE_SIZE_LIMITS.maxWidth);
     item.layout.sizes[node.id] = {
       width,
-      height: clamp(size.height + step[1], NODE_SIZE_LIMITS.minHeight, card ? maximumNodeHeight(card, width) : size.height)
+      height: clamp(Math.round(resolved.height), NODE_SIZE_LIMITS.minHeight, card ? maximumNodeHeight(card, width) : size.height)
     };
   });
   document.querySelector(`[data-node="${node.id}"] .node-resize`)?.focus();
@@ -2262,6 +2343,8 @@ function startNodeDrag(event, node, card) {
   if (graphIsReadOnly() || event.button !== 0) return;
   const item = work(), moving = selectedIds.has(node.id) ? [...selectedIds] : [node.id];
   const original = Object.fromEntries(moving.map((id) => [id, { ...item.layout.positions[id] }]));
+  const originalBounds = selectionBounds(moving.map((id) => pointFor(item, id)));
+  const targets = nodeGeometryTargets(item, moving);
   const originX = event.clientX, originY = event.clientY;
   let moved = false, ended = false;
   const move = (next) => {
@@ -2273,16 +2356,27 @@ function startNodeDrag(event, node, card) {
       card.setPointerCapture?.(event.pointerId);
       window.getSelection()?.removeAllRanges();
     }
-    const dx = Math.round((next.clientX - originX) / view.zoom), dy = Math.round((next.clientY - originY) / view.zoom);
+    const pointerDx = Math.round((next.clientX - originX) / view.zoom), pointerDy = Math.round((next.clientY - originY) / view.zoom);
+    const resolved = resolveMoveGeometry({
+      bounds: originalBounds,
+      dx: pointerDx,
+      dy: pointerDy,
+      targets,
+      snapping: geometryPreferences.snapping,
+      alignment: geometryPreferences.alignment,
+      zoom: view.zoom
+    });
+    const { dx, dy } = resolved;
     for (const id of moving) {
       const position = { x: original[id].x + dx, y: original[id].y + dy };
       item.layout.positions[id] = position;
       const element = document.querySelector(`[data-node="${id}"]`);
       if (element) { element.style.left = `${position.x}px`; element.style.top = `${position.y}px`; }
     }
+    showAlignmentGuides(resolved.guides);
     updateConnectors();
   };
-  const up = () => {
+  const up = (next) => {
     if (ended) return;
     ended = true;
     window.removeEventListener('pointermove', move);
@@ -2290,8 +2384,10 @@ function startNodeDrag(event, node, card) {
     window.removeEventListener('pointercancel', up);
     if (card.hasPointerCapture?.(event.pointerId)) card.releasePointerCapture(event.pointerId);
     if (!moved) return;
+    showAlignmentGuides();
     const final = Object.fromEntries(moving.map((id) => [id, { ...item.layout.positions[id] }]));
     for (const id of moving) item.layout.positions[id] = original[id];
+    if (next?.type === 'pointercancel') { renderWorkspace(); return; }
     if (moving.some((id) => final[id].x !== original[id].x || final[id].y !== original[id].y)) {
       change((entry) => { for (const id of moving) entry.layout.positions[id] = final[id]; });
     }

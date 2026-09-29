@@ -196,6 +196,10 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .selection-rectangle { position: absolute; z-index: 10; border: 1px solid #6964c5b8; background: #6964c51a; border-radius: 3px; pointer-events: none; }
 .topic-card.marquee-target { border-color: #7771d2; box-shadow: 0 0 0 2px #a9a2ed, 0 8px 21px #28324b1c; }
 .scene { position: absolute; left: 0; top: 0; width: 1px; height: 1px; transform-origin: 0 0; }
+.alignment-guides { position: absolute; z-index: 6; inset: 0; overflow: visible; pointer-events: none; }
+.alignment-guide { position: absolute; display: block; background: color-mix(in srgb, var(--accent) 82%, white); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent); pointer-events: none; }
+.alignment-guide.vertical { width: 1px; transform: translateX(-.5px); }
+.alignment-guide.horizontal { height: 1px; transform: translateY(-.5px); }
 .connectors { position: absolute; left: -4000px; top: -4000px; width: 8000px; height: 8000px; overflow: visible; pointer-events: none; }
 .connectors path { fill: none; stroke: #a6a9dc; stroke-width: 2.5; stroke-linecap: round; }
 .connectors .cross-line { stroke: #9faab7; stroke-width: 2; stroke-dasharray: 7 6; }
@@ -216,6 +220,9 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .zoom-controls { position: absolute; left: 21px; bottom: 27px; z-index: 7; display: flex; align-items: center; gap: 8px; border: 1px solid #e3e7ef; border-radius: 9px; background: #fff; box-shadow: 0 4px 15px #27395312; color: #68768b; }
 .zoom-controls button { border: 0; background: transparent; color: #627086; width: 33px; height: 34px; font-size: 1.15rem; }
 .zoom-controls button:hover { color: #4c49b9; }
+.zoom-controls .geometry-toggle { width: auto; min-width: 43px; padding: 0 8px; border-radius: 6px; font-size: .7rem; font-weight: 700; }
+.zoom-controls .geometry-toggle.active { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.zoom-controls .geometry-toggle:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -2px; }
 .zoom-value { font-size: .75rem; width: 41px; text-align: center; }
 .details-panel { position: absolute; z-index: 9; top: 18px; right: 18px; bottom: 92px; width: 320px; overflow: auto; border: 1px solid #e2e6ed; border-radius: 15px; background: #fff; box-shadow: 0 18px 45px #27395325; padding: 19px; }
 .panel-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
@@ -571,6 +578,7 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 :root[data-dark='true'] .panel-close { color: #bdc0ca; }
 :root[data-dark='true'] .workspace-chrome .header-icon:hover,
 :root[data-dark='true'] .zoom-controls button:hover { background: #34343b; color: #f0edff; }
+:root[data-dark='true'] .zoom-controls .geometry-toggle.active { background: color-mix(in srgb, var(--accent) 25%, transparent); color: #f0edff; }
 :root[data-dark='true'] .workspace-chrome .header-icon.active { background: #383451; color: #e4ddff; }
 :root[data-dark='true'] .zoom-divider,
 :root[data-dark='true'] .context-separator,
