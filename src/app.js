@@ -3202,6 +3202,9 @@ function renderSettings(activeTab = 'ai') {
   const close = () => overlay.remove();
   overlay.addEventListener('pointerdown', (event) => { if (event.target === overlay) close(); });
   const content = el('div', { class: 'settings-content' });
+  const refreshChatAvailability = () => {
+    if (aiPanel) renderAiPanel({ focusComposer: false });
+  };
   const tabs = el('nav', { class: 'settings-tabs', 'aria-label': 'Settings sections' });
   tabs.append(
     button('AI Settings', () => renderSettings('ai'), `settings-tab ${activeTab === 'ai' ? 'active' : ''}`, { 'aria-current': activeTab === 'ai' ? 'page' : 'false' }),
@@ -3281,6 +3284,7 @@ function renderSettings(activeTab = 'ai') {
       if (!ids.includes(selected.value.trim())) throw new Error('Select a model from the list.');
       saveModelSettings({ endpoint: endpoint.value, models: ids, selectedModel: selected.value.trim(), secret: loadModelSettings().secret, developerMode: loadModelSettings().developerMode });
       status.textContent = 'AI endpoint and model settings saved locally.';
+      refreshChatAvailability();
       announce('AI settings saved.');
     } catch (error) { status.textContent = error.message; }
   }, 'panel-action'));
@@ -3290,16 +3294,17 @@ function renderSettings(activeTab = 'ai') {
       saveModelSecret(secret);
       apiKey.value = ''; passphrase.value = '';
       status.textContent = 'Key encrypted, stored, and unlocked for this tab.';
+      refreshChatAvailability();
       announce('API key stored and unlocked.');
     } catch (error) { status.textContent = error.message; }
   }, 'panel-secondary'));
   controls.append(button('Unlock key', async () => {
-    try { await unlockApiKey(loadModelSettings().secret, passphrase.value); passphrase.value = ''; status.textContent = 'Key unlocked for this tab. AI requests are ready.'; announce('API key unlocked.'); }
+    try { await unlockApiKey(loadModelSettings().secret, passphrase.value); passphrase.value = ''; status.textContent = 'Key unlocked for this tab. AI requests are ready.'; refreshChatAvailability(); announce('API key unlocked.'); }
     catch (error) { status.textContent = error.message; }
   }, 'panel-secondary'));
-  controls.append(button('Lock key', () => { lockApiKey(); status.textContent = 'Key locked.'; }, 'panel-secondary'));
+  controls.append(button('Lock key', () => { lockApiKey(); status.textContent = 'Key locked.'; refreshChatAvailability(); }, 'panel-secondary'));
   controls.append(button('Remove key', () => {
-    try { saveModelSecret(null); lockApiKey(); apiKey.value = ''; passphrase.value = ''; status.textContent = 'Stored key removed.'; }
+    try { saveModelSecret(null); lockApiKey(); apiKey.value = ''; passphrase.value = ''; status.textContent = 'Stored key removed.'; refreshChatAvailability(); }
     catch (error) { status.textContent = error.message; }
   }, 'panel-secondary'));
   fields.append(controls, el('p', { class: 'ai-muted', text: 'The endpoint and model IDs are stored in browser storage. Your key is stored only as AES-GCM ciphertext; losing the passphrase means replacing the key. Browser site data can be cleared to remove settings. Use a trusted endpoint that permits browser CORS requests.' }));
@@ -3573,7 +3578,7 @@ function updateStreamingChatReply(reply) {
   transcript.scrollTop = transcript.scrollHeight;
 }
 
-function renderChatComposer(panel, item, chat, snapshot, picker) {
+function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer = true) {
   const settings = loadModelSettings();
   const unavailable = !settings.models.length || !!(settings.secret && !getApiKey());
   if (unavailable) panel.append(el('div', { class: 'chat-config-notice' },
@@ -3666,7 +3671,7 @@ function renderChatComposer(panel, item, chat, snapshot, picker) {
   form.append(input, picker, send);
   panel.append(form);
   requestAnimationFrame(() => { if (input.isConnected) resizeInput(); });
-  if (!aiPanel.busy && !aiPanel.previewId) requestAnimationFrame(() => { if (input.isConnected) input.focus(); });
+  if (focusComposer && !aiPanel.busy && !aiPanel.previewId) requestAnimationFrame(() => { if (input.isConnected) input.focus(); });
 }
 
 function startChatResize(event, panel) {
@@ -3885,7 +3890,7 @@ function renderResearchPanel() {
   document.querySelector('.workspace-shell')?.append(panel);
 }
 
-function renderAiPanel() {
+function renderAiPanel({ focusComposer = true } = {}) {
   document.querySelector('.ai-panel')?.remove();
   const item = work(); if (!item || !aiPanel) return;
   const chat = currentChat(); if (!chat) return;
@@ -3922,7 +3927,7 @@ function renderAiPanel() {
   } else {
     const { snapshot, picker } = renderContextPicker(item, chat);
     renderChatTranscript(panel, item, chat);
-    renderChatComposer(panel, item, chat, snapshot, picker);
+    renderChatComposer(panel, item, chat, snapshot, picker, focusComposer);
   }
   document.querySelector('.workspace-shell')?.append(panel);
 }

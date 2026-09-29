@@ -277,6 +277,8 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .markdown-preview th, .markdown-preview td { border: 1px solid #dfe4ec; padding: 6px 9px; text-align: left; }
 .markdown-preview .katex-display { overflow-x: auto; overflow-y: hidden; padding: 3px 0; }
 .markdown-preview *::selection { background: #d5d2ff; }
+:root[data-dark='true'] ::selection,
+:root[data-dark='true'] .markdown-preview *::selection { background: #5f53a6; color: #fff; }
 .markdown-preview .arrived, .anchor-mark.arrived { background: #eae6ff; box-shadow: 0 0 0 7px #eae6ff; border-radius: 3px; }
 .markdown-editor { display: block; width: 100%; min-height: 350px; resize: none; overflow: hidden; border: 0; outline: 0; padding: 0; color: #303946; background: transparent; font: .86rem/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2; }
 .markdown-editor:focus-visible { outline: none; }
@@ -1161,6 +1163,8 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 :root[data-color='gold'] .pdf-node-open-source, :root[data-color='gold-bright'] .pdf-node-open-source,
 :root[data-color='gold'] .editing-done, :root[data-color='gold-bright'] .editing-done,
 :root[data-color='gold'] .ai-message-user, :root[data-color='gold-bright'] .ai-message-user { color: var(--lf-blue); }
+:root[data-dark='false'] .ai-chat-composer .panel-action { color: #fff; }
+:root[data-dark='true'] .ai-message-user { color: #e7e4df; }
 
 :root[data-dark='true'] .home { background: linear-gradient(145deg, #10151d, #171717 60%, #201c12); }
 :root[data-dark='true'] .home-header { background: rgb(23 23 23 / 88%); }
