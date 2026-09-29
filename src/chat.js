@@ -1,5 +1,9 @@
 export const MAX_CONTEXT_CHARS = 40_000;
 
+export function canChangeAssistantMode(chat) {
+  return Array.isArray(chat?.messages) && chat.messages.length === 0;
+}
+
 export function contextSnapshot(workspace, selection) {
   const targets = [];
   const mode = selection.mode || (selection.article ? 'article' : 'selected');

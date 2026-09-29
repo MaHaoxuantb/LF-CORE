@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, parseChatResponse, proposalStatus } from '../src/chat.js';
+import { canChangeAssistantMode, contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, parseChatResponse, proposalStatus } from '../src/chat.js';
 import { chatModel } from '../src/ai.js';
 import { emptyState, loadState, saveState, snapshotWorkspace } from '../src/storage.js';
 
@@ -14,6 +14,12 @@ const workspace = {
     { id: 'source-node', document: { type: 'source', sourceId: 'pdf-a' } }
   ]
 };
+
+test('chat mode can change only before the first message', () => {
+  assert.equal(canChangeAssistantMode({ assistantMode: 'chat', messages: [] }), true);
+  assert.equal(canChangeAssistantMode({ assistantMode: 'agent', messages: [{ role: 'user', content: 'Build a branch' }] }), false);
+  assert.equal(canChangeAssistantMode({}), false);
+});
 
 test('all context contains every target while preserving the explicit selection', () => {
   const snapshot = contextSnapshot(workspace, { mode: 'all', nodeIds: ['node-b'], passage: { targetId: 'article', quote: 'Original text.' } });

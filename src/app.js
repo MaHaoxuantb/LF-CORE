@@ -8,7 +8,7 @@ import { putPdf, getPdf, deletePdf, putSourceTextIndex, getSourceTextIndex, dele
 import { connectionPort, crossConnectionRoute, nearestConnectionSide, snappedConnectionSides } from './cross-connection.js';
 import { loadModelSettings, saveModelSettings, saveModelSecret, saveDeveloperMode, encryptApiKey, unlockApiKey, getApiKey, lockApiKey, endpointRequiresApiKey } from './model-settings.js';
 import { chatModel, runAgent } from './ai.js';
-import { contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, proposalStatus } from './chat.js';
+import { canChangeAssistantMode, contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, proposalStatus } from './chat.js';
 import { WorkspaceAgentService, applyAgentProposal } from './agent-service.js';
 import { ensurePdfSourceIndex, readWorkspaceSource, searchWorkspaceSources } from './source-index.js';
 import { normalizeGraphFocusPreferences, relatedNodeIds } from './graph-focus.js';
@@ -789,13 +789,14 @@ function renderHome() {
   const header = el('header', { class: 'home-header' },
     el('div', { class: 'home-wordmark' }, el('strong', { text: 'LF CORE' }), el('span', { text: 'by LinecoFlow' })),
     el('nav', { class: 'home-actions', 'aria-label': 'Landing page actions' },
-      button('Settings', () => renderSettings(), 'home-settings-button'),
-      button('New project', openNewProjectGuide, 'home-new-project')));
+      button('Settings', () => renderSettings(), 'home-settings-button')));
   const main = el('main', { class: 'home-main' },
     el('div', { class: 'home-intro' }, el('div', {}, el('span', { class: 'home-eyebrow', text: 'YOUR WORKSPACE' }), el('h1', { text: 'Recent projects' }), el('p', { class: 'home-lead', text: 'Continue where you left off, or begin a focused new line of thought.' })), button('＋ New project', openNewProjectGuide, 'home-new-project home-new-project-large')),
     cards,
     el('div', { class: 'home-secondary-actions' }, exampleButton, uploadProjectButton, projectUpload),
-    el('footer', { class: 'home-copyright', text: '©2026 LinecoFlow' }));
+    el('footer', { class: 'home-copyright' },
+      el('span', { text: '©2026 LinecoFlow' }),
+      el('span', { class: 'home-development-warning', text: '⚠ This product is under development.' })));
   if (loadError) main.prepend(el('p', { class: 'error-banner', text: `${loadError} Existing data was left untouched.` }));
   app.replaceChildren(el('div', { class: 'home' }, header, main));
   updateSaveControls();
@@ -4142,6 +4143,7 @@ function renderAiPanel({ focusComposer = true } = {}) {
   const item = work(); if (!item || !aiPanel) return;
   const chat = currentChat(); if (!chat) return;
   chat.assistantMode ||= 'chat';
+  const modeLocked = !canChangeAssistantMode(chat);
   const panel = el('aside', { class: 'ai-panel', 'aria-label': 'Workspace chat', ...(aiPanel.width ? { style: `width: ${aiPanel.width}px` } : {}) });
   panel.addEventListener('pointerdown', (event) => {
     if (event.clientX - panel.getBoundingClientRect().left <= 8) startChatResize(event, panel);
@@ -4157,7 +4159,23 @@ function renderAiPanel({ focusComposer = true } = {}) {
   left.append(el('h2', { text: aiPanel.tab === 'chat' ? chat.title : 'Chat history' }));
   const actions = el('div', { class: 'chat-heading-actions' });
   if (aiPanel.tab === 'chat') {
-    actions.append(button('＋', () => newChat(), 'chat-header-icon', { 'aria-label': 'New chat', title: 'New chat' }),
+    const modeLabel = chat.assistantMode === 'agent' ? 'Agent' : 'Chat';
+    const mode = button(chat.assistantMode === 'agent' ? '' : '✦', () => {
+      if (aiPanel.busy || modeLocked) return;
+      chat.assistantMode = chat.assistantMode === 'agent' ? 'chat' : 'agent';
+      aiPanel.assistantMode = chat.assistantMode; aiPanel.error = ''; chat.updatedAt = new Date().toISOString(); persist(); renderAiPanel();
+    }, `chat-header-icon assistant-mode-icon ${chat.assistantMode}`, {
+      'aria-label': `${modeLabel} mode`,
+      title: modeLocked ? `${modeLabel} mode is fixed for this chat. Start a new chat to change mode.` : `${modeLabel} mode · Click to switch to ${chat.assistantMode === 'agent' ? 'Chat' : 'Agent'}`,
+      ...((aiPanel.busy || modeLocked) ? { disabled: '' } : {})
+    });
+    if (chat.assistantMode === 'agent') {
+      mode.append(el('svg', { viewBox: '0 0 24 24', 'aria-hidden': 'true' },
+        el('circle', { cx: '12', cy: '7.5', r: '4' }),
+        el('path', { d: 'M4.5 20c.7-4.1 3.5-6.5 7.5-6.5s6.8 2.4 7.5 6.5Z' })));
+    }
+    actions.append(mode,
+      button('＋', () => newChat(), 'chat-header-icon', { 'aria-label': 'New chat', title: 'New chat' }),
       button('⚙', renderSettings, 'chat-header-icon', { 'aria-label': 'Open Settings', title: 'Open Settings' }));
   }
   actions.append(button('×', () => { aiPanel = null; renderWorkspace(); }, 'panel-close', { 'aria-label': 'Close chat' }));
@@ -4174,15 +4192,6 @@ function renderAiPanel({ focusComposer = true } = {}) {
     }
     panel.append(list);
   } else {
-    const modes = el('div', { class: 'assistant-mode-switch', role: 'tablist', 'aria-label': 'AI mode' });
-    for (const [value, label] of [['chat', 'Chat'], ['agent', 'Agent']]) {
-      const control = button(label, () => {
-        if (aiPanel.busy || chat.assistantMode === value) return;
-        chat.assistantMode = value; aiPanel.assistantMode = value; aiPanel.error = ''; chat.updatedAt = new Date().toISOString(); persist(); renderAiPanel();
-      }, `assistant-mode-option ${chat.assistantMode === value ? 'active' : ''}`, { role: 'tab', 'aria-selected': String(chat.assistantMode === value), ...(aiPanel.busy ? { disabled: '' } : {}) });
-      modes.append(control);
-    }
-    panel.append(modes);
     const { snapshot, picker } = chat.assistantMode === 'agent' ? { snapshot: { size: 0 }, picker: null } : renderContextPicker(item, chat);
     renderChatTranscript(panel, item, chat);
     renderChatComposer(panel, item, chat, snapshot, picker, focusComposer);

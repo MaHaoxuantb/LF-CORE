@@ -876,17 +876,19 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 
 /* Workspace chat. */
 .ai-panel { width: min(365px, calc(100vw - 32px)); background: #fbfaf8; border-color: #dedbd5; }
-.ai-panel > .chat-page-heading { flex: none; min-height: 58px; padding: 9px 14px; gap: 8px; border-bottom: 1px solid #e9e5df; }
+.ai-panel > .chat-page-heading { flex: none; min-height: 44px; padding: 5px 10px; gap: 6px; border-bottom: 1px solid #e9e5df; }
 .chat-heading-left, .chat-heading-actions { display: flex; align-items: center; gap: 5px; min-width: 0; }
 .chat-heading-left { flex: 1; }
-.ai-panel > .chat-page-heading h2 { max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0 0 0 4px; font-size: .88rem; }
-.chat-header-icon { flex: none; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: #706960; font-size: 1.15rem; line-height: 1; cursor: pointer; }
+.ai-panel > .chat-page-heading h2 { max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0 0 0 3px; font-size: .83rem; }
+.chat-header-icon { flex: none; display: grid; place-items: center; width: 27px; height: 27px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: #706960; font-size: 1.02rem; line-height: 1; cursor: pointer; }
 .chat-header-icon:hover, .chat-header-icon:focus-visible { background: #eeeae4; color: #37322d; }
+.chat-header-icon:disabled { cursor: default; opacity: .62; }
+.assistant-mode-icon { position: relative; font-size: .94rem; }
+.assistant-mode-icon svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 2.1; stroke-linecap: round; stroke-linejoin: round; }
+.assistant-mode-icon.agent { color: #8a6841; }
+.assistant-mode-icon::after { content: ''; position: absolute; right: 3px; bottom: 3px; width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: .75; }
 .chat-heading-actions .panel-close { flex: none; }
 .ai-panel > .ai-chat-toolbar { padding: 8px 16px 5px; justify-content: space-between; }
-.assistant-mode-switch { flex: none; display: grid; grid-template-columns: 1fr 1fr; gap: 3px; margin: 8px 16px 3px; padding: 3px; border-radius: 9px; background: #eeeae4; }
-.assistant-mode-option { min-height: 29px; border: 0; border-radius: 7px; background: transparent; color: #776f67; font-size: .7rem; font-weight: 700; }
-.assistant-mode-option.active { background: #fff; color: #453d35; box-shadow: 0 1px 4px #3d30231a; }
 .agent-authority-note { display: flex; flex-wrap: wrap; gap: 3px 8px; align-items: baseline; color: #786f65; font-size: .64rem; line-height: 1.4; }
 .agent-authority-note strong { color: #5c4c36; }
 .agent-progress { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -972,9 +974,7 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 :root[data-dark='true'] .chat-header-icon { color: #c5bcb1; }
 :root[data-dark='true'] .chat-header-icon:hover, :root[data-dark='true'] .chat-header-icon:focus-visible { background: #3b3833; color: #f1ebe4; }
 :root[data-dark='true'] .chat-proposal { background: #2d2b28; border-color: #4a453e; }
-:root[data-dark='true'] .assistant-mode-switch { background: #191919; }
-:root[data-dark='true'] .assistant-mode-option { color: #aaa29a; }
-:root[data-dark='true'] .assistant-mode-option.active { background: #34312d; color: #f0e9df; }
+:root[data-dark='true'] .assistant-mode-icon.agent { color: #d2ad7f; }
 :root[data-dark='true'] .agent-proposal { background: #292725; border-color: #4c463e; }
 :root[data-dark='true'] .agent-proposal-heading strong, :root[data-dark='true'] .agent-change-block > strong { color: #eee6dc; }
 :root[data-dark='true'] .agent-proposal-summary, :root[data-dark='true'] .agent-relationship-list { color: #c5bcb1; }
@@ -1069,7 +1069,8 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .empty-home span { color: #7c8794; font-size: .78rem; }
 .home-secondary-actions { margin-top: 22px; }
 .example-link, .project-upload-button { color: var(--lf-blue); }
-.home-copyright { margin-top: 56px; padding-top: 18px; border-top: 1px solid color-mix(in srgb, var(--lf-blue) 10%, transparent); color: color-mix(in srgb, var(--lf-blue) 55%, white); font-size: .68rem; }
+.home-copyright { display: grid; gap: 8px; margin-top: 56px; padding-top: 18px; border-top: 1px solid color-mix(in srgb, var(--lf-blue) 10%, transparent); color: color-mix(in srgb, var(--lf-blue) 55%, white); font-size: .68rem; }
+.home-development-warning { color: #8b5a12; font-size: .72rem; font-weight: 650; }
 
 /* Toolbar controls stay transparent until interaction, in both appearances. */
 .workspace-chrome .header-icon,
