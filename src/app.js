@@ -1271,21 +1271,22 @@ function renderCanvas(item) {
   const zoomMenu = el('div', { class: 'zoom-menu' }, button('100%', () => { const open = zoomMenu.classList.toggle('open'); zoomMenu.querySelector('.zoom-value').setAttribute('aria-expanded', String(open)); if (open) presets.querySelector('button')?.focus(); }, 'zoom-value', { 'aria-label': 'Zoom level; choose a preset', 'aria-haspopup': 'menu', 'aria-expanded': 'false' }), presets);
   for (const level of [50, 75, 100, 125, 150, 175]) presets.append(button(`${level}%`, () => { zoomTo(level / 100); zoomMenu.classList.remove('open'); zoomMenu.querySelector('.zoom-value').setAttribute('aria-expanded', 'false'); }, 'zoom-preset', { role: 'menuitem' }));
   presets.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.stopPropagation(); zoomMenu.classList.remove('open'); zoomMenu.querySelector('.zoom-value').setAttribute('aria-expanded', 'false'); zoomMenu.querySelector('.zoom-value').focus(); } });
-  const geometryToggle = (name, label) => button(label, () => setGeometryPreference(name, !geometryPreferences[name]), `geometry-toggle ${geometryPreferences[name] ? 'active' : ''}`, {
+  const geometryToggle = (name, label) => button(label, () => setGeometryPreference(name, !geometryPreferences[name]), 'geometry-toggle', {
     'aria-label': `Toggle ${label.toLowerCase()}`,
     'aria-pressed': String(geometryPreferences[name]),
     title: `${label} ${name === 'snapping' ? 'nodes to the canvas grid' : 'nodes to other nodes'}`
   });
-  const zoom = el('div', { class: 'zoom-controls', role: 'toolbar', 'aria-label': 'Canvas controls' },
-    geometryToggle('snapping', 'Snap'),
-    geometryToggle('alignment', 'Align'),
-    el('span', { class: 'zoom-divider' }),
+  const zoom = el('div', { class: 'zoom-controls', role: 'toolbar', 'aria-label': 'Zoom controls' },
     button('−', () => zoomTo(view.zoom - .15), '', { 'aria-label': 'Zoom out' }),
     zoomMenu,
     button('+', () => zoomTo(view.zoom + .15), '', { 'aria-label': 'Zoom in' }),
     el('span', { class: 'zoom-divider' }),
     button('Fit', fitCanvas, 'fit-button', { 'aria-label': 'Fit project view' }));
-  const shell = el('div', { class: `canvas-shell ${graphFocus ? 'graph-focus-active graph-focus-readonly' : ''} ${editingTarget ? 'editing-mode-active' : ''}`.trim() }, viewport, zoom);
+  const geometry = el('div', { class: 'geometry-controls', role: 'toolbar', 'aria-label': 'Node placement controls' },
+    geometryToggle('snapping', 'Snap'),
+    geometryToggle('alignment', 'Align'));
+  const controls = el('div', { class: 'canvas-control-cluster' }, zoom, geometry);
+  const shell = el('div', { class: `canvas-shell ${graphFocus ? 'graph-focus-active graph-focus-readonly' : ''} ${editingTarget ? 'editing-mode-active' : ''}`.trim() }, viewport, controls);
   if (outlineOpen) shell.append(renderOutline(item));
   if (!graphIsReadOnly() && !selectedId && selectedIds.size > 1) {
     shell.append(el('div', { class: 'selection-toolbar', role: 'status' }, el('span', { text: `${selectedIds.size} selected` }), button('Delete', () => removeNodes([...selectedIds]), 'selection-delete'), button('Clear', () => { selectedIds.clear(); renderWorkspace(); }, 'selection-clear')));
