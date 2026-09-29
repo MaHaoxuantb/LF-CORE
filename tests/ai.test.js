@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
-import { completionUrl, encryptApiKey, unlockApiKey, getApiKey, lockApiKey, saveModelSettings, saveModelSecret, saveDeveloperMode, loadModelSettings } from '../src/model-settings.js';
+import { completionUrl, encryptApiKey, unlockApiKey, getApiKey, lockApiKey, saveModelSettings, saveModelSecret, saveDeveloperMode, loadModelSettings, endpointRequiresApiKey } from '../src/model-settings.js';
 import { complete, generateArticle, askModel, partialChatReply, proposeInsertion, runAgent } from '../src/ai.js';
 import { WorkspaceAgentService } from '../src/agent-service.js';
 import { createWorkspace } from '../src/storage.js';
@@ -39,6 +39,21 @@ test('completion endpoint validates transport and preserves compatible paths', (
   assert.throws(() => completionUrl('http://host.example/v1'));
   assert.equal(completionUrl('http://host.example/v1', true), 'http://host.example/v1/chat/completions');
   assert.throws(() => completionUrl('https://host.example/v1?key=secret'));
+});
+
+test('known hosted providers require a key before a request is sent', async () => {
+  assert.equal(endpointRequiresApiKey('https://openrouter.ai/api/v1'), true);
+  assert.equal(endpointRequiresApiKey('https://api.openai.com/v1'), true);
+  assert.equal(endpointRequiresApiKey('http://127.0.0.1:8080/v1'), false);
+  let called = false;
+  const settings = { endpoint: 'https://openrouter.ai/api/v1', models: ['model-a'], selectedModel: 'model-a' };
+  await assert.rejects(complete(settings, '', [], { fetcher: async () => { called = true; } }), /requires an API key/);
+  assert.equal(called, false);
+});
+
+test('HTTP 401 reports an actionable authentication error', async () => {
+  const settings = { endpoint: 'https://openrouter.ai/api/v1', models: ['model-a'], selectedModel: 'model-a' };
+  await assert.rejects(complete(settings, 'wrong-key', [], { fetcher: async () => ({ ok: false, status: 401 }) }), /Authentication failed.*Store the correct API key/);
 });
 
 test('developer mode persists and opts model requests into HTTP transport', async () => {

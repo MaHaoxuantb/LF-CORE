@@ -1,6 +1,13 @@
 export const MODEL_SETTINGS_KEY = 'learning-canvas:model-settings-v1';
 let unlockedKey = '';
 
+const KEY_REQUIRED_HOSTS = new Set(['api.openai.com', 'openrouter.ai']);
+
+export function endpointRequiresApiKey(value) {
+  try { return KEY_REQUIRED_HOSTS.has(new URL(value.trim()).hostname.toLowerCase()); }
+  catch { return false; }
+}
+
 export function completionUrl(value, allowHttp = false) {
   const url = new URL(value.trim());
   if (url.username || url.password || url.search || url.hash) throw new Error('Use an endpoint without credentials, query, or fragment.');

@@ -1,4 +1,4 @@
-import { completionUrl } from './model-settings.js';
+import { completionUrl, endpointRequiresApiKey } from './model-settings.js';
 import { parseChatResponse } from './chat.js';
 import { AGENT_LIMITS, parseAgentResponse } from './agent-service.js';
 
@@ -77,6 +77,7 @@ export function partialChatReply(raw) {
 
 export async function complete(settings, key, messages, { signal, fetcher = fetch, onDelta } = {}) {
   if (!settings.selectedModel || !settings.models.includes(settings.selectedModel)) throw new Error('Choose a model in Settings.');
+  if (endpointRequiresApiKey(settings.endpoint) && !key) throw new Error('This hosted endpoint requires an API key. Store and unlock the key in Settings.');
   const controller = new AbortController();
   let timer;
   const keepAlive = () => { clearTimeout(timer); timer = setTimeout(() => controller.abort(), 90000); };
@@ -89,6 +90,7 @@ export async function complete(settings, key, messages, { signal, fetcher = fetc
       headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) },
       body: JSON.stringify({ model: settings.selectedModel, messages, stream: !!onDelta })
     });
+    if (response.status === 401) throw new Error('Authentication failed (HTTP 401). Store the correct API key for this endpoint, then unlock it in Settings.');
     if (!response.ok) throw new Error(`Model request failed (HTTP ${response.status}). Check your endpoint, key, and model.`);
     if (onDelta) return await readCompletionStream(response, onDelta, keepAlive);
     const data = await response.json();

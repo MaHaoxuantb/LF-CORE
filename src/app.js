@@ -6,7 +6,7 @@ import { isSourceNode, nodeLabel, sourceNode } from './node-content.js';
 import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
 import { putPdf, getPdf, deletePdf, putSourceTextIndex, getSourceTextIndex, deleteSourceTextIndex } from './source-store.js';
 import { connectionPort, crossConnectionRoute, nearestConnectionSide, snappedConnectionSides } from './cross-connection.js';
-import { loadModelSettings, saveModelSettings, saveModelSecret, saveDeveloperMode, encryptApiKey, unlockApiKey, getApiKey, lockApiKey } from './model-settings.js';
+import { loadModelSettings, saveModelSettings, saveModelSecret, saveDeveloperMode, encryptApiKey, unlockApiKey, getApiKey, lockApiKey, endpointRequiresApiKey } from './model-settings.js';
 import { chatModel, runAgent } from './ai.js';
 import { contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, proposalStatus } from './chat.js';
 import { WorkspaceAgentService, applyAgentProposal } from './agent-service.js';
@@ -3322,21 +3322,26 @@ function renderSettings(activeTab = 'ai') {
     const ids = models.value.split(/\r?\n/).map((id) => id.trim()).filter(Boolean);
     if (!ids.includes(selected.value.trim())) selected.value = ids[0] || '';
   });
-  const apiKey = el('input', { type: 'password', autocomplete: 'new-password', 'aria-label': 'New API key', placeholder: saved.secret ? 'Stored encrypted; leave blank to keep' : 'Optional for a local endpoint' });
+  const apiKey = el('input', { type: 'password', autocomplete: 'new-password', 'aria-label': 'New API key', placeholder: saved.secret ? 'Stored encrypted; leave blank to keep' : endpointRequiresApiKey(saved.endpoint) ? 'Required for this hosted endpoint' : 'Optional for a local endpoint' });
   const passphrase = el('input', { type: 'password', autocomplete: 'new-password', 'aria-label': 'Encryption passphrase', placeholder: 'At least 12 characters to store or unlock a key' });
   const status = el('p', { class: 'ai-status', role: 'status', text: saved.secret ? getApiKey() ? 'Key unlocked for this tab.' : 'Encrypted key is locked. Unlock before requesting.' : 'No stored key. Local endpoints may allow requests without one.' });
   const fields = el('fieldset', { class: 'ai-settings-fields' });
   fields.disabled = !aiFeaturesEnabled;
   fields.append(el('label', { text: 'ENDPOINT' }), endpoint, el('label', { text: 'MODELS · ONE ID PER LINE' }), models, el('label', { text: 'ACTIVE MODEL' }), selected, el('label', { text: 'API KEY' }), apiKey, el('label', { text: 'PASSPHRASE' }), passphrase, status);
   const controls = el('div', { class: 'ai-actions' });
-  controls.append(button('Save AI settings', () => {
+  controls.append(button('Save AI settings', async () => {
     try {
       const ids = models.value.split(/\r?\n/).map((id) => id.trim()).filter(Boolean);
       if (!ids.length) throw new Error('Add at least one model ID.');
       if (!selected.value.trim()) selected.value = ids[0];
       if (!ids.includes(selected.value.trim())) throw new Error('Select a model from the list.');
-      saveModelSettings({ endpoint: endpoint.value, models: ids, selectedModel: selected.value.trim(), secret: loadModelSettings().secret, developerMode: loadModelSettings().developerMode });
-      status.textContent = 'AI endpoint and model settings saved locally.';
+      let secret = loadModelSettings().secret;
+      if (apiKey.value.trim()) secret = await encryptApiKey(apiKey.value, passphrase.value);
+      if (endpointRequiresApiKey(endpoint.value) && !secret) throw new Error('Enter an API key and a passphrase for this hosted endpoint.');
+      saveModelSettings({ endpoint: endpoint.value, models: ids, selectedModel: selected.value.trim(), secret, developerMode: loadModelSettings().developerMode });
+      const storedKey = !!apiKey.value.trim();
+      apiKey.value = ''; passphrase.value = '';
+      status.textContent = storedKey ? 'AI settings saved; key encrypted and unlocked for this tab.' : 'AI endpoint and model settings saved locally.';
       refreshChatAvailability();
       announce('AI settings saved.');
     } catch (error) { status.textContent = error.message; }
@@ -3695,7 +3700,7 @@ function currentAgentFocus() {
 async function executeAgentRequest(item, chat, question, { focusOverride = null } = {}) {
   if (!question || aiPanel.busy) return;
   const config = loadModelSettings();
-  if (!config.models.length || (config.secret && !getApiKey())) { renderSettings(); return; }
+  if (!config.models.length || (endpointRequiresApiKey(config.endpoint) && !config.secret) || (config.secret && !getApiKey())) { renderSettings(); return; }
   const scope = aiPanel, workspaceId = item.id, chatId = chat.id;
   const captured = focusOverride || currentAgentFocus();
   const controller = new AbortController();
@@ -3814,9 +3819,10 @@ function updateStreamingChatReply(reply) {
 function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer = true) {
   const agentMode = chat.assistantMode === 'agent';
   const settings = loadModelSettings();
-  const unavailable = !settings.models.length || !!(settings.secret && !getApiKey());
+  const missingRequiredKey = endpointRequiresApiKey(settings.endpoint) && !settings.secret;
+  const unavailable = !settings.models.length || missingRequiredKey || !!(settings.secret && !getApiKey());
   if (unavailable) panel.append(el('div', { class: 'chat-config-notice' },
-    el('span', { text: !settings.models.length ? 'Choose an endpoint and model to start chatting.' : 'Unlock your API key to continue chatting.' }),
+    el('span', { text: !settings.models.length ? 'Choose an endpoint and model to start chatting.' : missingRequiredKey ? 'Store an API key for this hosted endpoint.' : 'Unlock your API key to continue chatting.' }),
     button('Open Settings', renderSettings, 'chat-text-button')));
   if (!agentMode && snapshot.size > MAX_CONTEXT_CHARS) panel.append(el('p', { class: 'ai-error chat-error', text: 'Context is too large. Choose a smaller scope before sending.' }));
   if (aiPanel.error) panel.append(el('p', { class: 'ai-error chat-error', role: 'alert', text: aiPanel.error }));
@@ -3866,7 +3872,7 @@ function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer =
     const selected = contextSnapshot(work(), effectiveChatContext(chat));
     if (selected.size > MAX_CONTEXT_CHARS) { aiPanel.error = 'Context is too large. Deselect items before sending.'; renderAiPanel(); return; }
     const config = loadModelSettings();
-    if (!config.models.length || (config.secret && !getApiKey())) { renderSettings(); return; }
+    if (!config.models.length || (endpointRequiresApiKey(config.endpoint) && !config.secret) || (config.secret && !getApiKey())) { renderSettings(); return; }
     const scope = aiPanel, workspaceId = item.id, chatId = chat.id;
     const prior = chat.messages.filter((message) => message.role === 'user' || message.role === 'assistant').map((message) => ({ role: message.role, content: message.content }));
     const userMessage = { id: crypto.randomUUID(), role: 'user', content: question, contextSnapshot: selected, createdAt: new Date().toISOString() };
