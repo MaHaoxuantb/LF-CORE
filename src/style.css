@@ -884,6 +884,26 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .chat-header-icon:hover, .chat-header-icon:focus-visible { background: #eeeae4; color: #37322d; }
 .chat-heading-actions .panel-close { flex: none; }
 .ai-panel > .ai-chat-toolbar { padding: 8px 16px 5px; justify-content: space-between; }
+.assistant-mode-switch { flex: none; display: grid; grid-template-columns: 1fr 1fr; gap: 3px; margin: 8px 16px 3px; padding: 3px; border-radius: 9px; background: #eeeae4; }
+.assistant-mode-option { min-height: 29px; border: 0; border-radius: 7px; background: transparent; color: #776f67; font-size: .7rem; font-weight: 700; }
+.assistant-mode-option.active { background: #fff; color: #453d35; box-shadow: 0 1px 4px #3d30231a; }
+.agent-authority-note { display: flex; flex-wrap: wrap; gap: 3px 8px; align-items: baseline; color: #786f65; font-size: .64rem; line-height: 1.4; }
+.agent-authority-note strong { color: #5c4c36; }
+.agent-progress { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.agent-proposal { width: 100%; box-sizing: border-box; margin-top: 12px; padding: 12px; border: 1px solid #d8cdbd; border-radius: 11px; background: #fffdf9; }
+.agent-proposal-heading { display: flex; justify-content: space-between; gap: 8px; font-size: .7rem; }
+.agent-proposal-heading span { color: #897b68; text-align: right; }
+.agent-proposal-summary { margin: 8px 0; color: #5f564d; font-size: .73rem; }
+.agent-change-counts { display: flex; flex-wrap: wrap; gap: 5px; margin: 9px 0; }
+.agent-change-counts span { padding: 3px 6px; border-radius: 999px; background: #eee9e0; color: #756a5d; font-size: .59rem; }
+.agent-change-block { margin-top: 10px; padding-top: 9px; border-top: 1px solid #ebe4da; font-size: .68rem; }
+.agent-change-block > strong { display: block; margin-bottom: 6px; color: #4c4339; }
+.agent-change-block pre { max-height: 150px; overflow: auto; margin: 0; padding: 8px; border-radius: 7px; background: #f5f2ed; white-space: pre-wrap; overflow-wrap: anywhere; font: .66rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.agent-relationship-list { margin: 5px 0 0; padding-left: 18px; color: #675e54; }
+.agent-source-note, .agent-warning { margin: 9px 0 0; font-size: .65rem; line-height: 1.45; }
+.agent-source-note { color: #586b58; }
+.agent-warning { padding: 7px; border-radius: 6px; background: #fff2d6; color: #805f22; }
+.agent-proposal-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 11px; }
 .chat-toolbar-label { color: #90877d; font-size: .67rem; }
 .ai-chat-composer .chat-context-control { grid-column: 1; grid-row: 2; justify-self: start; display: inline-flex; align-items: center; gap: 3px; max-width: 100%; color: #8e857c; font-size: .67rem; cursor: pointer; }
 .ai-chat-composer .chat-context-select { width: auto; max-width: 120px; height: 27px; min-height: 27px; padding: 0; border: 0; border-radius: 0; appearance: none; background: transparent; color: #63594e; font-family: inherit; font-size: .67rem; font-weight: 650; cursor: pointer; }
@@ -952,6 +972,14 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 :root[data-dark='true'] .chat-header-icon { color: #c5bcb1; }
 :root[data-dark='true'] .chat-header-icon:hover, :root[data-dark='true'] .chat-header-icon:focus-visible { background: #3b3833; color: #f1ebe4; }
 :root[data-dark='true'] .chat-proposal { background: #2d2b28; border-color: #4a453e; }
+:root[data-dark='true'] .assistant-mode-switch { background: #191919; }
+:root[data-dark='true'] .assistant-mode-option { color: #aaa29a; }
+:root[data-dark='true'] .assistant-mode-option.active { background: #34312d; color: #f0e9df; }
+:root[data-dark='true'] .agent-proposal { background: #292725; border-color: #4c463e; }
+:root[data-dark='true'] .agent-proposal-heading strong, :root[data-dark='true'] .agent-change-block > strong { color: #eee6dc; }
+:root[data-dark='true'] .agent-proposal-summary, :root[data-dark='true'] .agent-relationship-list { color: #c5bcb1; }
+:root[data-dark='true'] .agent-change-counts span, :root[data-dark='true'] .agent-change-block pre { background: #211f1d; color: #cfc6ba; }
+:root[data-dark='true'] .agent-authority-note strong { color: #dbc8aa; }
 :root[data-dark='true'] .chat-diff-summary { background: #373531; border-color: #514d46; color: #d8d1c8; }
 :root[data-dark='true'] .chat-diff-view { background: #262522; border-color: #514d46; }
 :root[data-dark='true'] .chat-diff-number { background: #302e2a; color: #989087; }

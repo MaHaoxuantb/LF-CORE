@@ -76,6 +76,19 @@ function remapPdfSourceIds(workspace, idMap) {
   }
 }
 
+function remapAgentProposals(chats, idMap, originalUpdatedAt, importedUpdatedAt) {
+  for (const chat of chats) {
+    chat.assistantMode ||= 'chat';
+    for (const message of chat.messages || []) {
+      const proposal = message.agentProposal;
+      if (!proposal) continue;
+      if (proposal.before) remapPdfSourceIds(proposal.before, idMap);
+      if (proposal.after) remapPdfSourceIds(proposal.after, idMap);
+      if (proposal.status === 'proposed' && proposal.baseUpdatedAt === originalUpdatedAt) proposal.baseUpdatedAt = importedUpdatedAt;
+    }
+  }
+}
+
 export function parseProject(serialized, { uuid = () => crypto.randomUUID(), now = () => new Date().toISOString() } = {}) {
   let bundle;
   try { bundle = JSON.parse(serialized); }
@@ -101,10 +114,12 @@ export function parseProject(serialized, { uuid = () => crypto.randomUUID(), now
     idMap.set(source.id, id);
     pdfs.push({ id, bytes: base64ToBytes(file.data) });
   }
+  const originalUpdatedAt = workspace.updatedAt;
   remapPdfSourceIds(workspace, idMap);
   workspace.id = uuid();
   workspace.createdAt = now();
   workspace.updatedAt = workspace.createdAt;
   const chats = Array.isArray(bundle.project.chats) ? structuredClone(bundle.project.chats) : [];
+  remapAgentProposals(chats, idMap, originalUpdatedAt, workspace.updatedAt);
   return { workspace, chats, pdfs };
 }

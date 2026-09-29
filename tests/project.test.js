@@ -11,7 +11,9 @@ test('a project round trip preserves content and remaps storage identities', () 
   workspace.nodes.push({ id: 'source-node-1', document: { type: 'source', sourceId: 'pdf-old' }, sourceRefs: [] });
   workspace.research.questions.push({ id: 'q1', text: 'Why?', sourceIds: ['pdf-old'] });
   workspace.research.findings.push({ id: 'f1', sourceIds: ['pdf-old'], status: 'proposed' });
-  const serialized = serializeProject(workspace, [{ id: 'chat-1', title: 'Question' }], new Map([['pdf-old', new Uint8Array([37, 80, 68, 70])]]), '2026-09-21T00:00:00.000Z');
+  const agentAfter = structuredClone(workspace);
+  agentAfter.nodes[0].sourceRefs.push({ sourceId: 'pdf-old', anchor: { targetId: 'pdf-old', quote: 'agent passage' } });
+  const serialized = serializeProject(workspace, [{ id: 'chat-1', title: 'Question', assistantMode: 'agent', messages: [{ role: 'assistant', agentProposal: { status: 'proposed', baseUpdatedAt: workspace.updatedAt, before: workspace, after: agentAfter } }] }], new Map([['pdf-old', new Uint8Array([37, 80, 68, 70])]]), '2026-09-21T00:00:00.000Z');
   const ids = ['pdf-new', 'workspace-new'];
   const imported = parseProject(serialized, { uuid: () => ids.shift(), now: () => '2026-09-22T00:00:00.000Z' });
   assert.equal(imported.workspace.id, 'workspace-new');
@@ -23,6 +25,9 @@ test('a project round trip preserves content and remaps storage identities', () 
   assert.deepEqual(imported.workspace.research.findings[0].sourceIds, ['pdf-new']);
   assert.deepEqual(imported.pdfs[0], { id: 'pdf-new', bytes: new Uint8Array([37, 80, 68, 70]) });
   assert.equal(imported.chats[0].title, 'Question');
+  assert.equal(imported.chats[0].assistantMode, 'agent');
+  assert.equal(imported.chats[0].messages[0].agentProposal.after.nodes[0].sourceRefs[1].sourceId, 'pdf-new');
+  assert.equal(imported.chats[0].messages[0].agentProposal.baseUpdatedAt, imported.workspace.updatedAt);
   assert.equal(imported.workspace.accentColor, 'blue');
   assert.equal(workspace.id === imported.workspace.id, false);
 });

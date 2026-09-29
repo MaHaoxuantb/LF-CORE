@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import { completionUrl, encryptApiKey, unlockApiKey, getApiKey, lockApiKey, saveModelSettings, saveModelSecret, saveDeveloperMode, loadModelSettings } from '../src/model-settings.js';
-import { complete, generateArticle, askModel, partialChatReply, proposeInsertion } from '../src/ai.js';
+import { complete, generateArticle, askModel, partialChatReply, proposeInsertion, runAgent } from '../src/ai.js';
+import { WorkspaceAgentService } from '../src/agent-service.js';
+import { createWorkspace } from '../src/storage.js';
 
 globalThis.crypto ||= webcrypto;
 
@@ -109,4 +111,47 @@ test('partial chat reply exposes only the decoded reply field', () => {
   assert.equal(partialChatReply('{"reply":"A \\u263A'), 'A ☺');
   assert.equal(partialChatReply('{"rep'), '');
   assert.equal(partialChatReply('Plain response'), 'Plain response');
+});
+
+test('agent loop performs multiple inspected tool turns and returns an isolated proposal', async () => {
+  const workspace = createWorkspace('Agent loop', '# Article\n\nOriginal.');
+  workspace.id = 'workspace'; workspace.updatedAt = 'base';
+  const service = new WorkspaceAgentService(workspace, { uuid: (() => { let id = 0; return () => `agent-${++id}`; })() });
+  const replies = [
+    { status: 'continue', message: 'Inspecting.', calls: [{ id: 'index', tool: 'get_project_index', args: {} }] },
+    { status: 'continue', message: 'Building.', calls: [{ id: 'node', tool: 'create_node', args: { markdown: '# New idea' } }] },
+    { status: 'ready', message: 'Added one idea.', calls: [] }
+  ];
+  const progress = [];
+  const result = await runAgent({}, '', 'Add an idea', service, {
+    completeRequest: async () => JSON.stringify(replies.shift()),
+    onProgress: (entry) => progress.push(entry)
+  });
+  assert.equal(result.proposal.operations.length, 1);
+  assert.equal(result.proposal.after.nodes.length, 1);
+  assert.equal(workspace.nodes.length, 0);
+  assert.equal(result.proposal.message, 'Added one idea.');
+  assert.ok(progress.some((entry) => entry.phase === 'tools'));
+});
+
+test('agent loop gives malformed JSON one repair attempt', async () => {
+  const workspace = createWorkspace('Repair'); workspace.updatedAt = 'base';
+  const service = new WorkspaceAgentService(workspace);
+  const replies = ['not json', '{"status":"ready","message":"No change","calls":[]}'];
+  const result = await runAgent({}, '', 'Inspect', service, { completeRequest: async () => replies.shift() });
+  assert.equal(result.turns, 2);
+  assert.equal(result.proposal.operations.length, 0);
+});
+
+test('agent loop returns a labeled partial draft at its step limit', async () => {
+  const workspace = createWorkspace('Limited'); workspace.updatedAt = 'base';
+  const service = new WorkspaceAgentService(workspace);
+  let turn = 0;
+  const result = await runAgent({}, '', 'Keep working', service, { completeRequest: async () => JSON.stringify({
+    status: 'continue', message: `Step ${++turn}`,
+    calls: turn === 1 ? [{ id: 'create', tool: 'create_node', args: { markdown: '# Partial' } }] : [{ id: `index-${turn}`, tool: 'get_project_index', args: {} }]
+  }) });
+  assert.equal(result.limitReached, true);
+  assert.equal(result.proposal.runStatus, 'limit_reached');
+  assert.equal(result.proposal.operations.length, 1);
 });

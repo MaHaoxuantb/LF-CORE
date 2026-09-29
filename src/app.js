@@ -4,11 +4,13 @@ import { loadDatabaseState, requestPersistentStorage, writeDatabaseState } from 
 import { renderMarkdown, headingTokens, wrapMarkdownHighlight, unwrapMarkdownHighlight } from './markdown.js';
 import { isSourceNode, nodeLabel, sourceNode } from './node-content.js';
 import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
-import { putPdf, getPdf, deletePdf } from './source-store.js';
+import { putPdf, getPdf, deletePdf, putSourceTextIndex, getSourceTextIndex, deleteSourceTextIndex } from './source-store.js';
 import { connectionPort, crossConnectionRoute, nearestConnectionSide, snappedConnectionSides } from './cross-connection.js';
 import { loadModelSettings, saveModelSettings, saveModelSecret, saveDeveloperMode, encryptApiKey, unlockApiKey, getApiKey, lockApiKey } from './model-settings.js';
-import { chatModel } from './ai.js';
+import { chatModel, runAgent } from './ai.js';
 import { contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, proposalStatus } from './chat.js';
+import { WorkspaceAgentService, applyAgentProposal } from './agent-service.js';
+import { ensurePdfSourceIndex, readWorkspaceSource, searchWorkspaceSources } from './source-index.js';
 import { normalizeGraphFocusPreferences, relatedNodeIds } from './graph-focus.js';
 import { siblingPredecessor } from './siblings.js';
 import { parseProject, projectFileName, serializeProject, PROJECT_EXTENSION } from './project.js';
@@ -135,6 +137,8 @@ let activeConnection = null;
 let openSourceId = null, sourcePage = 1, sourceJump = null;
 const pdfDocuments = new Map();
 const pdfNodePages = new Map();
+const pdfIndexJobs = new Map();
+const pdfIndexStatuses = new Map();
 const pendingPdfDeletes = new Set();
 let selectedPassage = null, editGroup = null, view = { x: 0, y: 0, zoom: 1 };
 let viewTimer = null, toastTimer = null;
@@ -239,6 +243,7 @@ async function runStateSaveLoop() {
           pendingPdfDeletes.delete(id);
           pdfDocuments.delete(id);
           deletePdf(id).catch(() => announce('A removed PDF could not be cleared from browser storage.'));
+          deleteSourceTextIndex(id).catch(() => {});
         }
       }
       job.waiters.forEach((resolve) => resolve(true));
@@ -564,7 +569,54 @@ async function pdfSource(file, id = crypto.randomUUID(), expectedChecksum = null
   const document = await getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
   await putPdf(id, bytes);
   pdfDocuments.set(id, document);
-  return { id, type: 'pdf', title: sourceTitle(file.name), fileName: file.name, byteLength: bytes.byteLength, checksum, pages: document.numPages, addedAt: new Date().toISOString() };
+  const source = { id, type: 'pdf', title: sourceTitle(file.name), fileName: file.name, byteLength: bytes.byteLength, checksum, pages: document.numPages, addedAt: new Date().toISOString() };
+  // Text extraction is a regenerable cache. Start it opportunistically after
+  // import; Agent source tools will await or rebuild it when needed.
+  ensureAgentPdfIndex(source).catch(() => {});
+  return source;
+}
+
+async function loadPdfForIndex(sourceId) {
+  let document = pdfDocuments.get(sourceId);
+  if (document) return document;
+  const bytes = await getPdf(sourceId);
+  if (!bytes) return null;
+  document = await getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
+  pdfDocuments.set(sourceId, document);
+  return document;
+}
+
+function ensureAgentPdfIndex(source, { signal, onProgress } = {}) {
+  if (pdfIndexJobs.has(source.id)) {
+    const existing = pdfIndexJobs.get(source.id);
+    if (!signal) return existing;
+    if (signal.aborted) return Promise.reject(new DOMException('Source indexing was canceled.', 'AbortError'));
+    return Promise.race([existing, new Promise((_, reject) => signal.addEventListener('abort', () => reject(new DOMException('Source indexing was canceled.', 'AbortError')), { once: true }))]);
+  }
+  pdfIndexStatuses.set(source.id, 'indexing');
+  const job = ensurePdfSourceIndex(source, {
+    getCached: getSourceTextIndex,
+    putCached: putSourceTextIndex,
+    loadDocument: loadPdfForIndex,
+    signal,
+    onProgress
+  }).then((record) => { pdfIndexStatuses.set(source.id, 'ready'); return record; }, (error) => { pdfIndexStatuses.set(source.id, error.name === 'AbortError' ? 'not_indexed' : 'error'); throw error; })
+    .finally(() => pdfIndexJobs.delete(source.id));
+  pdfIndexJobs.set(source.id, job);
+  return job;
+}
+
+async function agentSourceIndexStatus(source) {
+  if (source.type === 'text') return 'ready';
+  if (source.type !== 'pdf') return 'unavailable';
+  if (pdfIndexJobs.has(source.id)) return 'indexing';
+  if (pdfIndexStatuses.has(source.id)) return pdfIndexStatuses.get(source.id);
+  let cached;
+  try { cached = await getSourceTextIndex(source.id); }
+  catch { return 'error'; }
+  const status = cached?.checksum === (source.checksum || null) ? 'ready' : 'not_indexed';
+  pdfIndexStatuses.set(source.id, status);
+  return status;
 }
 
 function startWorkspace(title, source = null, generate = false) {
@@ -597,10 +649,11 @@ async function uploadProject(file) {
   } catch (error) {
     state.workspaces = state.workspaces.filter((entry) => entry.id !== imported.workspace.id);
     delete state.history[imported.workspace.id]; delete state.redo[imported.workspace.id]; delete state.chats[imported.workspace.id];
-    await Promise.allSettled(storedPdfIds.map((id) => deletePdf(id)));
+    await Promise.allSettled(storedPdfIds.flatMap((id) => [deletePdf(id), deleteSourceTextIndex(id)]));
     throw error;
   }
   openWorkspace(imported.workspace.id);
+  for (const source of imported.workspace.sources.filter((entry) => entry.type === 'pdf')) ensureAgentPdfIndex(source).catch(() => {});
   announce('Project uploaded.');
 }
 
@@ -3326,11 +3379,11 @@ function newChat(seed = {}) {
   const mode = seed.targetId === 'article' || !nodeIds.length ? 'article' : 'selected';
   const passage = seed.quote && (seed.targetId === 'article' || nodeIds.includes(seed.targetId)) ? { targetId: seed.targetId, quote: seed.quote } : null;
   const now = new Date().toISOString();
-  const chat = { id: crypto.randomUUID(), title: 'New chat', createdAt: now, updatedAt: now,
+  const chat = { id: crypto.randomUUID(), title: 'New chat', createdAt: now, updatedAt: now, assistantMode: seed.assistantMode || aiPanel?.assistantMode || 'chat',
     context: { mode, nodeIds, passage }, messages: [] };
   chatList().push(chat);
   persist();
-  aiPanel = { chatId: chat.id, tab: 'chat', draft: seed.draft || '', busy: false, error: '', previewId: null, width: aiPanel?.width };
+  aiPanel = { chatId: chat.id, tab: 'chat', draft: seed.draft || '', busy: false, error: '', previewId: null, width: aiPanel?.width, assistantMode: chat.assistantMode };
   renderAiPanel();
 }
 
@@ -3345,7 +3398,8 @@ function openAiPanel(seed = null) {
     return;
   }
   const chat = [...chatList()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-  aiPanel = { chatId: chat.id, tab: 'chat', draft: '', busy: false, error: '', previewId: null, width: aiPanel?.width };
+  chat.assistantMode ||= 'chat';
+  aiPanel = { chatId: chat.id, tab: 'chat', draft: '', busy: false, error: '', previewId: null, width: aiPanel?.width, assistantMode: chat.assistantMode };
   renderWorkspace();
 }
 
@@ -3528,12 +3582,181 @@ function renderProposalCard(proposal, item) {
   return card;
 }
 
+function agentProposalStatus(item, proposal) {
+  if (proposal.status === 'discarded') return 'discarded';
+  if (proposal.status !== 'accepted') return 'proposed';
+  const hasOrigin = item.article.origins?.some((origin) => origin.runId === proposal.id)
+    || item.nodes.some((node) => node.origins?.some((origin) => origin.runId === proposal.id))
+    || item.edges.some((edge) => edge.origins?.some((origin) => origin.runId === proposal.id));
+  return hasOrigin ? 'accepted' : 'undone';
+}
+
+function applyAgentChangeSet(proposal) {
+  const item = work();
+  if (!item) return false;
+  if (graphIsReadOnly()) {
+    aiPanel.error = 'Exit focus to apply an Agent workspace change.';
+    renderAiPanel(); return false;
+  }
+  let next;
+  try { next = applyAgentProposal(item, proposal); }
+  catch (error) { aiPanel.error = error.message; renderAiPanel(); return false; }
+  proposal.status = 'accepted'; proposal.acceptedAt = new Date().toISOString();
+  change((entry) => {
+    entry.article = next.article;
+    entry.nodes = next.nodes;
+    entry.edges = next.edges;
+    entry.highlights = next.highlights || [];
+    entry.layout = next.layout;
+    for (const node of entry.nodes) {
+      if (!entry.layout.positions[node.id]) entry.layout.positions[node.id] = suggestedPosition(entry, node.parentId ?? null, entry.nodes.indexOf(node));
+      if (node.anchor && !entry.highlights.some((highlight) => highlight.id === node.anchor.id)) {
+        entry.highlights.push({ ...node.anchor });
+        markAnchorInMarkdown(entry, node.anchor);
+        if (!entry.edges.some((edge) => edge.fromId === `h:${node.anchor.id}` && edge.toId === node.id)) {
+          entry.edges.push({ id: crypto.randomUUID(), fromId: `h:${node.anchor.id}`, toId: node.id, label: null, direction: 'forward', provenance: 'ai', origins: [{ kind: 'agent', runId: proposal.id, acceptedAt: proposal.acceptedAt }] });
+        }
+      }
+    }
+  });
+  aiPanel.error = ''; renderWorkspace(); announce('Agent changes applied. Undo reverses the whole batch.');
+  return true;
+}
+
+function renderAgentProposalCard(proposal, item) {
+  const status = agentProposalStatus(item, proposal);
+  const runLabel = proposal.runStatus === 'ready' ? 'Ready for review' : proposal.runStatus === 'limit_reached' ? 'Stopped at step limit' : 'Incomplete run';
+  const card = el('section', { class: 'agent-proposal' },
+    el('div', { class: 'agent-proposal-heading' }, el('strong', { text: 'Agent workspace proposal' }), el('span', { text: status === 'accepted' ? 'Applied' : status === 'undone' ? 'Undone' : status === 'discarded' ? 'Discarded' : runLabel })),
+    proposal.message ? el('p', { class: 'agent-proposal-summary', text: proposal.message }) : null);
+  const created = proposal.operations.filter((operation) => operation.tool === 'create_node');
+  const markdown = proposal.operations.filter((operation) => operation.tool === 'replace_markdown');
+  const relationships = proposal.operations.filter((operation) => ['set_parent', 'create_edge', 'update_edge'].includes(operation.tool));
+  const sources = proposal.operations.filter((operation) => operation.tool === 'attach_source_reference' || operation.tool === 'create_node' && operation.after?.sourceRefs?.length);
+  card.append(el('div', { class: 'agent-change-counts' },
+    el('span', { text: `${created.length} new node${created.length === 1 ? '' : 's'}` }),
+    el('span', { text: `${markdown.length} document edit${markdown.length === 1 ? '' : 's'}` }),
+    el('span', { text: `${relationships.length} relationship change${relationships.length === 1 ? '' : 's'}` }),
+    el('span', { text: `${sources.length} source attachment${sources.length === 1 ? '' : 's'}` })));
+  for (const operation of created) card.append(el('div', { class: 'agent-change-block' }, el('strong', { text: `New node · ${nodeLabel(operation.after, item.sources)}` }), el('pre', { text: operation.after.document.markdown })));
+  for (const operation of markdown) {
+    const label = operation.targetId === 'article' ? 'Master article' : nodeLabel(proposal.after.nodes.find((node) => node.id === operation.targetId) || {}, item.sources);
+    const diff = renderProposalDiff(operation.before, operation.after);
+    card.append(el('div', { class: 'agent-change-block' }, el('strong', { text: `Edited · ${label}` }), diff.view));
+  }
+  if (relationships.length) {
+    const list = el('ul', { class: 'agent-relationship-list' });
+    for (const operation of relationships) {
+      const description = operation.tool === 'set_parent'
+        ? `Reparent ${operation.targetId}: ${operation.before || 'root'} → ${operation.after || 'root'}`
+        : operation.tool === 'create_edge'
+          ? `Connect ${operation.after.fromId} → ${operation.after.toId}${operation.after.label ? ` · ${operation.after.label}` : ''}`
+          : `Update link ${operation.targetId}`;
+      list.append(el('li', { text: description }));
+    }
+    card.append(el('div', { class: 'agent-change-block' }, el('strong', { text: 'Graph relationships' }), list));
+  }
+  if (sources.length) card.append(el('p', { class: 'agent-source-note', text: `${sources.length} verified passage attachment${sources.length === 1 ? '' : 's'} will retain source and page locations.` }));
+  if (proposal.runStatus !== 'ready') card.append(el('p', { class: 'agent-warning', text: 'This draft is incomplete. Review every change before applying it.' }));
+  if (!proposal.operations.length) card.append(el('p', { class: 'agent-warning', text: 'This run did not stage any workspace changes.' }));
+  if (status === 'proposed' || status === 'undone') {
+    card.append(el('div', { class: 'agent-proposal-actions' },
+      proposal.operations.length ? button('Apply all', () => applyAgentChangeSet(proposal), 'chat-apply-button') : null,
+      button('Discard', () => { proposal.status = 'discarded'; persist(); renderAiPanel(); }, 'chat-text-button'),
+      button('Rerun', () => rerunAgentProposal(proposal), 'chat-text-button')));
+  }
+  return card;
+}
+
+function currentAgentFocus() {
+  const chat = currentChat();
+  const nodeIds = selectedId ? [selectedId] : selectedIds.size ? [...selectedIds] : chat?.context?.nodeIds || [];
+  const item = work();
+  const validNodeIds = nodeIds.filter((id) => item?.nodes.some((node) => node.id === id && !isSourceNode(node)));
+  let passage = null, selectionAnchor = null;
+  if (selectedPassage) {
+    const text = sourcePlainText(item, selectedPassage.targetId);
+    try {
+      selectionAnchor = makeAnchor(selectedPassage.targetId, text, selectedPassage.start, selectedPassage.end);
+      passage = { targetId: selectedPassage.targetId, quote: selectionAnchor.quote };
+    } catch { /* A stale browser selection is only a focus hint. */ }
+  } else if (chat?.context?.passage?.quote) {
+    const saved = chat.context.passage;
+    passage = { targetId: saved.targetId, quote: saved.quote };
+    const text = sourcePlainText(item, saved.targetId), start = text.indexOf(saved.quote);
+    if (start >= 0) {
+      try { selectionAnchor = makeAnchor(saved.targetId, text, start, start + saved.quote.length); }
+      catch { /* The quote remains a focus hint when it cannot become an anchor. */ }
+    }
+  }
+  return { focus: { nodeIds: validNodeIds, passage }, selectionAnchor };
+}
+
+async function executeAgentRequest(item, chat, question, { focusOverride = null } = {}) {
+  if (!question || aiPanel.busy) return;
+  const config = loadModelSettings();
+  if (!config.models.length || (config.secret && !getApiKey())) { renderSettings(); return; }
+  const scope = aiPanel, workspaceId = item.id, chatId = chat.id;
+  const captured = focusOverride || currentAgentFocus();
+  const controller = new AbortController();
+  scope.agentController = controller;
+  scope.agentProgress = { phase: 'starting', turn: 0, maxTurns: 6, mutations: 0 };
+  const userMessage = { id: crypto.randomUUID(), role: 'user', content: question, agentFocus: captured.focus, createdAt: new Date().toISOString() };
+  chat.messages.push(userMessage);
+  if (chat.title === 'New chat') chat.title = question.slice(0, 56);
+  chat.updatedAt = userMessage.createdAt;
+  scope.draft = ''; scope.error = ''; scope.busy = true; persist(); renderAiPanel();
+  const progress = (entry) => {
+    scope.agentProgress = entry;
+    if (scope === aiPanel && currentId === workspaceId) renderAiPanel({ focusComposer: false });
+  };
+  const ensureIndex = (source, options = {}) => ensureAgentPdfIndex(source, {
+    ...options,
+    signal: controller.signal,
+    onProgress: ({ page, pages }) => progress({ phase: 'indexing', turn: scope.agentProgress?.turn || 0, maxTurns: 6, mutations: service.mutationCount, sourceTitle: source.title, page, pages }),
+  });
+  let service;
+  try {
+    service = new WorkspaceAgentService(item, {
+      selectionAnchor: captured.selectionAnchor,
+      sourceIndexStatus: agentSourceIndexStatus,
+      searchSources: (query, options) => searchWorkspaceSources(service.draft, query, { ...options, signal: controller.signal, ensurePdfIndex: ensureIndex }),
+      readSource: (sourceId, range) => readWorkspaceSource(service.draft, sourceId, range, { signal: controller.signal, ensurePdfIndex: ensureIndex })
+    });
+    const result = await runAgent(config, getApiKey(), question, service, { signal: controller.signal, focus: captured.focus, onProgress: progress });
+    const savedChat = state.chats[workspaceId]?.find((entry) => entry.id === chatId);
+    if (!savedChat) return;
+    result.proposal.request = question;
+    result.proposal.focus = captured.focus;
+    savedChat.messages.push({ id: crypto.randomUUID(), role: 'assistant', content: result.proposal.message, agentProposal: result.proposal,
+      model: config.selectedModel, endpoint: config.endpoint, createdAt: new Date().toISOString() });
+    savedChat.updatedAt = new Date().toISOString(); persist();
+    if (result.error && scope === aiPanel) scope.error = result.error;
+  } catch (error) {
+    const savedChat = state.chats[workspaceId]?.find((entry) => entry.id === chatId);
+    if (savedChat) savedChat.messages.push({ id: crypto.randomUUID(), role: 'assistant', content: controller.signal.aborted ? 'Agent run stopped before it produced a valid draft.' : `Agent run failed: ${error.message}`,
+      model: config.selectedModel, endpoint: config.endpoint, createdAt: new Date().toISOString() });
+    if (scope === aiPanel) scope.error = controller.signal.aborted ? 'Agent run stopped.' : error.message;
+    persist();
+  } finally {
+    scope.busy = false; scope.agentController = null; scope.agentProgress = null;
+    if (scope === aiPanel && currentId === workspaceId) renderAiPanel();
+  }
+}
+
+function rerunAgentProposal(proposal) {
+  const chat = currentChat(), item = work();
+  if (!chat || !item || aiPanel.busy) return;
+  proposal.status = 'discarded'; persist();
+  executeAgentRequest(item, chat, proposal.request || 'Recreate this workspace change.', { focusOverride: { focus: proposal.focus || { nodeIds: [], passage: null }, selectionAnchor: null } });
+}
+
 function renderChatTranscript(panel, item, chat) {
   const transcript = el('div', { class: 'ai-chat-messages', 'aria-live': 'polite' });
   if (!chat.messages.length) transcript.append(el('div', { class: 'ai-chat-welcome' },
     el('div', { class: 'ai-chat-welcome-mark', text: '✦' }),
-    el('h3', { text: 'Think it through.' }),
-    el('p', { text: 'Ask a question, or tell chat how to revise the selected article or nodes.' })));
+    el('h3', { text: chat.assistantMode === 'agent' ? 'Build across the project.' : 'Think it through.' }),
+    el('p', { text: chat.assistantMode === 'agent' ? 'Describe an outcome. The agent will inspect the workspace and prepare one reviewable change set.' : 'Ask a question, or tell chat how to revise the selected article or nodes.' })));
   for (const message of chat.messages) {
     const bubble = el('div', { class: `ai-message ai-message-${message.role}` });
     if (message.role === 'user') {
@@ -3546,13 +3769,23 @@ function renderChatTranscript(panel, item, chat) {
         bubble.append(answer);
       }
       for (const proposal of message.proposals || []) bubble.append(renderProposalCard(proposal, item));
+      if (message.agentProposal) bubble.append(renderAgentProposalCard(message.agentProposal, item));
       bubble.append(el('small', { class: 'chat-message-context', text: `${message.model} · ${new Date(message.createdAt).toLocaleString()}` }));
     }
     transcript.append(bubble);
   }
   if (aiPanel.busy) {
     const streaming = el('div', { class: `ai-message ai-message-assistant ${aiPanel.streamingReply ? 'ai-chat-streaming' : 'ai-chat-thinking'}` });
-    if (aiPanel.streamingReply) {
+    if (chat.assistantMode === 'agent') {
+      const progress = aiPanel.agentProgress || {};
+      const label = progress.phase === 'indexing'
+        ? `Indexing ${progress.sourceTitle || 'source'} · page ${progress.page || 0} of ${progress.pages || '?'}`
+        : progress.phase === 'tools'
+          ? `Agent step ${progress.turn || 1} · ${progress.mutations || 0} staged changes`
+          : `Agent step ${progress.turn || 1} of ${progress.maxTurns || 6}`;
+      streaming.classList.add('agent-progress');
+      streaming.append(el('span', { text: label }), button('Stop', () => aiPanel.agentController?.abort(), 'chat-text-button'));
+    } else if (aiPanel.streamingReply) {
       const answer = el('div', { class: 'ai-output markdown-preview' });
       answer.innerHTML = renderMarkdown(aiPanel.streamingReply);
       streaming.append(answer);
@@ -3579,15 +3812,16 @@ function updateStreamingChatReply(reply) {
 }
 
 function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer = true) {
+  const agentMode = chat.assistantMode === 'agent';
   const settings = loadModelSettings();
   const unavailable = !settings.models.length || !!(settings.secret && !getApiKey());
   if (unavailable) panel.append(el('div', { class: 'chat-config-notice' },
     el('span', { text: !settings.models.length ? 'Choose an endpoint and model to start chatting.' : 'Unlock your API key to continue chatting.' }),
     button('Open Settings', renderSettings, 'chat-text-button')));
-  if (snapshot.size > MAX_CONTEXT_CHARS) panel.append(el('p', { class: 'ai-error chat-error', text: 'Context is too large. Choose a smaller scope before sending.' }));
+  if (!agentMode && snapshot.size > MAX_CONTEXT_CHARS) panel.append(el('p', { class: 'ai-error chat-error', text: 'Context is too large. Choose a smaller scope before sending.' }));
   if (aiPanel.error) panel.append(el('p', { class: 'ai-error chat-error', role: 'alert', text: aiPanel.error }));
   const form = el('form', { class: 'ai-chat-composer' });
-  const pending = pendingChatProposals(chat, item);
+  const pending = agentMode ? [] : pendingChatProposals(chat, item);
   if (pending.length) {
     const counts = pending.reduce((total, proposal) => {
       const lines = diffMarkdownLines(proposal.before, proposal.after);
@@ -3606,7 +3840,7 @@ function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer =
         if (applyChatProposals(pending)) announce(`${label} applied. Undo reverses the whole batch.`);
       }, 'chat-apply-all')));
   }
-  const input = el('textarea', { class: 'ai-question', 'aria-label': 'Your message', title: 'Enter to send · Option + Enter for a new line', placeholder: 'Ask or describe a change…', rows: '1' });
+  const input = el('textarea', { class: 'ai-question', 'aria-label': 'Your message', title: 'Enter to send · Option + Enter for a new line', placeholder: agentMode ? 'Describe the workspace you want the agent to build…' : 'Ask or describe a change…', rows: '1' });
   input.value = aiPanel.draft || '';
   const resizeInput = () => { input.style.height = 'auto'; input.style.height = `${Math.min(100, input.scrollHeight)}px`; };
   input.addEventListener('input', () => { aiPanel.draft = input.value; resizeInput(); });
@@ -3620,11 +3854,15 @@ function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer =
     } else form.requestSubmit();
   });
   const send = button('Send', () => {}, 'panel-action', { 'aria-label': 'Send message' });
-  send.type = 'submit'; send.disabled = unavailable || aiPanel.busy || snapshot.size > MAX_CONTEXT_CHARS;
+  send.type = 'submit'; send.disabled = unavailable || aiPanel.busy || (!agentMode && snapshot.size > MAX_CONTEXT_CHARS);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const question = input.value.trim();
     if (!question || aiPanel.busy) return;
+    if (chat.assistantMode === 'agent') {
+      await executeAgentRequest(item, chat, question);
+      return;
+    }
     const selected = contextSnapshot(work(), effectiveChatContext(chat));
     if (selected.size > MAX_CONTEXT_CHARS) { aiPanel.error = 'Context is too large. Deselect items before sending.'; renderAiPanel(); return; }
     const config = loadModelSettings();
@@ -3668,7 +3906,10 @@ function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer =
       if (scope === aiPanel && currentId === workspaceId) renderAiPanel();
     }
   });
-  form.append(input, picker, send);
+  if (agentMode) form.append(el('div', { class: 'agent-authority-note' }, el('strong', { text: 'Full project access' }), el('span', { text: 'The agent can inspect sources and propose article, node, and link changes. Nothing is applied without review.' })));
+  form.append(input);
+  if (!agentMode) form.append(picker);
+  form.append(send);
   panel.append(form);
   requestAnimationFrame(() => { if (input.isConnected) resizeInput(); });
   if (focusComposer && !aiPanel.busy && !aiPanel.previewId) requestAnimationFrame(() => { if (input.isConnected) input.focus(); });
@@ -3894,6 +4135,7 @@ function renderAiPanel({ focusComposer = true } = {}) {
   document.querySelector('.ai-panel')?.remove();
   const item = work(); if (!item || !aiPanel) return;
   const chat = currentChat(); if (!chat) return;
+  chat.assistantMode ||= 'chat';
   const panel = el('aside', { class: 'ai-panel', 'aria-label': 'Workspace chat', ...(aiPanel.width ? { style: `width: ${aiPanel.width}px` } : {}) });
   panel.addEventListener('pointerdown', (event) => {
     if (event.clientX - panel.getBoundingClientRect().left <= 8) startChatResize(event, panel);
@@ -3920,12 +4162,22 @@ function renderAiPanel({ focusComposer = true } = {}) {
     list.append(button('＋ New chat', () => newChat(), 'chat-new-button'));
     for (const entry of [...chatList()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) {
       list.append(button(entry.title, () => {
-        aiPanel.chatId = entry.id; aiPanel.tab = 'chat'; aiPanel.draft = ''; aiPanel.previewId = null; renderAiPanel();
+        entry.assistantMode ||= 'chat';
+        aiPanel.chatId = entry.id; aiPanel.tab = 'chat'; aiPanel.draft = ''; aiPanel.previewId = null; aiPanel.assistantMode = entry.assistantMode; renderAiPanel();
       }, `chat-history-row ${entry.id === chat.id ? 'active' : ''}`, { title: new Date(entry.updatedAt).toLocaleString() }));
     }
     panel.append(list);
   } else {
-    const { snapshot, picker } = renderContextPicker(item, chat);
+    const modes = el('div', { class: 'assistant-mode-switch', role: 'tablist', 'aria-label': 'AI mode' });
+    for (const [value, label] of [['chat', 'Chat'], ['agent', 'Agent']]) {
+      const control = button(label, () => {
+        if (aiPanel.busy || chat.assistantMode === value) return;
+        chat.assistantMode = value; aiPanel.assistantMode = value; aiPanel.error = ''; chat.updatedAt = new Date().toISOString(); persist(); renderAiPanel();
+      }, `assistant-mode-option ${chat.assistantMode === value ? 'active' : ''}`, { role: 'tab', 'aria-selected': String(chat.assistantMode === value), ...(aiPanel.busy ? { disabled: '' } : {}) });
+      modes.append(control);
+    }
+    panel.append(modes);
+    const { snapshot, picker } = chat.assistantMode === 'agent' ? { snapshot: { size: 0 }, picker: null } : renderContextPicker(item, chat);
     renderChatTranscript(panel, item, chat);
     renderChatComposer(panel, item, chat, snapshot, picker, focusComposer);
   }

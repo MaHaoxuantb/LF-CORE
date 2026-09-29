@@ -28,7 +28,15 @@ IndexedDB stores the complete versioned project state, including workspaces, cha
 | Graph | DOM cards, SVG paths, saved world positions | A graph renderer can use the same nodes and coordinates. |
 | Passage links | Quote, rendered-text offsets, surrounding context | Keep the anchor contract and improve repair when richer editing arrives. |
 
-AI requests and proposals remain later-phase work. The sample article is manually written and has no citations.
+The original manual slice kept AI out of Phase 1; current Chat and Agent proposals build on the same Markdown, graph, history, and provenance records without changing the saved canvas format.
+
+## Agent mode
+
+Agent mode is implemented as a transport-neutral in-app workspace service rather than a localhost network API. A remote OpenAI-compatible model cannot call the user's loopback server directly, so the browser brokers a strict JSON tool protocol. Read tools expose a paginated project index, bounded Markdown ranges, and searchable imported-source passages. Mutation tools operate only on a cloned workspace and can create or edit Markdown nodes, revise the article, reparent branches, create or update links, and attach source passages issued by the service. There is no arbitrary JavaScript, file, network, deletion, source-editing, or raw-coordinate tool.
+
+One run is limited to six model turns, eight calls per turn, 24 mutations, and 12 new nodes. Returned call batches validate atomically before touching the draft. The completed draft is stored with the chat as one proposal and can only be applied as one workspace history change; stale proposals are rejected when the workspace timestamp no longer matches. Agent origins are retained on affected article, node, edge, and source-reference records so Undo can be distinguished from acceptance without deleting the chat record.
+
+Pasted text is directly searchable. PDF text is extracted page-by-page with PDF.js and stored in a separate version-2 IndexedDB cache keyed by source ID and checksum. This cache is disposable, excluded from `.lfcore` files and undo snapshots, and rebuilt from the canonical PDF bytes after import. Scanned pages remain unavailable without OCR.
 
 ## Phase 4 research and consolidation
 

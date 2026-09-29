@@ -1,21 +1,26 @@
 const DATABASE = 'learning-canvas-sources-v1';
-const STORE = 'pdf-bytes';
+const VERSION = 2;
+const PDF_STORE = 'pdf-bytes';
+const TEXT_STORE = 'source-text-index';
 
 function openDatabase() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DATABASE, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(STORE);
+    const request = indexedDB.open(DATABASE, VERSION);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(PDF_STORE)) request.result.createObjectStore(PDF_STORE);
+      if (!request.result.objectStoreNames.contains(TEXT_STORE)) request.result.createObjectStore(TEXT_STORE);
+    };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error || new Error('Source storage could not be opened.'));
   });
 }
 
-async function transact(id, mode, action) {
+async function transact(storeName, mode, action) {
   const database = await openDatabase();
   try {
     return await new Promise((resolve, reject) => {
-      const transaction = database.transaction(STORE, mode);
-      const request = action(transaction.objectStore(STORE));
+      const transaction = database.transaction(storeName, mode);
+      const request = action(transaction.objectStore(storeName));
       transaction.oncomplete = () => resolve(request.result);
       request.onerror = () => reject(request.error || new Error('Source storage failed.'));
       transaction.onerror = () => reject(transaction.error || new Error('Source storage failed.'));
@@ -25,6 +30,9 @@ async function transact(id, mode, action) {
   }
 }
 
-export const putPdf = (id, bytes) => transact(id, 'readwrite', (store) => store.put(bytes, id));
-export const getPdf = (id) => transact(id, 'readonly', (store) => store.get(id));
-export const deletePdf = (id) => transact(id, 'readwrite', (store) => store.delete(id));
+export const putPdf = (id, bytes) => transact(PDF_STORE, 'readwrite', (store) => store.put(bytes, id));
+export const getPdf = (id) => transact(PDF_STORE, 'readonly', (store) => store.get(id));
+export const deletePdf = (id) => transact(PDF_STORE, 'readwrite', (store) => store.delete(id));
+export const putSourceTextIndex = (id, record) => transact(TEXT_STORE, 'readwrite', (store) => store.put(record, id));
+export const getSourceTextIndex = (id) => transact(TEXT_STORE, 'readonly', (store) => store.get(id));
+export const deleteSourceTextIndex = (id) => transact(TEXT_STORE, 'readwrite', (store) => store.delete(id));
