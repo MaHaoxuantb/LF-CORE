@@ -40,6 +40,18 @@ test('project files reject unsupported data and missing PDFs', () => {
   assert.throws(() => serializeProject(workspace, [], new Map()), /PDF “Missing” is missing/);
 });
 
+test('project files preserve and remap image media', () => {
+  const workspace = createWorkspace('Images');
+  workspace.sources.push({ id: 'image-old', type: 'image', title: 'Diagram', fileName: 'diagram.png', mimeType: 'image/png', width: 800, height: 600 });
+  workspace.nodes.push({ id: 'image-node', document: { type: 'source', sourceId: 'image-old' }, sourceRefs: [] });
+  const serialized = serializeProject(workspace, [], new Map([['image-old', new Uint8Array([137, 80, 78, 71])]]));
+  const ids = ['image-new', 'workspace-new'];
+  const imported = parseProject(serialized, { uuid: () => ids.shift(), now: () => '2026-09-30T00:00:00.000Z' });
+  assert.deepEqual(imported.media[0], { id: 'image-new', type: 'image', bytes: new Uint8Array([137, 80, 78, 71]) });
+  assert.equal(imported.workspace.sources[0].id, 'image-new');
+  assert.equal(imported.workspace.nodes[0].document.sourceId, 'image-new');
+});
+
 test('project filenames are portable and clearly identified', () => {
   assert.equal(projectFileName('  Études / waves?  '), 'Etudes-waves.lfcore');
   assert.equal(projectFileName('***'), 'Untitled-project.lfcore');

@@ -12,13 +12,22 @@ test('node labels are derived from Markdown, not a separate title', () => {
   assert.equal(nodeLabel({ document: { markdown: '' } }), 'Untitled node');
 });
 
-test('PDF source nodes store only a source reference and derive their label from Sources', () => {
+test('media nodes store only a library reference and derive their label from Library', () => {
   const source = { id: 'pdf-1', type: 'pdf', title: 'Field guide', pages: 12 };
   const node = sourceNode(source, 'source-node-1');
   assert.equal(isSourceNode(node), true);
   assert.deepEqual(node.document, { type: 'source', sourceId: 'pdf-1' });
   assert.equal(nodeLabel(node, [source]), 'Field guide');
   assert.equal(JSON.stringify(node).includes('pages'), false);
+});
+
+test('image media uses the same source-node reference model as PDFs', () => {
+  const source = { id: 'image-1', type: 'image', title: 'Field photograph', width: 1600, height: 900 };
+  const node = sourceNode(source, 'image-node-1');
+  assert.equal(isSourceNode(node), true);
+  assert.deepEqual(node.document, { type: 'source', sourceId: 'image-1' });
+  assert.equal(nodeLabel(node, [source]), 'Field photograph');
+  assert.equal(JSON.stringify(node).includes('1600'), false);
 });
 
 test('Markdown highlights use == marks without changing visible anchor text', () => {

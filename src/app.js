@@ -4,7 +4,7 @@ import { loadDatabaseState, requestPersistentStorage, writeDatabaseState } from 
 import { renderMarkdown, headingTokens, wrapMarkdownHighlight, unwrapMarkdownHighlight } from './markdown.js';
 import { isSourceNode, nodeLabel, sourceNode } from './node-content.js';
 import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
-import { putPdf, getPdf, deletePdf, putSourceTextIndex, getSourceTextIndex, deleteSourceTextIndex } from './source-store.js';
+import { putPdf, getPdf, deletePdf, putMedia, getMedia, deleteMedia, putSourceTextIndex, getSourceTextIndex, deleteSourceTextIndex } from './source-store.js';
 import { connectionPort, crossConnectionRoute, nearestConnectionSide, snappedConnectionSides } from './cross-connection.js';
 import { loadModelSettings, saveModelSettings, saveModelSecret, saveDeveloperMode, encryptApiKey, unlockApiKey, getApiKey, lockApiKey, endpointRequiresApiKey } from './model-settings.js';
 import { chatModel, runAgent } from './ai.js';
@@ -135,11 +135,13 @@ let stateSaveLoop = null;
 let currentId = null, selectedId = null, selectedIds = new Set(), editingMarkdown = false, editingTarget = null, editingBeforeView = null, outlineOpen = false;
 let activeConnection = null;
 let openSourceId = null, sourcePage = 1, sourceJump = null;
+let libraryQuery = '', libraryFilter = 'all';
 const pdfDocuments = new Map();
 const pdfNodePages = new Map();
+const mediaUrls = new Map();
 const pdfIndexJobs = new Map();
 const pdfIndexStatuses = new Map();
-const pendingPdfDeletes = new Set();
+const pendingMediaDeletes = new Map();
 let selectedPassage = null, editGroup = null, view = { x: 0, y: 0, zoom: 1 };
 let viewTimer = null, toastTimer = null;
 let outlineHeight = null;
@@ -239,11 +241,12 @@ async function runStateSaveLoop() {
       saveError = null;
       reportedSaveFailure = null;
       if (!pendingStateSave && !dirty) {
-        for (const id of pendingPdfDeletes) {
-          pendingPdfDeletes.delete(id);
+        for (const [id, type] of pendingMediaDeletes) {
+          pendingMediaDeletes.delete(id);
           pdfDocuments.delete(id);
-          deletePdf(id).catch(() => announce('A removed PDF could not be cleared from browser storage.'));
-          deleteSourceTextIndex(id).catch(() => {});
+          const url = mediaUrls.get(id); if (url) URL.revokeObjectURL(url); mediaUrls.delete(id);
+          (type === 'pdf' ? deletePdf(id) : deleteMedia(id)).catch(() => announce('A removed media file could not be cleared from browser storage.'));
+          if (type === 'pdf') deleteSourceTextIndex(id).catch(() => {});
         }
       }
       job.waiters.forEach((resolve) => resolve(true));
@@ -394,13 +397,13 @@ async function downloadProject() {
   if (!item) return;
   closeDocumentMenu();
   flushView();
-  const pdfBytes = new Map();
+  const fileBytes = new Map();
   try {
     for (const source of item.sources || []) {
-      if (source.type !== 'pdf') continue;
-      pdfBytes.set(source.id, await getPdf(source.id));
+      if (!['pdf', 'image', 'video', 'file'].includes(source.type)) continue;
+      fileBytes.set(source.id, await (source.type === 'pdf' ? getPdf(source.id) : getMedia(source.id)));
     }
-    const contents = serializeProject(item, state.chats[item.id] || [], pdfBytes);
+    const contents = serializeProject(item, state.chats[item.id] || [], fileBytes);
     if (window.lfcoreDesktop?.saveProject) {
       const saved = await window.lfcoreDesktop.saveProject(projectFileName(item.title), contents);
       if (saved) announce('Project downloaded.');
@@ -534,8 +537,8 @@ function suggestedPosition(item, parentId, index = item.nodes.length) {
   return { x: side > 0 ? 760 : -380, y: 22 + sideCount * 154 };
 }
 
-function addPdfSourceNode(item, source, preferredPosition = null) {
-  if (!source || source.type !== 'pdf') return null;
+function addMediaSourceNode(item, source, preferredPosition = null) {
+  if (!source || !['pdf', 'image'].includes(source.type)) return null;
   const existing = item.nodes.find((node) => isSourceNode(node) && node.document.sourceId === source.id);
   if (existing) return existing;
   const node = sourceNode(source);
@@ -554,7 +557,7 @@ function positionAtCanvasPoint(clientX, clientY) {
   };
 }
 
-function sourceTitle(name) { return name.replace(/\.pdf$/i, '').trim() || 'Untitled source'; }
+function sourceTitle(name) { return name.replace(/\.[^.]+$/i, '').trim() || 'Untitled media'; }
 
 function pastedSource(title, text) {
   return { id: crypto.randomUUID(), type: 'text', title: title.trim() || 'Pasted text', text, addedAt: new Date().toISOString() };
@@ -574,6 +577,33 @@ async function pdfSource(file, id = crypto.randomUUID(), expectedChecksum = null
   // import; Agent source tools will await or rebuild it when needed.
   ensureAgentPdfIndex(source).catch(() => {});
   return source;
+}
+
+async function mediaSource(file, id = crypto.randomUUID()) {
+  if (!file) throw new Error('Choose a media file.');
+  if (/\.pdf$/i.test(file.name) || file.type === 'application/pdf') return pdfSource(file, id);
+  if (file.size > 100 * 1024 * 1024) throw new Error('This media file is over the 100 MB import limit.');
+  const bytes = await file.arrayBuffer();
+  const checksum = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  const type = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : 'file';
+  const source = { id, type, title: sourceTitle(file.name), fileName: file.name, mimeType: file.type || 'application/octet-stream', byteLength: bytes.byteLength, checksum, addedAt: new Date().toISOString() };
+  if (type === 'image') {
+    try {
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: source.mimeType }));
+      source.width = bitmap.width; source.height = bitmap.height; bitmap.close();
+    } catch { throw new Error('This image format could not be read.'); }
+  }
+  await putMedia(id, bytes);
+  return source;
+}
+
+async function mediaUrl(source) {
+  if (mediaUrls.has(source.id)) return mediaUrls.get(source.id);
+  const bytes = await getMedia(source.id);
+  if (!bytes) return null;
+  const url = URL.createObjectURL(new Blob([bytes], { type: source.mimeType || 'application/octet-stream' }));
+  mediaUrls.set(source.id, url);
+  return url;
 }
 
 async function loadPdfForIndex(sourceId) {
@@ -623,7 +653,7 @@ function startWorkspace(title, source = null, generate = false) {
   const item = createWorkspace(title, `# ${title.trim() || 'Untitled workspace'}\n\n## Working notes\n\n`);
   if (source) {
     item.sources.push(source);
-    addPdfSourceNode(item, source);
+    addMediaSourceNode(item, source);
   }
   state.workspaces.unshift(item); state.history[item.id] = [];
   persist(); openWorkspace(item.id);
@@ -637,9 +667,9 @@ async function uploadProject(file) {
   const imported = parseProject(await file.text());
   const storedPdfIds = [];
   try {
-    for (const pdf of imported.pdfs) {
-      await putPdf(pdf.id, pdf.bytes.buffer);
-      storedPdfIds.push(pdf.id);
+    for (const media of imported.media || imported.pdfs.map((entry) => ({ ...entry, type: 'pdf' }))) {
+      await (media.type === 'pdf' ? putPdf(media.id, media.bytes.buffer) : putMedia(media.id, media.bytes.buffer));
+      storedPdfIds.push({ id: media.id, type: media.type });
     }
     state.workspaces.unshift(imported.workspace);
     state.history[imported.workspace.id] = [];
@@ -649,7 +679,7 @@ async function uploadProject(file) {
   } catch (error) {
     state.workspaces = state.workspaces.filter((entry) => entry.id !== imported.workspace.id);
     delete state.history[imported.workspace.id]; delete state.redo[imported.workspace.id]; delete state.chats[imported.workspace.id];
-    await Promise.allSettled(storedPdfIds.flatMap((id) => [deletePdf(id), deleteSourceTextIndex(id)]));
+    await Promise.allSettled(storedPdfIds.flatMap(({ id, type }) => type === 'pdf' ? [deletePdf(id), deleteSourceTextIndex(id)] : [deleteMedia(id)]));
     throw error;
   }
   openWorkspace(imported.workspace.id);
@@ -805,7 +835,7 @@ function renderHome() {
 async function deleteWorkspace(id) {
   const item = state.workspaces.find((entry) => entry.id === id);
   if (!item || !await confirmAction({ title: 'Delete project?', message: `“${item.title}” and all its connected nodes will be permanently deleted. This cannot be undone.`, confirmLabel: 'Delete project', danger: true })) return;
-  for (const source of item.sources || []) if (source.type === 'pdf') pendingPdfDeletes.add(source.id);
+  for (const source of item.sources || []) if (['pdf', 'image', 'video', 'file'].includes(source.type)) pendingMediaDeletes.set(source.id, source.type);
   for (const node of item.nodes || []) pdfNodePages.delete(node.id);
   state.workspaces = state.workspaces.filter((entry) => entry.id !== id);
   delete state.history[id]; delete state.redo[id]; delete state.chats[id];
@@ -1057,11 +1087,6 @@ function panToEditingTarget(fromView = null) {
 function enterEditingMode(targetId) {
   const item = work();
   if (!item || graphFocus || (targetId !== 'article' && !item.nodes.some((node) => node.id === targetId))) return false;
-  const targetNode = targetId === 'article' ? null : item.nodes.find((node) => node.id === targetId);
-  if (targetNode && isSourceNode(targetNode)) {
-    openSource(targetNode.document.sourceId);
-    return false;
-  }
   if (editingTarget === targetId) {
     activeMarkdownEditor()?.focus();
     return true;
@@ -1095,7 +1120,7 @@ function exitEditingMode() {
 }
 
 function activeMarkdownEditor() {
-  return document.querySelector('.editing-focus-target textarea');
+  return document.querySelector('.editing-focus-target textarea, .editing-focus-target .media-title-editor');
 }
 
 function applyMarkdownEdit(transform) {
@@ -1117,6 +1142,10 @@ function applyMarkdownEdit(transform) {
 }
 
 function renderEditingToolbar() {
+  const mediaNode = editingTarget !== 'article' && work()?.nodes.find((node) => node.id === editingTarget && isSourceNode(node));
+  if (mediaNode) return el('div', { class: 'editing-toolbar', role: 'toolbar', 'aria-label': 'Media editing tools' },
+    el('span', { class: 'editing-toolbar-label', text: 'Edit mode' }),
+    button('Done', exitEditingMode, 'editing-done', { title: 'Finish editing · Escape', 'aria-label': 'Finish editing' }));
   const control = (label, title, transform, className = '') => {
     const entry = button(label, () => applyMarkdownEdit(transform), `editing-tool ${className}`.trim(), { title, 'aria-label': title });
     entry.addEventListener('pointerdown', (event) => event.preventDefault());
@@ -1271,7 +1300,7 @@ function renderWorkspace() {
     el('div', { class: 'header-right' },
       aiFeaturesEnabled ? button('Chat', toggleAiPanel, `source-toggle ${aiPanel ? 'active' : ''}`, { 'aria-pressed': String(!!aiPanel), 'aria-label': 'Toggle chat' }) : null,
       button('Research', toggleResearchPanel, `source-toggle ${researchPanel ? 'active' : ''}`, { 'aria-pressed': String(!!researchPanel), 'aria-label': 'Toggle research' }),
-      button(`Sources${item.sources?.length ? ` ${item.sources.length}` : ''}`, () => openSource(openSourceId ? null : item.sources?.[0]?.id || 'library'), `source-toggle ${openSourceId ? 'active' : ''}`, { 'aria-pressed': String(!!openSourceId), 'aria-label': 'Toggle sources' })));
+      button(`Library${item.sources?.length ? ` ${item.sources.length}` : ''}`, () => openSource(openSourceId ? null : 'library'), `source-toggle ${openSourceId ? 'active' : ''}`, { 'aria-pressed': String(!!openSourceId), 'aria-label': 'Toggle library' })));
 
   app.replaceChildren(el('div', { class: `workspace-shell ${graphFocus ? 'graph-focus-active graph-focus-readonly' : ''} ${editingTarget ? 'editing-mode-active' : ''}`.trim() }, renderCanvas(item), chrome));
   updateSaveControls();
@@ -1489,10 +1518,10 @@ function openContextMenu(target, x, y) {
     if (!graphIsReadOnly()) option('Delete selected nodes', () => removeNodes([...selectedIds]), true);
   } else if (node) {
     option('Show node actions', () => selectNode(node.id));
-    if (isSourceNode(node)) option('Open PDF source', () => openSource(node.document.sourceId));
+    if (isSourceNode(node)) option('Open in Library', () => openSource(node.document.sourceId));
     else if (aiFeaturesEnabled) option('Chat with node', () => openAiPanel({ targetId: node.id }));
     if (!graphIsReadOnly()) {
-      if (!isSourceNode(node)) option('Edit content in project', () => beginNodeMarkdownEdit(node.id));
+      option(isSourceNode(node) ? 'Edit media node' : 'Edit content in project', () => beginNodeMarkdownEdit(node.id));
       if (!isSourceNode(node) && passage?.targetId === node.id) option('Create node from highlight', () => { selectedPassage = passage; createAnchoredNode(); });
       option('Add child', () => addNode(node.id));
       if (siblingPredecessor(item, node.id)) option('Add sibling', () => addSibling(node));
@@ -2007,7 +2036,7 @@ function pdfNodeViewer(node, source, card) {
       let document = pdfDocuments.get(source.id);
       if (!document) {
         const bytes = await getPdf(source.id);
-        if (!bytes) throw new Error('PDF bytes are missing. Open Sources to reattach the file.');
+        if (!bytes) throw new Error('PDF bytes are missing. Open Library to reattach the file.');
         document = await getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
         pdfDocuments.set(source.id, document);
       }
@@ -2020,15 +2049,16 @@ function pdfNodeViewer(node, source, card) {
       const ratio = Math.min(window.devicePixelRatio || 1, 2);
       canvas.width = Math.round(viewport.width * ratio);
       canvas.height = Math.round(viewport.height * ratio);
-      canvas.style.width = `${viewport.width}px`;
-      canvas.style.height = `${viewport.height}px`;
+      const mediaScale = clamp(node.document.mediaView?.scale || 1, .5, 4);
+      canvas.style.width = `${viewport.width * mediaScale}px`;
+      canvas.style.height = `${viewport.height * mediaScale}px`;
       await page.render({ canvasContext: canvas.getContext('2d'), viewport, transform: ratio === 1 ? undefined : [ratio, 0, 0, ratio, 0, 0] }).promise;
       if (version === renderVersion && card.isConnected) stage.replaceChildren(canvas);
     } catch (error) {
       if (version !== renderVersion || !card.isConnected) return;
       stage.replaceChildren(el('div', { class: 'pdf-node-error' },
         el('span', { text: error.message }),
-        button('Open Sources', () => openSource(source.id), 'pdf-node-open-source')));
+        button('Open Library', () => openSource(source.id), 'pdf-node-open-source')));
     }
   };
 
@@ -2039,6 +2069,68 @@ function pdfNodeViewer(node, source, card) {
     showPage(currentPage());
   };
   updateControls(currentPage());
+  enableMediaViewport(viewer, stage, node, () => showPage(currentPage()));
+  return viewer;
+}
+
+function enableMediaViewport(viewer, stage, node, redraw) {
+  viewer.addEventListener('wheel', (event) => {
+    if (!viewer.closest('.topic-card.selected') || (!event.ctrlKey && !event.metaKey)) return;
+    event.preventDefault(); event.stopPropagation();
+    const previous = clamp(node.document.mediaView?.scale || 1, .5, 4);
+    const scale = clamp(previous * (event.deltaY < 0 ? 1.12 : .89), .5, 4);
+    if (scale === previous) return;
+    change((item) => {
+      const target = item.nodes.find((entry) => entry.id === node.id);
+      target.document.mediaView = { ...(target.document.mediaView || {}), scale };
+    }, { group: `media-view:${node.id}`, rerender: false });
+    redraw(scale);
+  }, { passive: false });
+  stage.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || !viewer.closest('.topic-card.selected')) return;
+    event.preventDefault(); event.stopPropagation();
+    const start = { x: event.clientX, y: event.clientY, left: stage.scrollLeft, top: stage.scrollTop };
+    stage.setPointerCapture?.(event.pointerId);
+    stage.classList.add('media-panning');
+    const move = (next) => {
+      stage.scrollLeft = start.left - (next.clientX - start.x);
+      stage.scrollTop = start.top - (next.clientY - start.y);
+    };
+    const finish = () => {
+      stage.removeEventListener('pointermove', move); stage.removeEventListener('pointerup', finish); stage.removeEventListener('pointercancel', finish);
+      stage.classList.remove('media-panning');
+      if (stage.hasPointerCapture?.(event.pointerId)) stage.releasePointerCapture(event.pointerId);
+    };
+    stage.addEventListener('pointermove', move); stage.addEventListener('pointerup', finish); stage.addEventListener('pointercancel', finish);
+  });
+  stage.title = 'Select this node to pan. Hold Ctrl or Command and scroll to zoom.';
+}
+
+function imageNodeViewer(node, source, card) {
+  const viewer = el('div', { class: 'pdf-node-viewer image-node-viewer', 'aria-label': `${source.title} image preview` });
+  const stage = el('div', { class: 'pdf-node-stage image-node-stage' });
+  const scaleLabel = el('span', { class: 'pdf-node-page-label' });
+  const renderScale = (requestedScale = node.document.mediaView?.scale || 1) => {
+    const scale = clamp(requestedScale, .5, 4);
+    scaleLabel.textContent = `${Math.round(scale * 100)}%`;
+    const image = stage.querySelector('img');
+    if (image) image.style.width = `${scale * 100}%`;
+  };
+  viewer.append(el('div', { class: 'pdf-node-controls' }, scaleLabel), stage);
+  card._ensureMediaPreview = async () => {
+    if (viewer.dataset.started) return;
+    viewer.dataset.started = 'true';
+    stage.replaceChildren(el('div', { class: 'pdf-node-loading', text: 'Loading image…' }));
+    const url = await mediaUrl(source);
+    if (!url || !card.isConnected) {
+      if (card.isConnected) stage.replaceChildren(el('div', { class: 'pdf-node-error', text: 'Image bytes are missing. Open Library to inspect the item.' }));
+      return;
+    }
+    const image = el('img', { src: url, alt: source.title, draggable: 'false' });
+    stage.replaceChildren(image); renderScale();
+  };
+  renderScale();
+  enableMediaViewport(viewer, stage, node, renderScale);
   return viewer;
 }
 
@@ -2053,19 +2145,23 @@ function renderNode(node, item) {
   applyNodeSizeClass(card, size.width, size.height);
   const content = el('div', { class: `node-content ${isSourceNode(node) ? 'source-node-content' : isEditing ? '' : 'markdown-preview'}`.trim(), 'data-document-id': node.id, tabindex: '0', 'aria-label': `${label} content` });
   if (isSourceNode(node)) {
-    const preview = button('', () => referencedSource && openSource(referencedSource.id), 'pdf-node-preview', {
-      'aria-label': referencedSource ? `Open PDF source ${label}` : 'PDF source is missing',
-      ...(referencedSource ? {} : { disabled: '' })
-    });
+    const sourceType = referencedSource?.type || 'media';
+    const preview = el('div', { class: 'pdf-node-preview', 'aria-label': referencedSource ? `${sourceType} media ${label}` : 'Media is missing' });
     preview.append(
-      el('span', { class: 'pdf-node-icon', 'aria-hidden': 'true', text: 'PDF' }),
+      el('span', { class: `pdf-node-icon ${sourceType === 'image' ? 'image-node-icon' : ''}`, 'aria-hidden': 'true', text: sourceType === 'image' ? 'IMG' : sourceType.toUpperCase() }),
       el('span', { class: 'pdf-node-copy' },
-        el('strong', { text: label }),
-        el('small', { text: referencedSource ? `${referencedSource.pages} page PDF · stored in Sources` : 'The referenced source is missing' })),
-      el('span', { class: 'pdf-node-open', 'aria-hidden': 'true', text: '↗' })
+        ...(isEditing && referencedSource ? [el('input', { class: 'media-title-editor', value: referencedSource.title, 'aria-label': 'Media title' })] : [el('strong', { text: label })]),
+        el('small', { text: referencedSource ? (sourceType === 'pdf' ? `${referencedSource.pages} page PDF · stored in Library` : `${referencedSource.width || '?'} × ${referencedSource.height || '?'} image · stored in Library`) : 'The referenced media is missing' })),
+      button('↗', () => referencedSource && openSource(referencedSource.id), 'pdf-node-open', { 'aria-label': 'Open in Library', ...(referencedSource ? {} : { disabled: '' }) })
     );
     content.append(preview);
-    if (referencedSource) content.append(pdfNodeViewer(node, referencedSource, card));
+    const titleEditor = preview.querySelector('.media-title-editor');
+    titleEditor?.addEventListener('input', () => {
+      change((entry) => { entry.sources.find((source) => source.id === referencedSource.id).title = titleEditor.value; }, { group: `media-title:${node.id}`, rerender: false });
+    });
+    titleEditor?.addEventListener('keydown', (event) => { if (event.key === 'Escape' || ((event.metaKey || event.ctrlKey) && event.key === 'Enter')) { event.preventDefault(); exitEditingMode(); } });
+    if (referencedSource?.type === 'pdf') content.append(pdfNodeViewer(node, referencedSource, card));
+    if (referencedSource?.type === 'image') content.append(imageNodeViewer(node, referencedSource, card));
   } else if (isEditing) {
     const editor = el('textarea', { class: 'node-markdown-editor', 'aria-label': `${label} Markdown`, spellcheck: 'true' });
     editor.value = node.document?.markdown || '';
@@ -2104,7 +2200,7 @@ function renderNode(node, item) {
   if (link) card.append(link);
   if (resize) card.append(resize);
   if (selectedId === node.id && !graphFocus && !editingTarget) card.append(renderNodeActions(node, item));
-  if (card.classList.contains('pdf-content-visible')) queueMicrotask(() => card._ensurePdfPreview?.());
+  if (card.classList.contains('media-content-visible')) queueMicrotask(() => (card._ensurePdfPreview || card._ensureMediaPreview)?.());
   card.addEventListener('pointerdown', (event) => {
     if (event.button !== 0 || event.target.closest('.node-content, .anchor-mark, button, input')) return;
     startNodeDrag(event, node, card);
@@ -2114,7 +2210,7 @@ function renderNode(node, item) {
     if (event.target.closest('.anchor-mark, button, input, textarea') || !window.getSelection()?.isCollapsed) return;
     selectNodeInPlace(node.id, card, node, item);
   });
-  card.addEventListener('dblclick', (event) => { if (!graphIsReadOnly() && !event.target.closest('.node-content')) beginNodeMarkdownEdit(node.id); });
+  card.addEventListener('dblclick', (event) => { if (!graphIsReadOnly() && (!event.target.closest('.node-content') || isSourceNode(node))) beginNodeMarkdownEdit(node.id); });
   card.addEventListener('keydown', (event) => { if (event.target === card && event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); selectNode(node.id); } });
   return card;
 }
@@ -2124,9 +2220,9 @@ function renderNodeActions(node, item) {
   const referencedSource = isSourceNode(node) ? item.sources.find((source) => source.id === node.document.sourceId) : null;
   const canAddSibling = !!siblingPredecessor(item, node.id);
   const primary = el('div', { class: 'node-actions-row' },
-    ...(isSourceNode(node) && referencedSource ? [button('Open PDF', () => openSource(referencedSource.id), 'node-action primary')] : []),
+    ...(isSourceNode(node) && referencedSource ? [button('Open in Library', () => openSource(referencedSource.id), 'node-action primary')] : []),
     ...(graphIsReadOnly() ? [] : [
-      ...(!isSourceNode(node) ? [button('Edit', () => beginNodeMarkdownEdit(node.id), 'node-action primary', { title: 'Edit Markdown on the card' })] : []),
+      button('Edit', () => beginNodeMarkdownEdit(node.id), 'node-action primary', { title: isSourceNode(node) ? 'Edit this media node' : 'Edit Markdown on the card' }),
       button('＋ Child', () => addNode(node.id), 'node-action'),
       ...(canAddSibling ? [button('＋ Sibling', () => addSibling(node), 'node-action')] : []),
     ]),
@@ -2147,7 +2243,7 @@ function renderNodeActions(node, item) {
   if (node.sourceRefs?.length) {
     const sources = el('div', { class: 'node-source-control' });
     const menu = el('div', { class: 'node-source-menu', role: 'menu', 'aria-label': 'Node sources' });
-    const toggle = button(`Sources ${node.sourceRefs.length}`, () => {
+    const toggle = button(`Library ${node.sourceRefs.length}`, () => {
       const open = sources.classList.toggle('open');
       toggle.setAttribute('aria-expanded', String(open));
       if (open) menu.querySelector('button')?.focus();
@@ -2292,9 +2388,10 @@ function startEdgeDrag(event, node, grip, preserveClick = false, prepareSource =
 function applyNodeSizeClass(card, width, height) {
   const expanded = width >= 280 || height >= 180;
   card.classList.toggle('expanded', expanded);
-  const showPdfContent = card.classList.contains('source-node') && width >= 320 && height >= 260;
-  card.classList.toggle('pdf-content-visible', showPdfContent);
-  if (showPdfContent) queueMicrotask(() => card._ensurePdfPreview?.());
+  const showMediaContent = card.classList.contains('source-node') && width >= 320 && height >= 260;
+  card.classList.toggle('pdf-content-visible', showMediaContent);
+  card.classList.toggle('media-content-visible', showMediaContent);
+  if (showMediaContent) queueMicrotask(() => (card._ensurePdfPreview || card._ensureMediaPreview)?.());
 }
 
 function updateCardOverflow(card) {
@@ -2650,7 +2747,7 @@ function removeNodes(ids) {
   for (const nodeId of removed) pdfNodePages.delete(nodeId);
   selectedId = roots.length === 1 && !removed.has(roots[0].parentId) ? roots[0].parentId : null;
   selectedIds.clear(); selectedPassage = null;
-  renderWorkspace(); announce(`${removed.size} node${removed.size === 1 ? '' : 's'} deleted. Undo is available.${removedSourceNodes ? ' The PDF remains in Sources.' : ''}`);
+  renderWorkspace(); announce(`${removed.size} node${removed.size === 1 ? '' : 's'} deleted. Undo is available.${removedSourceNodes ? ' The media remains in Library.' : ''}`);
 }
 
 function openSource(id, page = 1, anchor = null) {
@@ -2727,13 +2824,13 @@ function sourceSelectionActions(source, page, textRoot, actions) {
   }
 }
 
-function showPdfSourceNode(source) {
+function showMediaSourceNode(source) {
   const item = work();
-  if (!item || source?.type !== 'pdf') return;
+  if (!item || !['pdf', 'image'].includes(source?.type)) return;
   let node = item.nodes.find((entry) => isSourceNode(entry) && entry.document.sourceId === source.id);
   if (!node) {
-    change((entry) => { node = addPdfSourceNode(entry, source); }, { rerender: false });
-    announce('PDF source added to the project.');
+    change((entry) => { node = addMediaSourceNode(entry, source); }, { rerender: false });
+    announce(`${source.type === 'pdf' ? 'PDF' : 'Image'} added to the project.`);
   }
   openSourceId = null;
   selectedId = node.id;
@@ -2772,10 +2869,123 @@ function showSourcePassage(textRoot, anchor, surface) {
   sourceJump = null;
 }
 
+function libraryGlyph(source) {
+  return ({ pdf: 'PDF', image: 'IMG', video: 'VID', web: 'WEB', file: 'FILE', text: 'TXT' })[source?.type] || 'MEDIA';
+}
+
+function libraryTypeLabel(source) {
+  return ({ pdf: 'PDF document', image: 'Image', video: 'Video', web: 'Web reference', file: 'File', text: 'Text note' })[source?.type] || 'Media';
+}
+
+function formatMediaBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 1) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const power = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / (1024 ** power);
+  return `${value >= 10 || power === 0 ? Math.round(value) : value.toFixed(1)} ${units[power]}`;
+}
+
+function libraryDescription(source) {
+  if (source.type === 'pdf') return `${source.pages || '?'} page${source.pages === 1 ? '' : 's'}`;
+  if (source.type === 'image') return source.width && source.height ? `${source.width} × ${source.height}` : 'Image';
+  if (source.type === 'video') return formatMediaBytes(source.byteLength) || 'Video';
+  if (source.type === 'file') return formatMediaBytes(source.byteLength) || source.mimeType || 'File';
+  if (source.type === 'web') return source.venue || 'Web reference';
+  return `${(source.text || '').length.toLocaleString()} characters`;
+}
+
+function libraryItemArtwork(source, compact = false) {
+  const artwork = el('span', { class: `library-artwork type-${source.type} ${compact ? 'compact' : ''}`, 'aria-hidden': 'true' },
+    el('span', { text: libraryGlyph(source) }));
+  if (source.type === 'image') queueMicrotask(async () => {
+    const url = await mediaUrl(source);
+    if (url && artwork.isConnected) artwork.replaceChildren(el('img', { src: url, alt: '' }));
+  });
+  return artwork;
+}
+
+function renderLibraryOverview(body, item) {
+  const sources = item.sources || [];
+  const overview = el('div', { class: 'library-overview' });
+  if (!sources.length) {
+    overview.append(el('div', { class: 'library-empty-state' },
+      el('span', { class: 'library-empty-glyph', 'aria-hidden': 'true', text: '◇' }),
+      el('strong', { text: 'No media yet' }),
+      el('span', { text: 'Import a file or add a pasted text note from the sidebar.' })));
+    body.append(overview); return;
+  }
+  const counts = ['image', 'pdf', 'video', 'text'].map((type) => [type, sources.filter((source) => source.type === type).length]).filter(([, count]) => count);
+  const stats = el('div', { class: 'library-stats' });
+  for (const [type, count] of counts) stats.append(el('div', {}, el('strong', { text: String(count) }), el('span', { text: `${type === 'text' ? 'note' : type}${count === 1 ? '' : 's'}` })));
+  overview.append(stats, el('div', { class: 'library-section-heading' }, el('strong', { text: 'Recent items' }), el('span', { text: `${sources.length} total` })));
+  const grid = el('div', { class: 'library-grid' });
+  for (const source of [...sources].reverse().slice(0, 12)) {
+    const card = button('', () => openSource(source.id), 'library-grid-card', { 'aria-label': `Open ${source.title}` });
+    card.append(libraryItemArtwork(source), el('span', { class: 'library-grid-copy' }, el('strong', { text: source.title }), el('small', { text: `${libraryTypeLabel(source)} · ${libraryDescription(source)}` })));
+    grid.append(card);
+  }
+  overview.append(grid); body.append(overview);
+}
+
 function renderSourcesPanel(item) {
-  const panel = el('section', { class: 'sources-panel', 'aria-label': 'Sources' });
-  const sidebar = el('div', { class: 'sources-sidebar' }, el('div', { class: 'sources-heading' }, el('strong', { text: 'Sources' }), button('×', () => openSource(null), 'panel-close', { 'aria-label': 'Close sources' })));
-  for (const source of item.sources || []) sidebar.append(button(`${source.type === 'pdf' ? '▤' : source.type === 'web' ? '↗' : '≡'}  ${source.title}`, () => openSource(source.id), `source-list-item ${source.id === openSourceId ? 'active' : ''}`));
+  const panel = el('section', { class: 'sources-panel', 'aria-label': 'Library' });
+  const sidebar = el('aside', { class: 'sources-sidebar' });
+  sidebar.append(el('div', { class: 'sources-heading' },
+    el('div', {}, el('strong', { text: 'Library' }), el('small', { text: `${item.sources?.length || 0} item${item.sources?.length === 1 ? '' : 's'} · stored locally` })),
+    button('×', () => openSource(null), 'panel-close', { 'aria-label': 'Close library' })));
+  const addMedia = el('input', { type: 'file', 'aria-label': 'Import media', class: 'source-file-input', multiple: '' });
+  const importFiles = async (files) => {
+    const imported = [];
+    for (const file of files || []) {
+      try { imported.push(await mediaSource(file)); }
+      catch (error) { announce(`Could not import ${file.name}: ${error.message}`); }
+    }
+    if (!imported.length) return;
+    change((entry) => {
+      entry.sources ||= [];
+      for (const source of imported) { entry.sources.push(source); addMediaSourceNode(entry, source); }
+    });
+    openSource(imported.at(-1).id);
+  };
+  addMedia.addEventListener('change', () => importFiles(addMedia.files));
+  const chooseFile = () => addMedia.click();
+  const dropzone = el('div', { class: 'library-dropzone', role: 'button', tabindex: '0', 'aria-label': 'Import media files' },
+    el('span', { class: 'library-import-icon', 'aria-hidden': 'true', text: '＋' }),
+    el('span', {}, el('strong', { text: 'Import media' }), el('small', { text: 'Images, video, PDF, or any file' })));
+  dropzone.addEventListener('click', chooseFile);
+  dropzone.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); chooseFile(); } });
+  dropzone.addEventListener('dragover', (event) => { event.preventDefault(); dropzone.classList.add('dragging'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragging'));
+  dropzone.addEventListener('drop', (event) => { event.preventDefault(); dropzone.classList.remove('dragging'); importFiles(event.dataTransfer?.files); });
+  sidebar.append(dropzone, addMedia);
+
+  const search = el('input', { type: 'search', value: libraryQuery, placeholder: 'Search library…', 'aria-label': 'Search library', class: 'library-search' });
+  const filters = el('div', { class: 'library-filters', role: 'group', 'aria-label': 'Filter library' });
+  const list = el('div', { class: 'library-list' });
+  const filterOptions = [['all', 'All'], ['image', 'Images'], ['pdf', 'PDFs'], ['video', 'Video'], ['text', 'Notes'], ['file', 'Files']];
+  const renderList = () => {
+    list.replaceChildren();
+    const query = libraryQuery.trim().toLocaleLowerCase();
+    const matches = (item.sources || []).filter((source) => (libraryFilter === 'all' || source.type === libraryFilter) && (!query || String(source.title || '').toLocaleLowerCase().includes(query)));
+    for (const source of matches) {
+      const row = button('', () => openSource(source.id), `source-list-item ${source.id === openSourceId ? 'active' : ''}`, { 'aria-label': `Open ${source.title}` });
+      row.append(libraryItemArtwork(source, true), el('span', { class: 'source-list-copy' }, el('strong', { text: source.title }), el('small', { text: `${libraryTypeLabel(source)} · ${libraryDescription(source)}` })));
+      list.append(row);
+    }
+    if (!matches.length) list.append(el('div', { class: 'library-no-results', text: query ? 'No matching items' : 'No items in this category' }));
+  };
+  for (const [value, label] of filterOptions) filters.append(button(label, () => {
+    libraryFilter = value;
+    filters.querySelectorAll('button').forEach((control) => {
+      const active = control.dataset.filter === value;
+      control.classList.toggle('active', active); control.setAttribute('aria-pressed', String(active));
+    });
+    renderList();
+  }, `library-filter ${libraryFilter === value ? 'active' : ''}`, { 'data-filter': value, 'aria-pressed': String(libraryFilter === value) }));
+  search.addEventListener('input', () => { libraryQuery = search.value; renderList(); });
+  sidebar.append(search, filters, list);
+
+  const noteDetails = el('details', { class: 'library-note-composer' }, el('summary', {}, el('span', { text: '＋' }), ' Add pasted text'));
   const addText = el('div', { class: 'source-add-text' });
   const textTitle = el('input', { placeholder: 'Source title', 'aria-label': 'Pasted source title' });
   const textBody = el('textarea', { placeholder: 'Paste source text…', 'aria-label': 'Source text' });
@@ -2786,20 +2996,11 @@ function renderSourcesPanel(item) {
     change((entry) => { entry.sources ||= []; entry.sources.push(source); });
     openSource(source.id);
   }, 'panel-action'));
-  const addPdf = el('input', { type: 'file', accept: '.pdf,application/pdf', 'aria-label': 'Import PDF', class: 'source-file-input' });
-  addPdf.addEventListener('change', async () => {
-    if (!addPdf.files?.[0]) return;
-    try {
-      const source = await pdfSource(addPdf.files[0]);
-      change((entry) => { entry.sources ||= []; entry.sources.push(source); addPdfSourceNode(entry, source); });
-      openSource(source.id);
-    }
-    catch (error) { announce(`PDF import failed: ${error.message}`); }
-  });
-  sidebar.append(el('div', { class: 'source-add-heading', text: 'ADD SOURCE' }), addText, addPdf);
+  noteDetails.append(addText); sidebar.append(noteDetails);
+  renderList();
   const body = el('div', { class: 'source-reader' });
   const source = item.sources?.find((entry) => entry.id === openSourceId);
-  if (!source) body.append(el('div', { class: 'source-empty', text: 'Choose a source, paste text, or import a PDF. Original material stays separate from the article.' }));
+  if (!source) renderLibraryOverview(body, item);
   else renderSourceContent(body, source);
   panel.append(sidebar, body);
   return panel;
@@ -2807,12 +3008,17 @@ function renderSourcesPanel(item) {
 
 function renderSourceContent(body, source) {
   const description = source.type === 'pdf' ? `${source.pages} page PDF · stored locally`
+    : source.type === 'image' ? `${source.width || '?'} × ${source.height || '?'} image · stored locally`
+      : source.type === 'video' ? `Video · stored locally`
+        : source.type === 'file' ? `${source.mimeType || 'File'} · stored locally`
     : source.type === 'web' ? `Metadata verified via ${source.discovery?.provider || 'source discovery'} · ${source.publishedAt || 'date unknown'}`
       : 'Pasted text · stored locally';
-  const heading = el('div', { class: 'source-reader-heading' }, el('strong', { text: source.title }), el('small', { text: description }));
-  if (source.type === 'pdf') {
+  const heading = el('div', { class: 'source-reader-heading' },
+    libraryItemArtwork(source, true),
+    el('div', { class: 'source-reader-title' }, el('span', { class: `library-kind type-${source.type}`, text: libraryTypeLabel(source) }), el('strong', { text: source.title }), el('small', { text: description })));
+  if (['pdf', 'image'].includes(source.type)) {
     const onCanvas = work()?.nodes.some((node) => isSourceNode(node) && node.document.sourceId === source.id);
-    heading.append(button(onCanvas ? 'Show in project' : 'Add to project', () => showPdfSourceNode(source), 'panel-secondary source-canvas-action'));
+    heading.append(button(onCanvas ? 'Show in project' : 'Add to project', () => showMediaSourceNode(source), 'panel-secondary source-canvas-action'));
   }
   body.append(heading);
   const actions = el('div', { class: 'source-selection-actions', 'aria-live': 'polite' });
@@ -2836,6 +3042,19 @@ function renderSourceContent(body, source) {
     textRoot.addEventListener('mouseup', () => sourceSelectionActions(source, null, textRoot, actions));
     textRoot.addEventListener('keyup', () => sourceSelectionActions(source, null, textRoot, actions));
     if (sourceJump) queueMicrotask(() => showSourcePassage(textRoot, sourceJump, surface));
+    return;
+  }
+  if (['image', 'video', 'file'].includes(source.type)) {
+    const scroll = el('div', { class: 'source-scroll library-media-reader' });
+    body.append(scroll);
+    queueMicrotask(async () => {
+      const url = await mediaUrl(source);
+      if (!scroll.isConnected) return;
+      if (!url) return scroll.replaceChildren(el('div', { class: 'source-error', text: 'This media file is missing from browser storage.' }));
+      if (source.type === 'image') scroll.replaceChildren(el('img', { src: url, alt: source.title }));
+      else if (source.type === 'video') scroll.replaceChildren(el('video', { src: url, controls: '', 'aria-label': source.title }));
+      else scroll.replaceChildren(el('a', { href: url, download: source.fileName || source.title, class: 'panel-action source-external-link', text: 'Download file' }));
+    });
     return;
   }
   const controls = el('div', { class: 'source-page-controls' });

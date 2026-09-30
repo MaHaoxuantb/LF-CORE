@@ -38,13 +38,17 @@ export function projectFileName(title) {
   return `${safe}${PROJECT_EXTENSION}`;
 }
 
-export function serializeProject(workspace, chats = [], pdfBytes = new Map(), exportedAt = new Date().toISOString()) {
+function isStoredFile(source) {
+  return ['pdf', 'image', 'video', 'file'].includes(source?.type);
+}
+
+export function serializeProject(workspace, chats = [], fileBytes = new Map(), exportedAt = new Date().toISOString()) {
   assertObject(workspace, 'There is no project to download.');
   const files = {};
   for (const source of workspace.sources || []) {
-    if (source.type !== 'pdf') continue;
-    const bytes = pdfBytes.get(source.id);
-    if (!bytes) throw new Error(`The PDF “${source.title || source.fileName || 'Untitled source'}” is missing. Reattach it before downloading this project.`);
+    if (!isStoredFile(source)) continue;
+    const bytes = fileBytes.get(source.id);
+    if (!bytes) throw new Error(`The ${source.type === 'pdf' ? 'PDF' : 'media file'} “${source.title || source.fileName || 'Untitled item'}” is missing. Reattach it before downloading this project.`);
     files[source.id] = { encoding: 'base64', data: bytesToBase64(bytes) };
   }
   return JSON.stringify({
@@ -56,7 +60,7 @@ export function serializeProject(workspace, chats = [], pdfBytes = new Map(), ex
   });
 }
 
-function remapPdfSourceIds(workspace, idMap) {
+function remapSourceIds(workspace, idMap) {
   for (const source of workspace.sources || []) if (idMap.has(source.id)) source.id = idMap.get(source.id);
   for (const node of workspace.nodes || []) {
     if (node.document?.type === 'source' && idMap.has(node.document.sourceId)) node.document.sourceId = idMap.get(node.document.sourceId);
@@ -82,8 +86,8 @@ function remapAgentProposals(chats, idMap, originalUpdatedAt, importedUpdatedAt)
     for (const message of chat.messages || []) {
       const proposal = message.agentProposal;
       if (!proposal) continue;
-      if (proposal.before) remapPdfSourceIds(proposal.before, idMap);
-      if (proposal.after) remapPdfSourceIds(proposal.after, idMap);
+      if (proposal.before) remapSourceIds(proposal.before, idMap);
+      if (proposal.after) remapSourceIds(proposal.after, idMap);
       if (proposal.status === 'proposed' && proposal.baseUpdatedAt === originalUpdatedAt) proposal.baseUpdatedAt = importedUpdatedAt;
     }
   }
@@ -104,22 +108,22 @@ export function parseProject(serialized, { uuid = () => crypto.randomUUID(), now
   if (!['gold', 'gold-bright', 'blue'].includes(workspace.accentColor)) workspace.accentColor = 'gold';
   const files = bundle.files ?? {};
   assertObject(files, 'This project file contains invalid embedded files.');
-  const pdfs = [];
+  const media = [];
   const idMap = new Map();
   for (const source of workspace.sources) {
-    if (source.type !== 'pdf') continue;
+    if (!isStoredFile(source)) continue;
     const file = files[source.id];
-    if (!file || file.encoding !== 'base64') throw new Error(`The project is missing the PDF “${source.title || source.fileName || 'Untitled source'}”.`);
+    if (!file || file.encoding !== 'base64') throw new Error(`The project is missing the ${source.type === 'pdf' ? 'PDF' : 'media file'} “${source.title || source.fileName || 'Untitled item'}”.`);
     const id = uuid();
     idMap.set(source.id, id);
-    pdfs.push({ id, bytes: base64ToBytes(file.data) });
+    media.push({ id, type: source.type, bytes: base64ToBytes(file.data) });
   }
   const originalUpdatedAt = workspace.updatedAt;
-  remapPdfSourceIds(workspace, idMap);
+  remapSourceIds(workspace, idMap);
   workspace.id = uuid();
   workspace.createdAt = now();
   workspace.updatedAt = workspace.createdAt;
   const chats = Array.isArray(bundle.project.chats) ? structuredClone(bundle.project.chats) : [];
   remapAgentProposals(chats, idMap, originalUpdatedAt, workspace.updatedAt);
-  return { workspace, chats, pdfs };
+  return { workspace, chats, media, pdfs: media.filter((entry) => entry.type === 'pdf').map(({ id, bytes }) => ({ id, bytes })) };
 }
