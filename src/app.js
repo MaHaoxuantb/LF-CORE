@@ -2904,6 +2904,31 @@ function libraryItemArtwork(source, compact = false) {
   return artwork;
 }
 
+function beginLibraryRename(source, label) {
+  if (!source || !label?.isConnected || label.parentElement?.querySelector('.library-rename-input')) return;
+  const original = source.title || '';
+  const input = el('input', { class: 'library-rename-input', value: original, 'aria-label': `Rename ${original || 'library item'}` });
+  label.replaceWith(input);
+  let finished = false;
+  const finish = (save) => {
+    if (finished) return;
+    finished = true;
+    const title = input.value.trim();
+    if (save && title && title !== original) {
+      change((item) => { const target = item.sources?.find((entry) => entry.id === source.id); if (target) target.title = title; });
+      announce('Library item renamed.');
+    } else if (input.isConnected) input.replaceWith(label);
+  };
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); finish(true); }
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+  input.addEventListener('click', (event) => event.stopPropagation());
+  input.addEventListener('dblclick', (event) => event.stopPropagation());
+  input.focus(); input.select();
+}
+
 function renderLibraryOverview(body, item) {
   const sources = item.sources || [];
   const overview = el('div', { class: 'library-overview' });
@@ -2968,8 +2993,16 @@ function renderSourcesPanel(item) {
     const query = libraryQuery.trim().toLocaleLowerCase();
     const matches = (item.sources || []).filter((source) => (libraryFilter === 'all' || source.type === libraryFilter) && (!query || String(source.title || '').toLocaleLowerCase().includes(query)));
     for (const source of matches) {
-      const row = button('', () => openSource(source.id), `source-list-item ${source.id === openSourceId ? 'active' : ''}`, { 'aria-label': `Open ${source.title}` });
-      row.append(libraryItemArtwork(source, true), el('span', { class: 'source-list-copy' }, el('strong', { text: source.title }), el('small', { text: `${libraryTypeLabel(source)} · ${libraryDescription(source)}` })));
+      const selected = source.id === openSourceId;
+      const title = el('strong', { text: source.title });
+      const row = el('div', { class: `source-list-item ${selected ? 'active' : ''}`, role: 'button', tabindex: '0', 'aria-label': `Open ${source.title}` });
+      row.append(libraryItemArtwork(source, true), el('span', { class: 'source-list-copy' }, title, el('small', { text: `${libraryTypeLabel(source)} · ${libraryDescription(source)}` })));
+      row.addEventListener('click', () => { if (!selected) openSource(source.id); });
+      row.addEventListener('dblclick', (event) => { if (selected) { event.preventDefault(); event.stopPropagation(); beginLibraryRename(source, title); } });
+      row.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openSource(source.id); }
+        if (selected && event.key === 'F2') { event.preventDefault(); beginLibraryRename(source, title); }
+      });
       list.append(row);
     }
     if (!matches.length) list.append(el('div', { class: 'library-no-results', text: query ? 'No matching items' : 'No items in this category' }));
@@ -3013,9 +3046,11 @@ function renderSourceContent(body, source) {
         : source.type === 'file' ? `${source.mimeType || 'File'} · stored locally`
     : source.type === 'web' ? `Metadata verified via ${source.discovery?.provider || 'source discovery'} · ${source.publishedAt || 'date unknown'}`
       : 'Pasted text · stored locally';
+  const title = el('strong', { text: source.title, title: 'Double-click to rename' });
+  title.addEventListener('dblclick', (event) => { event.preventDefault(); event.stopPropagation(); beginLibraryRename(source, title); });
   const heading = el('div', { class: 'source-reader-heading' },
     libraryItemArtwork(source, true),
-    el('div', { class: 'source-reader-title' }, el('span', { class: `library-kind type-${source.type}`, text: libraryTypeLabel(source) }), el('strong', { text: source.title }), el('small', { text: description })));
+    el('div', { class: 'source-reader-title' }, el('span', { class: `library-kind type-${source.type}`, text: libraryTypeLabel(source) }), title, el('small', { text: description })));
   if (['pdf', 'image'].includes(source.type)) {
     const onCanvas = work()?.nodes.some((node) => isSourceNode(node) && node.document.sourceId === source.id);
     heading.append(button(onCanvas ? 'Show in project' : 'Add to project', () => showMediaSourceNode(source), 'panel-secondary source-canvas-action'));
