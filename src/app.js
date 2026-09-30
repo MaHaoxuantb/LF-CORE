@@ -1300,7 +1300,7 @@ function renderWorkspace() {
     el('div', { class: 'header-right' },
       aiFeaturesEnabled ? button('Chat', toggleAiPanel, `source-toggle ${aiPanel ? 'active' : ''}`, { 'aria-pressed': String(!!aiPanel), 'aria-label': 'Toggle chat' }) : null,
       button('Research', toggleResearchPanel, `source-toggle ${researchPanel ? 'active' : ''}`, { 'aria-pressed': String(!!researchPanel), 'aria-label': 'Toggle research' }),
-      button(`Library${item.sources?.length ? ` ${item.sources.length}` : ''}`, () => openSource(openSourceId ? null : 'library'), `source-toggle ${openSourceId ? 'active' : ''}`, { 'aria-pressed': String(!!openSourceId), 'aria-label': 'Toggle library' })));
+      button(`Library${item.sources?.length ? ` (${item.sources.length})` : ''}`, () => openSource(openSourceId ? null : 'library'), `source-toggle ${openSourceId ? 'active' : ''}`, { 'aria-pressed': String(!!openSourceId), 'aria-label': 'Toggle library' })));
 
   app.replaceChildren(el('div', { class: `workspace-shell ${graphFocus ? 'graph-focus-active graph-focus-readonly' : ''} ${editingTarget ? 'editing-mode-active' : ''}`.trim() }, renderCanvas(item), chrome));
   updateSaveControls();
@@ -2147,12 +2147,15 @@ function renderNode(node, item) {
   if (isSourceNode(node)) {
     const sourceType = referencedSource?.type || 'media';
     const preview = el('div', { class: 'pdf-node-preview', 'aria-label': referencedSource ? `${sourceType} media ${label}` : 'Media is missing' });
+    const openLibrary = button('', () => referencedSource && openSource(referencedSource.id), 'pdf-node-open', { 'aria-label': 'Open in Library', ...(referencedSource ? {} : { disabled: '' }) });
+    openLibrary.append(el('svg', { viewBox: '0 0 20 20', 'aria-hidden': 'true' },
+      el('path', { d: 'M7 5h8v8M15 5 6 14', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.7', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
     preview.append(
-      el('span', { class: `pdf-node-icon ${sourceType === 'image' ? 'image-node-icon' : ''}`, 'aria-hidden': 'true', text: sourceType === 'image' ? 'IMG' : sourceType.toUpperCase() }),
+      el('span', { class: `pdf-node-icon ${sourceType === 'image' ? 'image-node-icon' : ''}`, 'aria-hidden': 'true' }, el('span', { text: sourceType === 'image' ? 'IMG' : sourceType.toUpperCase() })),
       el('span', { class: 'pdf-node-copy' },
         ...(isEditing && referencedSource ? [el('input', { class: 'media-title-editor', value: referencedSource.title, 'aria-label': 'Media title' })] : [el('strong', { text: label })]),
         el('small', { text: referencedSource ? (sourceType === 'pdf' ? `${referencedSource.pages} page PDF · stored in Library` : `${referencedSource.width || '?'} × ${referencedSource.height || '?'} image · stored in Library`) : 'The referenced media is missing' })),
-      button('↗', () => referencedSource && openSource(referencedSource.id), 'pdf-node-open', { 'aria-label': 'Open in Library', ...(referencedSource ? {} : { disabled: '' }) })
+      openLibrary
     );
     content.append(preview);
     const titleEditor = preview.querySelector('.media-title-editor');
@@ -3053,7 +3056,7 @@ function renderSourceContent(body, source) {
     el('div', { class: 'source-reader-title' }, el('span', { class: `library-kind type-${source.type}`, text: libraryTypeLabel(source) }), title, el('small', { text: description })));
   if (['pdf', 'image'].includes(source.type)) {
     const onCanvas = work()?.nodes.some((node) => isSourceNode(node) && node.document.sourceId === source.id);
-    heading.append(button(onCanvas ? 'Show in project' : 'Add to project', () => showMediaSourceNode(source), 'panel-secondary source-canvas-action'));
+    heading.append(button(onCanvas ? 'Show in canvas' : 'Add to canvas', () => showMediaSourceNode(source), 'panel-secondary source-canvas-action'));
   }
   body.append(heading);
   const actions = el('div', { class: 'source-selection-actions', 'aria-live': 'polite' });
