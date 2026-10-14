@@ -19,7 +19,8 @@ export async function ensurePdfSourceIndex(source, {
   putCached,
   loadDocument,
   onProgress = () => {},
-  signal
+  signal,
+  beforePage = async () => {}
 }) {
   if (!source || source.type !== 'pdf') throw new Error('Only PDF sources need text extraction.');
   const cached = await getCached(source.id);
@@ -30,6 +31,7 @@ export async function ensurePdfSourceIndex(source, {
   const pages = [];
   for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
     abortIfNeeded(signal);
+    await beforePage();
     const page = await document.getPage(pageNumber);
     const content = await page.getTextContent();
     pages.push(textFromPdfItems(content.items));

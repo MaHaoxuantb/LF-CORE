@@ -10,10 +10,10 @@ import { loadModelSettings, saveModelSettings, saveModelSecret, saveDeveloperMod
 import { chatModel, runAgent } from './ai.js';
 import { canChangeAssistantMode, contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, proposalStatus } from './chat.js';
 import { WorkspaceAgentService, applyAgentProposal } from './agent-service.js';
-import { ensurePdfSourceIndex, readWorkspaceSource, searchWorkspaceSources } from './source-index.js';
+import { ensurePdfSourceIndex, readWorkspaceSource, searchWorkspaceSources as searchSourcesEngine } from './source-index.js';
 import { normalizeGraphFocusPreferences, relatedNodeIds } from './graph-focus.js';
 import { siblingPredecessor } from './siblings.js';
-import { parseProject, projectFileName, PROJECT_EXTENSION } from './project.js';
+import { projectFileName, PROJECT_EXTENSION } from './project.js';
 import { prefixMarkdownLines, wrapMarkdownSelection } from './markdown-edit.js';
 import { attachSourceToQuestion, compareIdeas, createResearchProposal, createResearchQuestion, discoverSources, normalizeResearch, recordCloseout, verifiedSourceFromResult } from './research.js';
 import { resolveMoveGeometry, resolveResizeGeometry, selectionBounds } from './node-geometry.js';
@@ -23,6 +23,7 @@ import { attachLFOSHeader } from './lfos-header.js';
 import { PersistenceClient } from './persistence-client.js';
 import { ViewPersistence } from './view-persistence.js';
 import { canvasTransform, fittedCanvasView, hasCanvasView } from './canvas-view.js';
+import {backgroundCompute} from './compute-client.js';
 import packageInfo from '../package.json';
 import 'katex/dist/katex.min.css';
 import './style.css';
@@ -733,6 +734,16 @@ async function loadPdfForIndex(sourceId) {
   return document;
 }
 
+let hostActivity = {visible: true, focused: true};
+lfosConnection.then(() => {if (lfos.has('lifecycle.subscribeActivity')) lfos.lfos.lifecycle.onActivityChange(value => {hostActivity = value;});});
+async function waitForActivity(signal) {
+ while (!hostActivity.visible || document.hidden) {if (signal?.aborted) throw new DOMException('Source indexing was canceled.', 'AbortError'); await new Promise(resolve => setTimeout(resolve, 100));}
+}
+async function searchWorkspaceSources(workspace, query, options = {}) {
+ for (const source of workspace.sources || []) {if (source.type === 'pdf' && (!options.sourceIds?.length || options.sourceIds.includes(source.id))) await options.ensurePdfIndex(source, options);}
+ if (!globalThis.Worker) return searchSourcesEngine(workspace, query, options);
+ return backgroundCompute({type: 'search', workspace: {sources: workspace.sources}, query, options: {sourceIds: options.sourceIds, limit: options.limit}}, options.signal);
+}
 function ensureAgentPdfIndex(source, { signal, onProgress } = {}) {
   if (pdfIndexJobs.has(source.id)) {
     const existing = pdfIndexJobs.get(source.id);
@@ -741,12 +752,14 @@ function ensureAgentPdfIndex(source, { signal, onProgress } = {}) {
     return Promise.race([existing, new Promise((_, reject) => signal.addEventListener('abort', () => reject(new DOMException('Source indexing was canceled.', 'AbortError')), { once: true }))]);
   }
   pdfIndexStatuses.set(source.id, 'indexing');
+  let lastProgress = 0;
   const job = ensurePdfSourceIndex(source, {
     getCached: getSourceTextIndex,
     putCached: putSourceTextIndex,
     loadDocument: loadPdfForIndex,
     signal,
-    onProgress
+    onProgress: value => {const now = performance.now(); if (now - lastProgress > 100 || value.page === value.pages) {lastProgress = now; onProgress?.(value);}},
+    beforePage: () => waitForActivity(signal)
   }).then((record) => { pdfIndexStatuses.set(source.id, 'ready'); return record; }, (error) => { pdfIndexStatuses.set(source.id, error.name === 'AbortError' ? 'not_indexed' : 'error'); throw error; })
     .finally(() => pdfIndexJobs.delete(source.id));
   pdfIndexJobs.set(source.id, job);
@@ -783,7 +796,7 @@ async function uploadProject(file, { lfosHandle = null, successMessage = 'Projec
   let imported;
   try {
     if (!file.name.toLowerCase().endsWith(PROJECT_EXTENSION)) throw new Error(`Choose a ${PROJECT_EXTENSION} project file.`);
-    imported = parseProject(await file.text());
+    imported = await backgroundCompute({type: 'import', file});
   } catch (error) {
     if (lfosHandle) await lfos.release(lfosHandle);
     throw error;
