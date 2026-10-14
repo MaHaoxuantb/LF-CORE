@@ -8,14 +8,14 @@ export function createWebsiteAppManifest(origin) {
   return {
     schemaVersion: 1,
     id: 'com.linecoflow.lfcore',
-    version: 1,
+    version: 3,
     name: 'LF CORE',
-    summary: 'An article-first, local-first workspace for independent learning.',
-    description: 'Explore ideas from questions and sources, connect them in a graph, and consolidate what matters into a master article. Projects stay in your browser unless you choose to export them.',
+    summary: 'LF-Core is a mind-map-like tool for explorers.',
+    description: 'LF-Core is a mind-map-like tool for explorers.',
     category: 'productivity',
     tags: ['learning', 'research', 'knowledge management'],
     publisher: {
-      name: 'LinecoFlow',
+      name: 'LinecoFlow LLC',
       url: websiteOrigin
     },
     install: {
@@ -24,11 +24,13 @@ export function createWebsiteAppManifest(origin) {
       embedPolicy: 'embed',
       defaultZoom: 100,
       rememberWindowBounds: true,
+      windowChrome: { mode: 'overlay', background: 'surface' },
       permissions: ['files:open', 'files:save'],
       fileAssociations: [
         {
           extensions: ['.lfcore'],
-          mimeTypes: ['application/vnd.linecoflow.project+json']
+          mimeTypes: ['application/vnd.linecoflow.project+json'],
+          default: true
         }
       ]
     }

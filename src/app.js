@@ -18,6 +18,8 @@ import { prefixMarkdownLines, wrapMarkdownSelection } from './markdown-edit.js';
 import { attachSourceToQuestion, compareIdeas, createResearchProposal, createResearchQuestion, discoverSources, normalizeResearch, recordCloseout, verifiedSourceFromResult } from './research.js';
 import { resolveMoveGeometry, resolveResizeGeometry, selectionBounds } from './node-geometry.js';
 import { createLFOSIntegration, LFCORE_MIME_TYPE } from './lfos.js';
+import { LFOSDocuments } from './lfos-documents.js';
+import { attachLFOSHeader } from './lfos-header.js';
 import packageInfo from '../package.json';
 import 'katex/dist/katex.min.css';
 import './style.css';
@@ -30,7 +32,15 @@ const PRODUCT_NAME = packageInfo.productName || 'LF CORE';
 const PRODUCT_VERSION = packageInfo.version || '0.0.0';
 const lfos = createLFOSIntegration();
 const lfosConnection = lfos.connect();
-const lfosDocuments = new Map();
+const lfosDocumentStore = new LFOSDocuments({
+  integration: lfos,
+  signature: lfosDocumentSignature,
+  snapshot: projectSnapshot,
+  onChange: () => { syncLFOSUnsavedChanges(); updateSaveControls(); }
+});
+const lfosDocuments = lfosDocumentStore.entries;
+let lfosAutosaveTimer = null;
+let disposeLFOSHeader = () => {};
 const ROOT = { x: 0, y: 0, width: 490, height: 550 };
 let rootBounds = { ...ROOT };
 const NODE = { width: 238, height: 108 };
@@ -159,7 +169,7 @@ function lfosDocumentSignature(workspaceId) {
 }
 
 function lfosDocumentIsDirty(workspaceId, entry = lfosDocuments.get(workspaceId)) {
-  return !!entry && lfosDocumentSignature(workspaceId) !== entry.signature;
+  return lfosDocumentStore.isDirty(workspaceId, entry);
 }
 
 function syncLFOSUnsavedChanges() {
@@ -168,18 +178,34 @@ function syncLFOSUnsavedChanges() {
 }
 
 function rememberLFOSDocument(workspaceId, handle) {
-  const previous = lfosDocuments.get(workspaceId)?.handle;
-  if (previous && previous.id !== handle.id) void lfos.release(previous);
-  lfosDocuments.set(workspaceId, { handle, signature: lfosDocumentSignature(workspaceId) });
-  syncLFOSUnsavedChanges();
+  lfosDocumentStore.remember(workspaceId, handle);
 }
 
 function forgetLFOSDocument(workspaceId) {
-  const entry = lfosDocuments.get(workspaceId);
-  if (!entry) return;
-  lfosDocuments.delete(workspaceId);
-  void lfos.release(entry.handle);
-  syncLFOSUnsavedChanges();
+  void lfosDocumentStore.forget(workspaceId);
+}
+
+function prepareLFOSHeader(header) {
+  disposeLFOSHeader();
+  disposeLFOSHeader = attachLFOSHeader(header, lfos);
+}
+
+function reportLFOSSaveFailure(error) {
+  if (error?.code === 'CONFLICT') announce('The LFOS file changed elsewhere. Autosave paused. Review it or use Save project as…');
+  else announce(`LFOS project save failed: ${error.message}`);
+}
+
+function scheduleLFOSAutosave() {
+  clearTimeout(lfosAutosaveTimer);
+  lfosAutosaveTimer = null;
+  if (saveMode !== 'auto' || loadError) return;
+  if (![...lfosDocuments].some(([id, entry]) => !entry.error && lfosDocumentIsDirty(id, entry))) return;
+  lfosAutosaveTimer = setTimeout(() => {
+    lfosAutosaveTimer = null;
+    for (const [id] of lfosDocuments) {
+      void lfosDocumentStore.save(id, { automatic: true }).catch(reportLFOSSaveFailure);
+    }
+  }, 700);
 }
 
 // Focus is a viewing mode: navigation and focus controls remain available, but
@@ -239,14 +265,22 @@ function confirmAction({ title, message, confirmLabel = 'Continue', danger = fal
   });
 }
 
-function saveLabel() { return saveError ? 'Save failed' : dirty ? 'Unsaved' : 'Saved'; }
+function saveLabel() {
+  const entry = lfosDocuments.get(work()?.id);
+  if (saveError || entry?.error) return 'Save failed';
+  if (entry?.saving) return 'Saving…';
+  return dirty || lfosDocumentIsDirty(work()?.id, entry) ? 'Unsaved' : 'Saved';
+}
 
 function updateSaveControls() {
-  for (const wrapper of document.querySelectorAll('.save-control')) wrapper.dataset.state = saveError ? 'error' : dirty ? 'dirty' : 'saved';
+  const entry = lfosDocuments.get(work()?.id);
+  const error = saveError || entry?.error?.message;
+  const destination = entry ? 'LFOS and browser storage' : 'browser storage';
+  for (const wrapper of document.querySelectorAll('.save-control')) wrapper.dataset.state = error ? 'error' : saveLabel() !== 'Saved' ? 'dirty' : 'saved';
   for (const control of document.querySelectorAll('.save-main')) {
     control.textContent = saveLabel();
-    control.title = saveError ? `Save failed: ${saveError}` : saveMode === 'manual' ? 'Save now · ⌘S / Ctrl+S' : 'Auto save is on';
-    control.setAttribute('aria-label', `${saveLabel()}. ${saveMode === 'manual' ? 'Manual save. Click to save now.' : 'Auto save. Click for save options.'}`);
+    control.title = error ? `Save failed: ${error}` : saveMode === 'manual' ? `Save to ${destination} · ⌘S / Ctrl+S` : `Auto save to ${destination}`;
+    control.setAttribute('aria-label', `${saveLabel()}. ${saveMode === 'manual' ? `Manual save to ${destination}. Click to save now.` : `Auto save to ${destination}. Click for save options.`}`);
     control.disabled = !!loadError;
   }
   for (const control of document.querySelectorAll('.save-mode-button')) control.title = `Save options · ${saveMode === 'auto' ? 'Auto save' : 'Manual save'}`;
@@ -314,6 +348,7 @@ function persist(force = false) {
   const serialized = JSON.stringify(state);
   dirty = serialized !== lastSaved;
   syncLFOSUnsavedChanges();
+  scheduleLFOSAutosave();
   if (saveMode === 'manual' && !force) { updateSaveControls(); return Promise.resolve(true); }
   if (!dirty && !force && !pendingStateSave) { updateSaveControls(); return Promise.resolve(true); }
   updateSaveControls();
@@ -331,7 +366,12 @@ function flushView() {
 
 async function saveNow() {
   flushView();
-  const saved = await persist(true);
+  clearTimeout(lfosAutosaveTimer);
+  const localSaved = await persist(true);
+  clearTimeout(lfosAutosaveTimer);
+  const results = await Promise.allSettled([...lfosDocuments].map(([id]) => lfosDocumentStore.save(id)));
+  for (const result of results) if (result.status === 'rejected') reportLFOSSaveFailure(result.reason);
+  const saved = localSaved && results.every((result) => result.status === 'fulfilled');
   if (saved) announce('Saved.');
   return saved;
 }
@@ -426,31 +466,36 @@ function appendAppearanceOptions(menu) {
   menu.append(documentMenuSubmenu('Project accent', projectAccentColors, work()?.accentColor || 'gold', setProjectAccent, (value) => ({ gold: 'LF Gold', 'gold-bright': 'LF Gold Bright', blue: 'LF Blue' })[value]));
 }
 
+async function projectSnapshot(workspaceId) {
+  const current = state.workspaces.find((item) => item.id === workspaceId);
+  if (!current) throw new Error('The project is no longer available.');
+  // Capture both the content and dirty signature before asynchronous media reads.
+  const { workspace: item, chats } = structuredClone({ workspace: current, chats: state.chats[workspaceId] || [] });
+  const signature = JSON.stringify({ workspace: item, chats });
+  const fileBytes = new Map();
+  for (const source of item.sources || []) {
+    if (!['pdf', 'image', 'video', 'file'].includes(source.type)) continue;
+    fileBytes.set(source.id, await (source.type === 'pdf' ? getPdf(source.id) : getMedia(source.id)));
+  }
+  return { signature, contents: serializeProject(item, chats, fileBytes), name: projectFileName(item.title) };
+}
+
 async function downloadProject({ saveAs = false } = {}) {
   const item = work();
   if (!item) return;
   closeDocumentMenu();
   flushView();
-  const fileBytes = new Map();
   try {
-    for (const source of item.sources || []) {
-      if (!['pdf', 'image', 'video', 'file'].includes(source.type)) continue;
-      fileBytes.set(source.id, await (source.type === 'pdf' ? getPdf(source.id) : getMedia(source.id)));
-    }
-    const contents = serializeProject(item, state.chats[item.id] || [], fileBytes);
     await lfosConnection;
     const lfosDocument = lfosDocuments.get(item.id);
-    if (lfos.has('files.write') && (lfosDocument || lfos.has('files.save'))) {
-      const result = await lfos.saveProject({
-        handle: saveAs ? null : lfosDocument?.handle,
-        suggestedName: projectFileName(item.title),
-        contents
-      });
+    if (lfosDocument || (lfos.has('files.write') && lfos.has('files.save'))) {
+      const result = await lfosDocumentStore.save(item.id, { saveAs, allowPicker: true });
       if (!result || result.cancelled) return;
-      rememberLFOSDocument(item.id, result.handle);
+      scheduleLFOSAutosave();
       announce(saveAs || !lfosDocument ? 'Project saved to LFOS.' : 'Project saved.');
       return;
     }
+    const { contents } = await projectSnapshot(item.id);
     if (window.lfcoreDesktop?.saveProject) {
       const saved = await window.lfcoreDesktop.saveProject(projectFileName(item.title), contents);
       if (saved) announce('Project downloaded.');
@@ -462,7 +507,7 @@ async function downloadProject({ saveAs = false } = {}) {
     setTimeout(() => URL.revokeObjectURL(url), 0);
     announce('Project downloaded.');
   } catch (error) {
-    if (error?.code === 'CONFLICT') announce('The LFOS file changed elsewhere. Review it or use Save project as…');
+    if (lfosDocuments.has(item.id)) reportLFOSSaveFailure(error);
     else announce(`Project save failed: ${error.message}`);
     syncLFOSUnsavedChanges();
   }
@@ -897,6 +942,7 @@ function renderHome() {
       el('span', { class: 'home-development-warning', text: '⚠ This product is under development.' })));
   if (loadError) main.prepend(el('p', { class: 'error-banner', text: `${loadError} Existing data was left untouched.` }));
   app.replaceChildren(el('div', { class: 'home' }, header, main));
+  prepareLFOSHeader(header);
   updateSaveControls();
 }
 
@@ -1383,6 +1429,7 @@ function renderWorkspace() {
       button(`Library${item.sources?.length ? ` (${item.sources.length})` : ''}`, () => openSource(openSourceId ? null : 'library'), `source-toggle ${openSourceId ? 'active' : ''}`, { 'aria-pressed': String(!!openSourceId), 'aria-label': 'Toggle library' })));
 
   app.replaceChildren(el('div', { class: `workspace-shell ${graphFocus ? 'graph-focus-active graph-focus-readonly' : ''} ${editingTarget ? 'editing-mode-active' : ''}`.trim() }, renderCanvas(item), chrome));
+  prepareLFOSHeader(chrome);
   updateSaveControls();
   applyView();
   for (const preview of document.querySelectorAll('.markdown-preview')) {

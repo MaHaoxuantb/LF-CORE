@@ -7,6 +7,7 @@
   "displayMode": "standalone",
   "embedPolicy": "embed",
   "rememberWindowBounds": true,
+  "windowChrome": { "mode": "overlay", "background": "surface" },
   "permissions": ["files:open", "files:save"],
   "fileAssociations": [
     {

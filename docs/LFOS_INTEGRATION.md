@@ -13,7 +13,7 @@ The configuration requests only:
 - `files:open` for the LFOS picker, file reads, and `.lfcore` Open With activations;
 - `files:save` for Save As and in-place writes to a user-opened file.
 
-It associates `.lfcore` and `application/vnd.linecoflow.project+json` with LF CORE. No `ai:generate` permission is declared, and the application does not call LFOS AI APIs.
+It declares LF CORE as the default handler for `.lfcore` and `application/vnd.linecoflow.project+json`. The website manifest is now version 3; existing Store installations must apply its update (or reinstall) to receive the default association and overlay header configuration. No `ai:generate` permission is declared, and the application does not call LFOS AI APIs.
 
 ## Runtime behavior
 
@@ -22,8 +22,10 @@ It associates `.lfcore` and `application/vnd.linecoflow.project+json` with LF CO
 - **Open project** prefers the LFOS virtual-drive picker when `files.open` and `files.read` are available. Cancellation is a no-op. If LFOS is absent or the permission is unavailable, the existing Electron dialog or browser file input is used.
 - An Open With launch reads `activation.getInitial()` once and imports the `.lfcore` project. The opaque handle stays attached to that imported project for the lifetime of the app window.
 - **Save project** writes through the retained handle without reopening a picker. **Save project as…** obtains a new LFOS destination. A successful Save As becomes the project's current handle and releases the prior handle.
-- LFOS `CONFLICT` failures never retry or overwrite automatically. The project remains dirty and the user can review or use Save As.
-- Project changes are compared with the last successful LFOS open/write snapshot. `lifecycle.setUnsavedChanges(true)` protects the LFOS window until a durable write succeeds. Browser-origin IndexedDB autosave remains separate from saving the external `.lfcore` file.
+- **Auto save** keeps the browser copy and, after a short debounce, writes changed projects with a retained LFOS handle back to LFOS. New local projects first need **Save project to LFOS** to choose a destination. Background autosave never opens a picker. **Manual save** and **⌘S / Ctrl+S** save browser data and changed linked LFOS projects.
+- LFOS `CONFLICT` failures never retry or overwrite automatically. Autosave pauses for that document, the save status shows failure, and the user can review or use Save As. Other file write failures also pause background retries until an explicit save.
+- Project changes are compared with the exact snapshot last written to LFOS, so edits during an in-flight write remain unsaved. File writes and Save As run in order. `lifecycle.setUnsavedChanges(true)` protects the LFOS window until a durable write succeeds. The status tooltip names the save destination.
+- Both home and project headers use the canonical `windowChrome` SDK geometry and drag binding. Overlay integration reserves the shell's control insets, adapts to resize/zoom, and falls back to the system title bar when controls do not fit. Browser and Electron headers keep their existing layout.
 - Handles are released after failed imports, project deletion, replacement by Save As, or read failure.
 
 ## Verification
@@ -35,9 +37,10 @@ Use an LFOS installation whose `.app` configuration contains both file permissio
 3. a valid `.lfcore` file imports and can be edited;
 4. double-clicking or choosing Open With for `.lfcore` launches LF CORE with that project;
 5. after an edit, closing the LFOS window triggers its unsaved-changes protection;
-6. **Save project** updates the activated/opened file without another picker;
+6. **Auto save** updates the activated/opened file without another picker; **⌘S / Ctrl+S** does the same in Manual save mode;
 7. **Save project as…** creates a new file and subsequent saves update it;
 8. removing either permission produces a clean fallback or an actionable error rather than an unrestricted browser picker inside the LFOS frame;
-9. the same deployment still opens and downloads projects in an ordinary top-level browser.
+9. the same deployment still opens and downloads projects in an ordinary top-level browser;
+10. home and project headers share the LFOS controls without overlap at normal size, restore the system title bar when too narrow, and support dragging the window from empty header space.
 
 Run `npm test` and `npm run build` for automated adapter and bundle checks.

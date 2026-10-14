@@ -1,6 +1,8 @@
 # LF CORE
 
-LF CORE by LinecoFlow is an article-first, local-first workspace for independent learning. LF CORE is the UI for AI. Start with a question or source, explore ideas in a connected graph, and consolidate what matters into a master article.
+LF-Core is a mind-map-like tool for explorers.
+
+LF-Core is a mind-map-like tool for explorers. Published by LinecoFlow LLC. LF CORE is the UI for AI. Start with a question or source, explore ideas in a connected graph, and consolidate what matters into a master article.
 
 **North Star:** Does this make the next study session easier to revisit than chat?
 
@@ -31,7 +33,7 @@ Select a card to reveal its actions directly beneath it: edit its Markdown, add 
 
 The save control at the upper right offers **Auto save** and **Manual save**. In Manual save, click the status button or press **⌘S / Ctrl+S** to save. The status reads **Unsaved** while changes are pending; the browser warns before leaving with unsaved changes. The mode choice persists across reloads. Open the project title menu and choose **Download project** to create a portable `.lfcore` file containing the canvas, chats, pasted sources, and PDF copies. Choose **Open project** on the home screen to add an independent copy to the library.
 
-When hosted inside LFOS, LF CORE loads the versioned LFOS SDK and uses `ready()` as the authoritative host check. **Open project** then uses the LFOS virtual drive when `files.open` and `files.read` are available. LF CORE also accepts `.lfcore` Open With activations, retains their opaque handle for in-place saves, offers LFOS Save As when permitted, and reports unsaved external changes to the LFOS window lifecycle. Outside LFOS, the existing browser and Electron file flows remain unchanged. LFOS intelligence is intentionally not requested or used. See [LFOS integration](docs/LFOS_INTEGRATION.md) for installation and verification.
+When hosted inside LFOS, LF CORE loads the versioned LFOS SDK and uses `ready()` as the authoritative host check. **Open project** then uses the LFOS virtual drive when `files.open` and `files.read` are available. LF CORE declares itself the default `.lfcore` handler, accepts file activations, retains their opaque handle for in-place autosave, and offers LFOS Save As when permitted. Auto save updates both browser storage and linked LFOS files; new projects need an initial **Save project to LFOS** to choose a destination. The header adapts to LFOS window controls, and unsaved external changes protect the window from closing. Existing Store installations need the version-3 manifest update. Outside LFOS, the existing browser and Electron file flows remain unchanged. LFOS intelligence is intentionally not requested or used. See [LFOS integration](docs/LFOS_INTEGRATION.md) for installation and verification.
 
 The prototype stores project records and imported PDF bytes in this browser's IndexedDB; small preferences remain in local storage. On first launch after the database upgrade, previous versioned project data is copied to IndexedDB, read back and validated, and only then removed from local storage. Use project download for a portable backup before clearing site data. There is no account or cloud sync. Run `npm test` for the anchor, outline, migration, project-file, and persistence checks.
 

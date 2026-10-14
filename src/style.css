@@ -1340,3 +1340,31 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) {
   .about-aurora span, .about-sparkles i, .about-orbit, .about-orbit::before, .about-orbit::after { animation: none; }
 }
+
+/* Reserve the shell's zoom-adjusted controls in a single app-owned top row. */
+.home-header.lfos-adaptive-header,
+.workspace-chrome.lfos-adaptive-header {
+  box-sizing: border-box;
+  height: auto;
+  align-items: center;
+  padding-block: 6px;
+  gap: 24px;
+}
+.workspace-chrome.lfos-adaptive-header {
+  inset: 0 0 auto;
+  pointer-events: auto;
+}
+.workspace-chrome.lfos-adaptive-header .header-left-group {
+  flex: 1 1 auto;
+  max-width: none;
+  align-items: center;
+}
+.workspace-chrome.lfos-adaptive-header .header-left {
+  flex: 1 1 auto;
+  max-width: none;
+}
+.workspace-chrome.lfos-adaptive-header .document-menu-control {
+  flex: 1 1 auto;
+  max-width: none;
+}
+.workspace-chrome.lfos-adaptive-header .workspace-title { max-width: 100%; }

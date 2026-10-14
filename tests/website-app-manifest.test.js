@@ -7,13 +7,15 @@ test('website manifest is LFOS-compatible and binds URLs to the request origin',
 
   assert.equal(manifest.schemaVersion, 1);
   assert.equal(manifest.id, 'com.linecoflow.lfcore');
-  assert.equal(manifest.version, 1);
+  assert.equal(manifest.version, 3);
   assert.equal(manifest.publisher.url, 'https://lfcore.example.test');
   assert.equal(manifest.install.url, 'https://lfcore.example.test');
   assert.deepEqual(manifest.install.permissions, ['files:open', 'files:save']);
+  assert.deepEqual(manifest.install.windowChrome, { mode: 'overlay', background: 'surface' });
   assert.deepEqual(manifest.install.fileAssociations, [{
     extensions: ['.lfcore'],
-    mimeTypes: ['application/vnd.linecoflow.project+json']
+    mimeTypes: ['application/vnd.linecoflow.project+json'],
+    default: true
   }]);
 });
 

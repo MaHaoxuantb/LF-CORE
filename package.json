@@ -2,7 +2,7 @@
   "name": "lf-core",
   "productName": "LF CORE",
   "version": "0.1.0",
-  "description": "An article-first, local-first workspace for independent learning.",
+  "description": "LF-Core is a mind-map-like tool for explorers.",
   "private": true,
   "type": "module",
   "main": "electron/main.js",
