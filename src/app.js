@@ -17,6 +17,7 @@ import { parseProject, projectFileName, serializeProject, PROJECT_EXTENSION } fr
 import { prefixMarkdownLines, wrapMarkdownSelection } from './markdown-edit.js';
 import { attachSourceToQuestion, compareIdeas, createResearchProposal, createResearchQuestion, discoverSources, normalizeResearch, recordCloseout, verifiedSourceFromResult } from './research.js';
 import { resolveMoveGeometry, resolveResizeGeometry, selectionBounds } from './node-geometry.js';
+import { createLFOSIntegration, LFCORE_MIME_TYPE } from './lfos.js';
 import packageInfo from '../package.json';
 import 'katex/dist/katex.min.css';
 import './style.css';
@@ -27,6 +28,9 @@ const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
 const PRODUCT_NAME = packageInfo.productName || 'LF CORE';
 const PRODUCT_VERSION = packageInfo.version || '0.0.0';
+const lfos = createLFOSIntegration();
+const lfosConnection = lfos.connect();
+const lfosDocuments = new Map();
 const ROOT = { x: 0, y: 0, width: 490, height: 550 };
 let rootBounds = { ...ROOT };
 const NODE = { width: 238, height: 108 };
@@ -148,6 +152,35 @@ let outlineHeight = null;
 let aiPanel = null;
 let researchPanel = null;
 let graphFocus = null, graphFocusNodeIds = null, spaceKeySession = null;
+
+function lfosDocumentSignature(workspaceId) {
+  const workspace = state.workspaces.find((item) => item.id === workspaceId);
+  return workspace ? JSON.stringify({ workspace, chats: state.chats[workspaceId] || [] }) : null;
+}
+
+function lfosDocumentIsDirty(workspaceId, entry = lfosDocuments.get(workspaceId)) {
+  return !!entry && lfosDocumentSignature(workspaceId) !== entry.signature;
+}
+
+function syncLFOSUnsavedChanges() {
+  const hasUnsavedDocument = [...lfosDocuments].some(([workspaceId, entry]) => lfosDocumentIsDirty(workspaceId, entry));
+  void lfos.setUnsavedChanges(hasUnsavedDocument).catch((error) => console.warn('[LF CORE] Could not update LFOS window lifecycle state.', error));
+}
+
+function rememberLFOSDocument(workspaceId, handle) {
+  const previous = lfosDocuments.get(workspaceId)?.handle;
+  if (previous && previous.id !== handle.id) void lfos.release(previous);
+  lfosDocuments.set(workspaceId, { handle, signature: lfosDocumentSignature(workspaceId) });
+  syncLFOSUnsavedChanges();
+}
+
+function forgetLFOSDocument(workspaceId) {
+  const entry = lfosDocuments.get(workspaceId);
+  if (!entry) return;
+  lfosDocuments.delete(workspaceId);
+  void lfos.release(entry.handle);
+  syncLFOSUnsavedChanges();
+}
 
 // Focus is a viewing mode: navigation and focus controls remain available, but
 // graph records must not be changed while the related view is on screen.
@@ -280,6 +313,7 @@ function persist(force = false) {
   }
   const serialized = JSON.stringify(state);
   dirty = serialized !== lastSaved;
+  syncLFOSUnsavedChanges();
   if (saveMode === 'manual' && !force) { updateSaveControls(); return Promise.resolve(true); }
   if (!dirty && !force && !pendingStateSave) { updateSaveControls(); return Promise.resolve(true); }
   updateSaveControls();
@@ -392,7 +426,7 @@ function appendAppearanceOptions(menu) {
   menu.append(documentMenuSubmenu('Project accent', projectAccentColors, work()?.accentColor || 'gold', setProjectAccent, (value) => ({ gold: 'LF Gold', 'gold-bright': 'LF Gold Bright', blue: 'LF Blue' })[value]));
 }
 
-async function downloadProject() {
+async function downloadProject({ saveAs = false } = {}) {
   const item = work();
   if (!item) return;
   closeDocumentMenu();
@@ -404,6 +438,19 @@ async function downloadProject() {
       fileBytes.set(source.id, await (source.type === 'pdf' ? getPdf(source.id) : getMedia(source.id)));
     }
     const contents = serializeProject(item, state.chats[item.id] || [], fileBytes);
+    await lfosConnection;
+    const lfosDocument = lfosDocuments.get(item.id);
+    if (lfos.has('files.write') && (lfosDocument || lfos.has('files.save'))) {
+      const result = await lfos.saveProject({
+        handle: saveAs ? null : lfosDocument?.handle,
+        suggestedName: projectFileName(item.title),
+        contents
+      });
+      if (!result || result.cancelled) return;
+      rememberLFOSDocument(item.id, result.handle);
+      announce(saveAs || !lfosDocument ? 'Project saved to LFOS.' : 'Project saved.');
+      return;
+    }
     if (window.lfcoreDesktop?.saveProject) {
       const saved = await window.lfcoreDesktop.saveProject(projectFileName(item.title), contents);
       if (saved) announce('Project downloaded.');
@@ -414,7 +461,11 @@ async function downloadProject() {
     document.body.append(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 0);
     announce('Project downloaded.');
-  } catch (error) { announce(`Project download failed: ${error.message}`); }
+  } catch (error) {
+    if (error?.code === 'CONFLICT') announce('The LFOS file changed elsewhere. Review it or use Save project as…');
+    else announce(`Project save failed: ${error.message}`);
+    syncLFOSUnsavedChanges();
+  }
 }
 
 function toggleDocumentMenu(wrapper) {
@@ -424,7 +475,10 @@ function toggleDocumentMenu(wrapper) {
   const menu = el('div', { class: 'document-menu', role: 'menu', 'aria-label': 'Project options' });
   menu.append(el('div', { class: 'document-menu-heading', text: 'File' }));
   menu.append(button('Rename', renameWorkspace, 'document-menu-option', { role: 'menuitem' }));
-  menu.append(button('Download project', downloadProject, 'document-menu-option', { role: 'menuitem' }));
+  const lfosDocument = lfosDocuments.get(work()?.id);
+  const projectAction = lfosDocument ? 'Save project' : lfos.has('files.save') ? 'Save project to LFOS' : 'Download project';
+  menu.append(button(projectAction, () => downloadProject(), 'document-menu-option', { role: 'menuitem' }));
+  if (lfosDocument && lfos.has('files.save')) menu.append(button('Save project as…', () => downloadProject({ saveAs: true }), 'document-menu-option', { role: 'menuitem' }));
   menu.append(documentMenuSubmenu('Saving', ['auto', 'manual'], saveMode, (value) => setSaveMode(value), (value) => value === 'auto' ? 'Auto save' : 'Manual save'));
   menu.append(el('div', { class: 'document-menu-separator', role: 'separator' }));
   appendAppearanceOptions(menu);
@@ -661,10 +715,16 @@ function startWorkspace(title, source = null, generate = false) {
   if (generate) openAiPanel({ targetId: 'article', draft: `Write an introductory article about ${title.trim() || 'this topic'} with a clear outline, examples, and open questions. Replace the current working notes.` });
 }
 
-async function uploadProject(file) {
-  if (!file) return;
-  if (!file.name.toLowerCase().endsWith(PROJECT_EXTENSION)) throw new Error(`Choose a ${PROJECT_EXTENSION} project file.`);
-  const imported = parseProject(await file.text());
+async function uploadProject(file, { lfosHandle = null, successMessage = 'Project opened.' } = {}) {
+  if (!file) { if (lfosHandle) await lfos.release(lfosHandle); return; }
+  let imported;
+  try {
+    if (!file.name.toLowerCase().endsWith(PROJECT_EXTENSION)) throw new Error(`Choose a ${PROJECT_EXTENSION} project file.`);
+    imported = parseProject(await file.text());
+  } catch (error) {
+    if (lfosHandle) await lfos.release(lfosHandle);
+    throw error;
+  }
   const storedPdfIds = [];
   try {
     for (const media of imported.media || imported.pdfs.map((entry) => ({ ...entry, type: 'pdf' }))) {
@@ -676,15 +736,17 @@ async function uploadProject(file) {
     state.redo[imported.workspace.id] = [];
     state.chats[imported.workspace.id] = imported.chats;
     if (!await persist(true)) throw new Error('The project could not be saved in browser storage.');
+    if (lfosHandle) rememberLFOSDocument(imported.workspace.id, lfosHandle);
   } catch (error) {
     state.workspaces = state.workspaces.filter((entry) => entry.id !== imported.workspace.id);
     delete state.history[imported.workspace.id]; delete state.redo[imported.workspace.id]; delete state.chats[imported.workspace.id];
     await Promise.allSettled(storedPdfIds.flatMap(({ id, type }) => type === 'pdf' ? [deletePdf(id), deleteSourceTextIndex(id)] : [deleteMedia(id)]));
+    if (lfosHandle) await lfos.release(lfosHandle);
     throw error;
   }
   openWorkspace(imported.workspace.id);
   for (const source of imported.workspace.sources.filter((entry) => entry.type === 'pdf')) ensureAgentPdfIndex(source).catch(() => {});
-  announce('Project uploaded.');
+  announce(successMessage);
 }
 
 function openNewProjectGuide() {
@@ -776,20 +838,26 @@ function renderHome() {
   currentId = null; selectedId = null; selectedIds.clear(); editingMarkdown = false; editingTarget = null; editingBeforeView = null; selectedPassage = null; openSourceId = null;
   graphFocus = null; graphFocusNodeIds = null; spaceKeySession = null; aiPanel = null;
   applyAppearance();
-  const projectUpload = el('input', { type: 'file', accept: PROJECT_EXTENSION, class: 'project-upload-input', 'aria-label': 'Upload project' });
-  const uploadProjectButton = button('Upload project', async () => {
-    if (!window.lfcoreDesktop?.openProject) return projectUpload.click();
+  const projectUpload = el('input', { type: 'file', accept: PROJECT_EXTENSION, class: 'project-upload-input', 'aria-label': 'Open project file' });
+  const uploadProjectButton = button('Open project', async () => {
     uploadProjectButton.disabled = true;
     try {
+      await lfosConnection;
+      if (lfos.has('files.open')) {
+        const opened = await lfos.openProject();
+        if (opened) await uploadProject(opened.file, { lfosHandle: opened.handle, successMessage: 'Project opened from LFOS.' });
+        return;
+      }
+      if (!window.lfcoreDesktop?.openProject) return projectUpload.click();
       const opened = await window.lfcoreDesktop.openProject();
-      if (opened) await uploadProject(new File([opened.contents], opened.name, { type: 'application/vnd.linecoflow.project+json' }));
-    } catch (error) { announce(`Project upload failed: ${error.message}`); }
+      if (opened) await uploadProject(new File([opened.contents], opened.name, { type: LFCORE_MIME_TYPE }));
+    } catch (error) { announce(`Project open failed: ${error.message}`); }
     finally { uploadProjectButton.disabled = false; }
   }, 'project-upload-button');
   projectUpload.addEventListener('change', async () => {
     uploadProjectButton.disabled = true;
     try { await uploadProject(projectUpload.files?.[0]); }
-    catch (error) { announce(`Project upload failed: ${error.message}`); }
+    catch (error) { announce(`Project open failed: ${error.message}`); }
     finally { uploadProjectButton.disabled = false; projectUpload.value = ''; }
   });
   if (loadError) uploadProjectButton.disabled = true;
@@ -832,9 +900,20 @@ function renderHome() {
   updateSaveControls();
 }
 
+async function openInitialLFOSProject() {
+  try {
+    const opened = await lfos.initialProject();
+    if (opened) await uploadProject(opened.file, { lfosHandle: opened.handle, successMessage: 'Project opened from LFOS.' });
+  } catch (error) {
+    console.error('[LF CORE] Could not open the LFOS launch file.', error);
+    announce(`Could not open the LFOS project: ${error.message}`);
+  }
+}
+
 async function deleteWorkspace(id) {
   const item = state.workspaces.find((entry) => entry.id === id);
   if (!item || !await confirmAction({ title: 'Delete project?', message: `“${item.title}” and all its connected nodes will be permanently deleted. This cannot be undone.`, confirmLabel: 'Delete project', danger: true })) return;
+  forgetLFOSDocument(id);
   for (const source of item.sources || []) if (['pdf', 'image', 'video', 'file'].includes(source.type)) pendingMediaDeletes.set(source.id, source.type);
   for (const node of item.nodes || []) pdfNodePages.delete(node.id);
   state.workspaces = state.workspaces.filter((entry) => entry.id !== id);
@@ -858,6 +937,7 @@ function openWorkspace(id) {
   outlineOpen = !!saved.outlineOpen;
   renderWorkspace();
   if (needsFit || view.x == null || view.y == null) fitCanvas();
+  syncLFOSUnsavedChanges();
 }
 
 function attachExampleAnchors(item) {
@@ -4527,7 +4607,9 @@ document.addEventListener('keyup', (event) => {
 
 window.addEventListener('beforeunload', (event) => {
   if (saveMode === 'auto' && flushView()) persist(true);
-  if (dirty) { event.preventDefault(); event.returnValue = ''; }
+  const lfosDirty = [...lfosDocuments].some(([workspaceId, entry]) => lfosDocumentIsDirty(workspaceId, entry));
+  if (dirty || lfosDirty) { event.preventDefault(); event.returnValue = ''; }
 });
 
 renderHome();
+void openInitialLFOSProject();

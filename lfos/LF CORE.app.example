@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "com.linecoflow.lfcore",
+  "version": "0.1.0",
+  "name": "LF CORE",
+  "url": "https://replace-with-your-lf-core-deployment.example/",
+  "displayMode": "standalone",
+  "embedPolicy": "embed",
+  "rememberWindowBounds": true,
+  "permissions": ["files:open", "files:save"],
+  "fileAssociations": [
+    {
+      "extensions": [".lfcore"],
+      "mimeTypes": ["application/vnd.linecoflow.project+json"],
+      "default": true
+    }
+  ]
+}
