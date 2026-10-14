@@ -1,6 +1,6 @@
 import { makeAnchor, resolveAnchor, selectionOffsets } from './anchors.js';
 import { createWorkspace, emptyState, loadSaveMode, saveSaveMode, snapshotWorkspace } from './storage.js';
-import { loadDatabaseState, requestPersistentStorage, writeDatabaseState } from './state-store.js';
+import { loadDatabaseState, requestPersistentStorage, restoreDatabaseViews, writeDatabaseView } from './state-store.js';
 import { renderMarkdown, headingTokens, wrapMarkdownHighlight, unwrapMarkdownHighlight } from './markdown.js';
 import { isSourceNode, nodeLabel, sourceNode } from './node-content.js';
 import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
@@ -13,13 +13,15 @@ import { WorkspaceAgentService, applyAgentProposal } from './agent-service.js';
 import { ensurePdfSourceIndex, readWorkspaceSource, searchWorkspaceSources } from './source-index.js';
 import { normalizeGraphFocusPreferences, relatedNodeIds } from './graph-focus.js';
 import { siblingPredecessor } from './siblings.js';
-import { parseProject, projectFileName, serializeProject, PROJECT_EXTENSION } from './project.js';
+import { parseProject, projectFileName, PROJECT_EXTENSION } from './project.js';
 import { prefixMarkdownLines, wrapMarkdownSelection } from './markdown-edit.js';
 import { attachSourceToQuestion, compareIdeas, createResearchProposal, createResearchQuestion, discoverSources, normalizeResearch, recordCloseout, verifiedSourceFromResult } from './research.js';
 import { resolveMoveGeometry, resolveResizeGeometry, selectionBounds } from './node-geometry.js';
 import { createLFOSIntegration, LFCORE_MIME_TYPE } from './lfos.js';
 import { LFOSDocuments } from './lfos-documents.js';
 import { attachLFOSHeader } from './lfos-header.js';
+import { PersistenceClient } from './persistence-client.js';
+import { ViewPersistence } from './view-persistence.js';
 import packageInfo from '../package.json';
 import 'katex/dist/katex.min.css';
 import './style.css';
@@ -34,7 +36,7 @@ const lfos = createLFOSIntegration();
 const lfosConnection = lfos.connect();
 const lfosDocumentStore = new LFOSDocuments({
   integration: lfos,
-  signature: lfosDocumentSignature,
+  revision: lfosDocumentRevision,
   snapshot: projectSnapshot,
   onChange: () => { syncLFOSUnsavedChanges(); updateSaveControls(); }
 });
@@ -78,6 +80,7 @@ const examplePassages = {
 let state, loadError = null, saveError = null;
 try {
   state = await loadDatabaseState();
+  await restoreDatabaseViews(state).catch((error) => console.warn('[LF CORE] Could not restore canvas positions.', error));
   requestPersistentStorage();
 }
 catch (error) {
@@ -142,10 +145,19 @@ const handleSystemAppearanceChange = () => {
 };
 if (colorSchemeQuery?.addEventListener) colorSchemeQuery.addEventListener('change', handleSystemAppearanceChange);
 else if (colorSchemeQuery) colorSchemeQuery.addListener(handleSystemAppearanceChange);
-let lastSaved = JSON.stringify(state), dirty = false;
+const backgroundPersistence = new PersistenceClient(state);
+const documentRevisions = new Map();
+const pendingChangedIds = new Set();
+let stateRevision = 0, lastSavedRevision = 0, dirty = false;
+const viewPersistence = new ViewPersistence({ write: writeDatabaseView, onError: (error) => {
+  console.warn('[LF CORE] Could not save the canvas position.', error);
+  announce('Could not save the canvas position.');
+} });
 let reportedSaveFailure = null;
 let pendingStateSave = null;
 let stateSaveLoop = null;
+let stateSaveTimer = null;
+let gestureActive = false, gestureUntil = 0;
 let currentId = null, selectedId = null, selectedIds = new Set(), editingMarkdown = false, editingTarget = null, editingBeforeView = null, outlineOpen = false;
 let activeConnection = null;
 let openSourceId = null, sourcePage = 1, sourceJump = null;
@@ -157,15 +169,14 @@ const pdfIndexJobs = new Map();
 const pdfIndexStatuses = new Map();
 const pendingMediaDeletes = new Map();
 let selectedPassage = null, editGroup = null, view = { x: 0, y: 0, zoom: 1 };
-let viewTimer = null, toastTimer = null;
+let viewFrame = null, toastTimer = null;
 let outlineHeight = null;
 let aiPanel = null;
 let researchPanel = null;
 let graphFocus = null, graphFocusNodeIds = null, spaceKeySession = null;
 
-function lfosDocumentSignature(workspaceId) {
-  const workspace = state.workspaces.find((item) => item.id === workspaceId);
-  return workspace ? JSON.stringify({ workspace, chats: state.chats[workspaceId] || [] }) : null;
+function lfosDocumentRevision(workspaceId) {
+  return documentRevisions.get(workspaceId) || 0;
 }
 
 function lfosDocumentIsDirty(workspaceId, entry = lfosDocuments.get(workspaceId)) {
@@ -202,6 +213,7 @@ function scheduleLFOSAutosave() {
   if (![...lfosDocuments].some(([id, entry]) => !entry.error && lfosDocumentIsDirty(id, entry))) return;
   lfosAutosaveTimer = setTimeout(() => {
     lfosAutosaveTimer = null;
+    if (gestureActive || performance.now() < gestureUntil) { scheduleLFOSAutosave(); return; }
     for (const [id] of lfosDocuments) {
       void lfosDocumentStore.save(id, { automatic: true }).catch(reportLFOSSaveFailure);
     }
@@ -299,12 +311,16 @@ function reportSaveFailure(error) {
 
 async function runStateSaveLoop() {
   while (pendingStateSave) {
+    while (!pendingStateSave.force && (gestureActive || performance.now() < gestureUntil)) await new Promise((resolve) => setTimeout(resolve, 300));
     const job = pendingStateSave;
     pendingStateSave = null;
     try {
-      await writeDatabaseState(job.snapshot);
-      lastSaved = job.serialized;
-      dirty = JSON.stringify(state) !== lastSaved;
+      const revision = stateRevision;
+      for (const id of pendingChangedIds) job.ids.add(id);
+      pendingChangedIds.clear();
+      await backgroundPersistence.save(state, job.ids);
+      lastSavedRevision = revision;
+      dirty = stateRevision !== lastSavedRevision;
       saveError = null;
       reportedSaveFailure = null;
       if (!pendingStateSave && !dirty) {
@@ -318,6 +334,7 @@ async function runStateSaveLoop() {
       }
       job.waiters.forEach((resolve) => resolve(true));
     } catch (error) {
+      for (const id of job.ids) pendingChangedIds.add(id);
       reportSaveFailure(error);
       job.waiters.forEach((resolve) => resolve(false));
     }
@@ -326,52 +343,59 @@ async function runStateSaveLoop() {
   stateSaveLoop = null;
 }
 
-function queueStateSave(snapshot, serialized) {
+function queueStateSave(workspaceId, force) {
   return new Promise((resolve) => {
     if (pendingStateSave) {
-      pendingStateSave.snapshot = snapshot;
-      pendingStateSave.serialized = serialized;
+      if (workspaceId) pendingStateSave.ids.add(workspaceId);
+      pendingStateSave.force ||= force;
       pendingStateSave.waiters.push(resolve);
     } else {
-      pendingStateSave = { snapshot, serialized, waiters: [resolve] };
+      pendingStateSave = { ids: new Set(workspaceId ? [workspaceId] : []), force, waiters: [resolve] };
     }
-    if (!stateSaveLoop) stateSaveLoop = runStateSaveLoop();
+    clearTimeout(stateSaveTimer);
+    const start = () => {
+      if (!force && (gestureActive || performance.now() < gestureUntil)) { stateSaveTimer = setTimeout(start, 300); return; }
+      if (!stateSaveLoop) stateSaveLoop = runStateSaveLoop();
+    };
+    if (force) start();
+    else stateSaveTimer = setTimeout(start, 500);
   });
 }
 
-function persist(force = false) {
+function persist(force = false, workspaceId = work()?.id, changed = true) {
   if (loadError) {
     saveError = 'Saved data could not be read; no data was overwritten.';
     updateSaveControls();
     return Promise.resolve(false);
   }
-  const serialized = JSON.stringify(state);
-  dirty = serialized !== lastSaved;
+  if (changed) {
+    stateRevision++;
+    if (workspaceId) documentRevisions.set(workspaceId, lfosDocumentRevision(workspaceId) + 1);
+    if (workspaceId) pendingChangedIds.add(workspaceId);
+  }
+  dirty = stateRevision !== lastSavedRevision;
   syncLFOSUnsavedChanges();
   scheduleLFOSAutosave();
   if (saveMode === 'manual' && !force) { updateSaveControls(); return Promise.resolve(true); }
   if (!dirty && !force && !pendingStateSave) { updateSaveControls(); return Promise.resolve(true); }
   updateSaveControls();
-  return queueStateSave(structuredClone(state), serialized);
+  return queueStateSave(workspaceId, force);
 }
 
 function flushView() {
-  if (graphFocus || editingTarget) { clearTimeout(viewTimer); viewTimer = null; return false; }
-  if (!viewTimer) return false;
-  clearTimeout(viewTimer); viewTimer = null;
-  const item = work();
-  if (item) item.view = { ...view, outlineOpen };
-  return !!item;
+  return viewPersistence.flush();
 }
 
 async function saveNow() {
-  flushView();
   clearTimeout(lfosAutosaveTimer);
-  const localSaved = await persist(true);
+  const [localSaved, viewSaved] = await Promise.all([persist(true, work()?.id, false), viewPersistence.flush().then(() => true).catch((error) => {
+    console.warn('[LF CORE] Could not save the canvas position.', error);
+    return false;
+  })]);
   clearTimeout(lfosAutosaveTimer);
   const results = await Promise.allSettled([...lfosDocuments].map(([id]) => lfosDocumentStore.save(id)));
   for (const result of results) if (result.status === 'rejected') reportLFOSSaveFailure(result.reason);
-  const saved = localSaved && results.every((result) => result.status === 'fulfilled');
+  const saved = localSaved && viewSaved && results.every((result) => result.status === 'fulfilled');
   if (saved) announce('Saved.');
   return saved;
 }
@@ -469,22 +493,15 @@ function appendAppearanceOptions(menu) {
 async function projectSnapshot(workspaceId) {
   const current = state.workspaces.find((item) => item.id === workspaceId);
   if (!current) throw new Error('The project is no longer available.');
-  // Capture both the content and dirty signature before asynchronous media reads.
-  const { workspace: item, chats } = structuredClone({ workspace: current, chats: state.chats[workspaceId] || [] });
-  const signature = JSON.stringify({ workspace: item, chats });
-  const fileBytes = new Map();
-  for (const source of item.sources || []) {
-    if (!['pdf', 'image', 'video', 'file'].includes(source.type)) continue;
-    fileBytes.set(source.id, await (source.type === 'pdf' ? getPdf(source.id) : getMedia(source.id)));
-  }
-  return { signature, contents: serializeProject(item, chats, fileBytes), name: projectFileName(item.title) };
+  const revision = lfosDocumentRevision(workspaceId);
+  return { ...await backgroundPersistence.package(current, state.chats[workspaceId] || []), revision };
 }
 
 async function downloadProject({ saveAs = false } = {}) {
   const item = work();
   if (!item) return;
   closeDocumentMenu();
-  flushView();
+  void flushView().catch(viewPersistence.onError);
   try {
     await lfosConnection;
     const lfosDocument = lfosDocuments.get(item.id);
@@ -755,7 +772,7 @@ function startWorkspace(title, source = null, generate = false) {
     addMediaSourceNode(item, source);
   }
   state.workspaces.unshift(item); state.history[item.id] = [];
-  persist(); openWorkspace(item.id);
+  persist(false, item.id); openWorkspace(item.id);
   if (source) openSource(source.id);
   if (generate) openAiPanel({ targetId: 'article', draft: `Write an introductory article about ${title.trim() || 'this topic'} with a clear outline, examples, and open questions. Replace the current working notes.` });
 }
@@ -780,7 +797,7 @@ async function uploadProject(file, { lfosHandle = null, successMessage = 'Projec
     state.history[imported.workspace.id] = [];
     state.redo[imported.workspace.id] = [];
     state.chats[imported.workspace.id] = imported.chats;
-    if (!await persist(true)) throw new Error('The project could not be saved in browser storage.');
+    if (!await persist(true, imported.workspace.id)) throw new Error('The project could not be saved in browser storage.');
     if (lfosHandle) rememberLFOSDocument(imported.workspace.id, lfosHandle);
   } catch (error) {
     state.workspaces = state.workspaces.filter((entry) => entry.id !== imported.workspace.id);
@@ -879,7 +896,8 @@ function openNewProjectGuide() {
 }
 
 function renderHome() {
-  if (flushView()) persist();
+  gestureActive = false;
+  void flushView().catch(viewPersistence.onError);
   currentId = null; selectedId = null; selectedIds.clear(); editingMarkdown = false; editingTarget = null; editingBeforeView = null; selectedPassage = null; openSourceId = null;
   graphFocus = null; graphFocusNodeIds = null; spaceKeySession = null; aiPanel = null;
   applyAppearance();
@@ -926,7 +944,7 @@ function renderHome() {
     ];
     for (const topic of topics) item.nodes.push({ id: crypto.randomUUID(), document: { type: 'markdown', markdown: `# ${topic.title}\n\n${topic.body}` }, parentId: null, anchor: null, collapsed: false, provenance: 'learner' });
     attachExampleAnchors(item);
-    ensurePositions(item); persist(); openWorkspace(item.id);
+    ensurePositions(item); persist(false, item.id); openWorkspace(item.id);
   }, 'example-link');
   if (loadError) exampleButton.disabled = true;
   const header = el('header', { class: 'home-header' },
@@ -964,7 +982,7 @@ async function deleteWorkspace(id) {
   for (const node of item.nodes || []) pdfNodePages.delete(node.id);
   state.workspaces = state.workspaces.filter((entry) => entry.id !== id);
   delete state.history[id]; delete state.redo[id]; delete state.chats[id];
-  persist(); renderHome();
+  persist(false, id); renderHome();
 }
 
 function openWorkspace(id) {
@@ -973,8 +991,11 @@ function openWorkspace(id) {
   const item = work(); if (!item) return renderHome();
   const needsFit = !item.layout?.articleSize;
   if (attachExampleAnchors(item)) {
-    for (const snapshot of state.history[item.id] || []) attachExampleAnchors(snapshot);
-    for (const snapshot of state.redo[item.id] || []) attachExampleAnchors(snapshot);
+    for (const kind of ['history', 'redo']) state[kind][item.id] = (state[kind][item.id] || []).map((snapshot) => {
+      const migrated = structuredClone(snapshot);
+      attachExampleAnchors(migrated);
+      return migrated;
+    });
     persist();
   }
   ensurePositions(item);
@@ -1002,21 +1023,15 @@ function attachExampleAnchors(item) {
 }
 
 function saveView() {
-  clearTimeout(viewTimer);
-  if (graphFocus || editingTarget) { viewTimer = null; return; }
-  if (saveMode === 'manual') {
-    viewTimer = null;
-    const item = work(); if (!item) return;
-    item.view = { ...view, outlineOpen };
-    persist();
-    return;
-  }
-  viewTimer = setTimeout(() => {
-    viewTimer = null;
-    const item = work(); if (!item) return;
-    item.view = { ...view, outlineOpen };
-    persist();
-  }, 250);
+  if (graphFocus || editingTarget) return;
+  const item = work(); if (!item) return;
+  item.view = { ...view, outlineOpen };
+  viewPersistence.schedule(item.id, item.view);
+}
+
+function scheduleViewRender() {
+  if (viewFrame !== null) return;
+  viewFrame = requestAnimationFrame(() => { viewFrame = null; applyView(); });
 }
 
 function applyView() {
@@ -1139,7 +1154,7 @@ function fitGraphFocus(transition = null) {
 function enterGraphFocus(rootId = selectedId) {
   const item = work();
   if (!item || !rootId || selectedIds.size || !item.nodes.some((node) => node.id === rootId)) return false;
-  if (flushView()) persist();
+  void flushView().catch(viewPersistence.onError);
   const fromView = { ...view };
   selectedId = rootId;
   graphFocus = { rootId, ...graphFocusPreferences, beforeView: { ...view } };
@@ -1217,7 +1232,7 @@ function enterEditingMode(targetId) {
     activeMarkdownEditor()?.focus();
     return true;
   }
-  if (flushView()) persist();
+  void flushView().catch(viewPersistence.onError);
   const fromView = { ...view };
   editingBeforeView = { ...view };
   editingTarget = targetId;
@@ -1304,7 +1319,7 @@ function zoomTo(next, clientX, clientY) {
   const worldX = (px - view.x) / view.zoom, worldY = (py - view.y) / view.zoom;
   view.zoom = clamp(next, .35, 1.8);
   view.x = px - worldX * view.zoom; view.y = py - worldY * view.zoom;
-  applyView(); saveView();
+  scheduleViewRender(); saveView();
 }
 
 function ensureUnifiedNodeEdges(item) {
@@ -1399,6 +1414,7 @@ function edgePoints(item, edge) {
 }
 
 function renderWorkspace() {
+  gestureActive = false;
   const item = work(); if (!item) return renderHome();
   applyAppearance();
   ensureUnifiedNodeEdges(item);
@@ -1584,6 +1600,7 @@ function attachPanAndZoom(viewport) {
     event.preventDefault();
     closeContextMenu();
     const start = { x: event.clientX, y: event.clientY, panX: view.x, panY: view.y, target: event.target, moved: false };
+    gestureActive = true;
     viewport.setPointerCapture(event.pointerId);
     const move = (next) => {
       if (!start.moved && Math.hypot(next.clientX - start.x, next.clientY - start.y) < 5) return;
@@ -1591,13 +1608,16 @@ function attachPanAndZoom(viewport) {
       viewport.classList.add('panning');
       view.x = start.panX + next.clientX - start.x;
       view.y = start.panY + next.clientY - start.y;
-      applyView();
+      scheduleViewRender();
     };
     const finish = (next) => {
       viewport.removeEventListener('pointermove', move);
       viewport.removeEventListener('pointerup', finish);
       viewport.removeEventListener('pointercancel', cancel);
+      viewport.removeEventListener('lostpointercapture', cancel);
       viewport.classList.remove('panning');
+      gestureActive = false;
+      gestureUntil = performance.now() + 300;
       if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
       if (start.moved) saveView();
       else if (next.type === 'pointerup') openContextMenu(start.target, next.clientX, next.clientY);
@@ -1606,6 +1626,7 @@ function attachPanAndZoom(viewport) {
     viewport.addEventListener('pointermove', move);
     viewport.addEventListener('pointerup', finish);
     viewport.addEventListener('pointercancel', cancel);
+    viewport.addEventListener('lostpointercapture', cancel);
   });
   viewport.addEventListener('click', (event) => {
     if (suppressCanvasClick) return;
@@ -1622,8 +1643,9 @@ function attachPanAndZoom(viewport) {
     const nodeContent = event.target.closest?.('.topic-card.selected .node-content');
     if (!event.ctrlKey && !event.metaKey && nodeContent && (nodeContent.scrollHeight > nodeContent.clientHeight || nodeContent.scrollWidth > nodeContent.clientWidth)) return;
     event.preventDefault();
+    gestureUntil = performance.now() + 300;
     if (event.ctrlKey || event.metaKey) zoomTo(view.zoom * (event.deltaY < 0 ? 1.08 : .92), event.clientX, event.clientY);
-    else { view.x -= event.deltaX; view.y -= event.deltaY; applyView(); saveView(); }
+    else { view.x -= event.deltaX; view.y -= event.deltaY; scheduleViewRender(); saveView(); }
   }, { passive: false });
 }
 
@@ -4120,14 +4142,14 @@ async function executeAgentRequest(item, chat, question, { focusOverride = null 
     result.proposal.focus = captured.focus;
     savedChat.messages.push({ id: crypto.randomUUID(), role: 'assistant', content: result.proposal.message, agentProposal: result.proposal,
       model: config.selectedModel, endpoint: config.endpoint, createdAt: new Date().toISOString() });
-    savedChat.updatedAt = new Date().toISOString(); persist();
+    savedChat.updatedAt = new Date().toISOString(); persist(false, workspaceId);
     if (result.error && scope === aiPanel) scope.error = result.error;
   } catch (error) {
     const savedChat = state.chats[workspaceId]?.find((entry) => entry.id === chatId);
     if (savedChat) savedChat.messages.push({ id: crypto.randomUUID(), role: 'assistant', content: controller.signal.aborted ? 'Agent run stopped before it produced a valid draft.' : `Agent run failed: ${error.message}`,
       model: config.selectedModel, endpoint: config.endpoint, createdAt: new Date().toISOString() });
     if (scope === aiPanel) scope.error = controller.signal.aborted ? 'Agent run stopped.' : error.message;
-    persist();
+    persist(false, workspaceId);
   } finally {
     scope.busy = false; scope.agentController = null; scope.agentProgress = null;
     if (scope === aiPanel && currentId === workspaceId) renderAiPanel();
@@ -4287,11 +4309,11 @@ function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer =
       }));
       savedChat.messages.push({ id: crypto.randomUUID(), role: 'assistant', content: result.reply, proposals,
         model: config.selectedModel, endpoint: config.endpoint, createdAt: new Date().toISOString() });
-      savedChat.updatedAt = new Date().toISOString(); persist();
+      savedChat.updatedAt = new Date().toISOString(); persist(false, workspaceId);
     } catch (error) {
       chat.messages = chat.messages.filter((message) => message.id !== userMessage.id);
       if (scope === aiPanel) { scope.error = error.message; scope.draft = question; }
-      persist();
+      persist(false, workspaceId);
     } finally {
       scope.busy = false; scope.streamingReply = '';
       if (scope === aiPanel && currentId === workspaceId) renderAiPanel();
@@ -4653,7 +4675,7 @@ document.addEventListener('keyup', (event) => {
 });
 
 window.addEventListener('beforeunload', (event) => {
-  if (saveMode === 'auto' && flushView()) persist(true);
+  void flushView().catch(viewPersistence.onError);
   const lfosDirty = [...lfosDocuments].some(([workspaceId, entry]) => lfosDocumentIsDirty(workspaceId, entry));
   if (dirty || lfosDirty) { event.preventDefault(); event.returnValue = ''; }
 });

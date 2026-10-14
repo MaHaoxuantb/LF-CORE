@@ -32,6 +32,14 @@ async function transact(mode, action) {
 
 export const readDatabaseState = () => transact('readonly', (store) => store.get(STATE_KEY));
 export const writeDatabaseState = (state) => transact('readwrite', (store) => store.put(state, STATE_KEY));
+export const writeDatabaseView = (id, view) => transact('readwrite', (store) => store.put(view, `view:${id}`));
+
+export async function restoreDatabaseViews(state, read = (id) => transact('readonly', (store) => store.get(`view:${id}`))) {
+  await Promise.all(state.workspaces.map(async (workspace) => {
+    const view = await read(workspace.id);
+    if (view && Number.isFinite(view.x) && Number.isFinite(view.y) && Number.isFinite(view.zoom) && view.zoom > 0) workspace.view = { x: view.x, y: view.y, zoom: view.zoom, outlineOpen: !!view.outlineOpen };
+  }));
+}
 
 export async function loadDatabaseState({
   read = readDatabaseState,

@@ -12,3 +12,4 @@ await build({
   logLevel: 'info'
 });
 await copyFile('node_modules/pdfjs-dist/build/pdf.worker.mjs', 'dist/pdf.worker.mjs');
+await build({ entryPoints: ['src/persistence-worker.js'], bundle: true, format: 'esm', target: 'es2022', outfile: 'dist/persistence-worker.js', logLevel: 'info' });

@@ -1,8 +1,8 @@
 // Serialize writes so autosave, explicit save, and Save As cannot race handles.
 export class LFOSDocuments {
-  constructor({ integration, signature, snapshot, onChange = () => {} }) {
+  constructor({ integration, revision, snapshot, onChange = () => {} }) {
     this.integration = integration;
-    this.signature = signature;
+    this.revision = revision;
     this.snapshot = snapshot;
     this.onChange = onChange;
     this.entries = new Map();
@@ -17,7 +17,7 @@ export class LFOSDocuments {
 
   remember(id, handle) {
     const previous = this.entries.get(id)?.handle;
-    this.entries.set(id, { handle, signature: this.signature(id), error: null, saving: false });
+    this.entries.set(id, { handle, revision: this.revision(id), error: null, saving: false });
     if (previous && previous.id !== handle.id) void this.enqueue(() => this.integration.release(previous));
     this.onChange();
   }
@@ -31,7 +31,7 @@ export class LFOSDocuments {
   }
 
   isDirty(id, entry = this.entries.get(id)) {
-    return !!entry && this.signature(id) !== entry.signature;
+    return !!entry && this.revision(id) !== entry.revision;
   }
 
   save(id, { automatic = false, saveAs = false, allowPicker = false } = {}) {
@@ -58,7 +58,7 @@ export class LFOSDocuments {
         const previous = entry?.handle;
         if (entry) entry.handle = result.handle;
         if (!entry || this.entries.get(id) === entry) {
-          this.entries.set(id, { handle: result.handle, signature: snapshot.signature, error: null, saving: false });
+          this.entries.set(id, { handle: result.handle, revision: snapshot.revision, error: null, saving: false });
         }
         if (previous && previous.id !== result.handle.id) await this.integration.release(previous);
         return result;

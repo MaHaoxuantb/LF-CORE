@@ -4,6 +4,7 @@ import { LFOSDocuments } from '../src/lfos-documents.js';
 
 function fixture() {
   let content = 'original';
+  let revision = 0;
   const writes = [], releases = [];
   const integration = {
     has: () => true,
@@ -15,11 +16,11 @@ function fixture() {
   };
   const store = new LFOSDocuments({
     integration,
-    signature: () => content,
-    snapshot: async () => ({ signature: content, contents: content, name: 'Notes.lfcore' })
+    revision: () => revision,
+    snapshot: async () => ({ revision, contents: content, name: 'Notes.lfcore' })
   });
   store.remember('project', { id: 'opened' });
-  return { store, integration, writes, releases, edit: (value) => { content = value; } };
+  return { store, integration, writes, releases, edit: (value) => { content = value; revision++; } };
 }
 
 test('autosave writes only changed linked files, without opening a picker', async () => {

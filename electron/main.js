@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, shell } from 
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, normalize, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { projectExportBytes } from './project-export.js';
 
 const appRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const appOrigin = 'lfcore://app';
@@ -75,14 +76,14 @@ async function createWindow() {
 }
 
 ipcMain.handle('project:save', async (_event, { defaultName, contents }) => {
-  if (typeof defaultName !== 'string' || typeof contents !== 'string') throw new TypeError('Invalid project export.');
+  const bytes = projectExportBytes(defaultName, contents);
   const result = await dialog.showSaveDialog({
     title: 'Save LF CORE Project',
     defaultPath: defaultName,
     filters: [{ name: 'LF CORE Project', extensions: ['lfcore'] }]
   });
   if (result.canceled || !result.filePath) return false;
-  await writeFile(result.filePath, contents, 'utf8');
+  await writeFile(result.filePath, bytes);
   return true;
 });
 
