@@ -195,7 +195,7 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .canvas-viewport.selecting, .canvas-viewport.selecting * { cursor: crosshair !important; }
 .selection-rectangle { position: absolute; z-index: 10; border: 1px solid #6964c5b8; background: #6964c51a; border-radius: 3px; pointer-events: none; }
 .topic-card.marquee-target { border-color: #7771d2; box-shadow: 0 0 0 2px #a9a2ed, 0 8px 21px #28324b1c; }
-.scene { position: absolute; left: 0; top: 0; width: 1px; height: 1px; transform-origin: 0 0; }
+.scene { position: absolute; left: 0; top: 0; width: 1px; height: 1px; transform-origin: 0 0; will-change: transform; }
 .alignment-guides { position: absolute; z-index: 6; inset: 0; overflow: visible; pointer-events: none; }
 .alignment-guide { position: absolute; display: block; background: color-mix(in srgb, var(--accent) 82%, white); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent); pointer-events: none; }
 .alignment-guide.vertical { width: 1px; transform: translateX(-.5px); }

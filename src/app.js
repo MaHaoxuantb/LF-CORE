@@ -22,6 +22,7 @@ import { LFOSDocuments } from './lfos-documents.js';
 import { attachLFOSHeader } from './lfos-header.js';
 import { PersistenceClient } from './persistence-client.js';
 import { ViewPersistence } from './view-persistence.js';
+import { canvasTransform, fittedCanvasView, hasCanvasView } from './canvas-view.js';
 import packageInfo from '../package.json';
 import 'katex/dist/katex.min.css';
 import './style.css';
@@ -1000,10 +1001,15 @@ function openWorkspace(id) {
   }
   ensurePositions(item);
   const saved = item.view || {};
-  view = { x: saved.x, y: saved.y, zoom: saved.zoom || 1 };
+  // First mount must have the same valid camera/layer setup as later rerenders.
+  // Reset the previous document's bounds before building this scene's paths.
+  rootBounds = { ...ROOT, width: item.layout.articleSize.width, height: item.layout.articleSize.minHeight };
+  const fitOnEntry = needsFit || !hasCanvasView(saved);
+  view = fitOnEntry ? fittedCanvasView(item.nodes.map((node) => pointFor(item, node.id)),
+    { width: app.clientWidth || window.innerWidth, height: window.innerHeight }, rootBounds) : { x: saved.x, y: saved.y, zoom: saved.zoom };
   outlineOpen = !!saved.outlineOpen;
   renderWorkspace();
-  if (needsFit || view.x == null || view.y == null) fitCanvas();
+  if (fitOnEntry) fitCanvas();
   syncLFOSUnsavedChanges();
 }
 
@@ -1038,7 +1044,7 @@ function applyView() {
   const scene = document.querySelector('.scene');
   const viewport = document.querySelector('.canvas-viewport');
   if (!scene || !viewport) return;
-  scene.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`;
+  scene.style.transform = canvasTransform(view);
   viewport.style.backgroundSize = `${24 * view.zoom}px ${24 * view.zoom}px`;
   viewport.style.backgroundPosition = `${view.x}px ${view.y}px`;
   document.querySelector('.zoom-value').textContent = `${Math.round(view.zoom * 100)}%`;
@@ -1049,14 +1055,7 @@ function fitCanvas() {
   const viewport = document.querySelector('.canvas-viewport'); if (!viewport) return;
   const item = work();
   const bounds = item.nodes.map((node) => pointFor(item, node.id));
-  const minX = Math.min(-430, ...bounds.map((point) => point.x));
-  const maxX = Math.max(rootBounds.width + 80, ...bounds.map((point) => point.x + point.width));
-  const minY = Math.min(-80, ...bounds.map((point) => point.y));
-  const maxY = Math.max(rootBounds.height + 80, ...bounds.map((point) => point.y + point.height));
-  const width = maxX - minX + 160, height = maxY - minY + 160;
-  view.zoom = clamp(Math.min(viewport.clientWidth / width, viewport.clientHeight / height, 1), .45, 1);
-  view.x = viewport.clientWidth / 2 - ((minX + maxX) / 2) * view.zoom;
-  view.y = viewport.clientHeight / 2 - ((minY + maxY) / 2) * view.zoom;
+  view = fittedCanvasView(bounds, { width: viewport.clientWidth, height: viewport.clientHeight }, rootBounds);
   applyView(); saveView();
 }
 
@@ -1078,7 +1077,7 @@ function syncGraphFocus(item) {
 }
 
 function viewTransform(value) {
-  return `translate(${value.x}px, ${value.y}px) scale(${value.zoom})`;
+  return canvasTransform(value);
 }
 
 function focusEdgeIds(item) {
@@ -1482,6 +1481,7 @@ function historyButton(kind, action, enabled) {
 function renderCanvas(item) {
   const viewport = el('main', { class: 'canvas-viewport', 'aria-label': 'Project workspace', 'aria-readonly': String(graphIsReadOnly()) });
   const scene = el('div', { class: 'scene' });
+  scene.style.transform = canvasTransform(view);
   scene.append(renderPaper(item));
   scene.append(renderConnectors(item));
   for (const node of item.nodes) if (isVisible(item, node)) scene.append(renderNode(node, item));
