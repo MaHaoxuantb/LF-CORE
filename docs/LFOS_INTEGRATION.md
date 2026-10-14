@@ -6,6 +6,8 @@ LF CORE remains a normal hosted web app and uses LFOS only when the version-1 SD
 
 Deploy LF CORE over HTTPS, copy [`lfos/LF CORE.app.example`](../lfos/LF%20CORE.app.example), replace its placeholder `url` with the deployment URL, and install or import the resulting `.app` configuration in LFOS. The host must allow LFOS to frame it; this repository does not emit `X-Frame-Options` or a restrictive `frame-ancestors` policy.
 
+The deployment also publishes the website-app manifest at `/.well-known/lfos-app.json` for Store → Add App discovery. On Vercel, the well-known route is rewritten to a small serverless handler that builds the manifest using the deployment's own host, so launch and publisher URLs stay same-origin for custom domains. It serves JSON with `Access-Control-Allow-Origin: *` for LFOS's credential-free cross-origin GET. The local development server exposes the same route for inspection, but localhost is not a valid HTTPS Store install origin. If the manifest's normalized contents change, increment its positive integer `version` in `src/website-app-manifest.js`.
+
 The configuration requests only:
 
 - `files:open` for the LFOS picker, file reads, and `.lfcore` Open With activations;
