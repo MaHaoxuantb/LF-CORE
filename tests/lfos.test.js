@@ -46,6 +46,62 @@ test('opening an LFOS project reads the handle and preserves it for later writes
   assert.deepEqual(options.accept[0].extensions, ['.lfcore']);
 });
 
+test('initial activation reads the launch file and retains its handle for in-place saves', async () => {
+  const handle = { id: 'launch', name: 'Launch.lfcore', type: LFCORE_MIME_TYPE, lastModified: 7 };
+  const contents = '{"format":"linecoflow-project"}';
+  const calls = [];
+  const capabilities = ['activation.getInitial', 'files.read', 'files.write'];
+  const sdk = {
+    ready: async () => ({ name: 'LFOS', protocolVersion: 1, capabilities }),
+    capabilities: { has: (name) => capabilities.includes(name) },
+    activation: { getInitial: async () => { calls.push('activation.getInitial'); return { type: 'open-file', file: handle }; } },
+    files: {
+      read: async (value) => { assert.equal(value, handle); calls.push('files.read'); return new TextEncoder().encode(contents).buffer; },
+      write: async (value, data) => { assert.equal(value, handle); assert.equal(data, contents); calls.push('files.write'); return handle; }
+    }
+  };
+  const integration = new LFOSIntegration({ windowRef: framedWindow(), loadSdk: async () => ({ lfos: sdk }) });
+  const opened = await integration.initialProject();
+  assert.equal(opened.handle, handle);
+  assert.equal(opened.file.name, handle.name);
+  assert.equal(opened.file.type, LFCORE_MIME_TYPE);
+  assert.equal(await opened.file.text(), contents);
+  const saved = await integration.saveProject({ handle: opened.handle, contents });
+  assert.equal(saved.handle, handle);
+  assert.deepEqual(calls, ['activation.getInitial', 'files.read', 'files.write']);
+});
+
+for (const [scenario, capabilities] of [
+  ['ordinary launch', ['files.open', 'files.read']],
+  ['obsolete activation capability', ['activation.openFile', 'files.read']],
+  ['missing read permission', ['activation.getInitial']]
+]) {
+  test(`initial activation skips ${scenario}`, async () => {
+    const sdk = {
+      ready: async () => ({ name: 'LFOS', protocolVersion: 1, capabilities }),
+      capabilities: { has: (name) => capabilities.includes(name) },
+      activation: { getInitial: async () => assert.fail('must not request activation') },
+      files: { read: async () => assert.fail('must not read a file') }
+    };
+    const integration = new LFOSIntegration({ windowRef: framedWindow(), loadSdk: async () => ({ lfos: sdk }) });
+    assert.equal(await integration.initialProject(), null);
+    assert.equal(integration.connected, true);
+  });
+}
+
+test('initial activation accepts a null result without reading a file', async () => {
+  let requests = 0;
+  const capabilities = ['activation.getInitial', 'files.read'];
+  const sdk = {
+    ready: async () => ({ name: 'LFOS', protocolVersion: 1, capabilities }),
+    activation: { getInitial: async () => { requests += 1; return null; } },
+    files: { read: async () => assert.fail('must not read a file') }
+  };
+  const integration = new LFOSIntegration({ windowRef: framedWindow(), loadSdk: async () => ({ lfos: sdk }) });
+  assert.equal(await integration.initialProject(), null);
+  assert.equal(requests, 1);
+});
+
 test('saving uses an existing handle in place and Save As requests a new handle', async () => {
   const opened = { id: 'open', name: 'Open.lfcore' };
   const destination = { id: 'save', name: 'Saved.lfcore' };

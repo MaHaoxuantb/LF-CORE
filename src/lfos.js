@@ -71,7 +71,7 @@ export class LFOSIntegration {
 
   async initialProject() {
     await this.connect();
-    if (!this.has('activation.openFile') || !this.has('files.read')) return null;
+    if (!this.has('activation.getInitial') || !this.has('files.read')) return null;
     const activation = await this.lfos.activation.getInitial();
     return activation?.type === 'open-file' && activation.file ? this.readProject(activation.file) : null;
   }

@@ -1231,7 +1231,7 @@ Current capability names:
 - `files.read`
 - `files.save`
 - `files.write`
-- `activation.openFile` when this window was launched for a file
+- `activation.getInitial` when this window was launched for a file
 - `ai.responses.text` when `ai:generate` is declared and the SolOS installation is connected with an active vault
 - `intents.registerProvider` when a validated `intents` block and `intents:provide` are declared
 - `intents.emitTrigger` for visible windows publishing a declared event trigger
