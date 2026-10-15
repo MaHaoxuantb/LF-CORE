@@ -2,7 +2,7 @@
 
 LF-Core is a mind-map-like tool for explorers.
 
-LF-Core is a mind-map-like tool for explorers. Published by LinecoFlow LLC. LF CORE is the UI for AI. Start with a question or source, explore ideas in a connected graph, and consolidate what matters into a master article.
+Published by LinecoFlow LLC. LF CORE is the UI for AI. Start with a question or source, explore ideas in a connected graph, and consolidate what matters into a master article.
 
 **North Star:** Does this make the next study session easier to revisit than chat?
 
