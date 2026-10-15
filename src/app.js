@@ -10,7 +10,7 @@ import { loadModelSettings, saveModelSettings, saveModelSecret, saveDeveloperMod
 import { chatModel, runAgent } from './ai.js';
 import { canChangeAssistantMode, contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, proposalStatus } from './chat.js';
 import { WorkspaceAgentService, applyAgentProposal } from './agent-service.js';
-import { ensurePdfSourceIndex, readWorkspaceSource, searchWorkspaceSources as searchSourcesEngine } from './source-index.js';
+import { ensurePdfSourceIndex, readWorkspaceSource } from './source-index.js';
 import { normalizeGraphFocusPreferences, relatedNodeIds } from './graph-focus.js';
 import { siblingPredecessor } from './siblings.js';
 import { projectFileName, PROJECT_EXTENSION } from './project.js';
@@ -137,7 +137,9 @@ function setAiFeaturesEnabled(enabled) {
 function setGeometryPreference(name, enabled) {
   geometryPreferences = { ...geometryPreferences, [name]: !!enabled };
   localStorage.setItem(GEOMETRY_GUIDES_KEY, JSON.stringify(geometryPreferences));
-  renderWorkspace();
+  const label = name === 'snapping' ? 'snap' : 'align';
+  document.querySelector(`[aria-label="Toggle ${label}"]`)?.setAttribute('aria-pressed', String(geometryPreferences[name]));
+  showAlignmentGuides();
 }
 const colorSchemeQuery = window.matchMedia?.('(prefers-color-scheme: dark)');
 const handleSystemAppearanceChange = () => {
@@ -741,7 +743,6 @@ async function waitForActivity(signal) {
 }
 async function searchWorkspaceSources(workspace, query, options = {}) {
  for (const source of workspace.sources || []) {if (source.type === 'pdf' && (!options.sourceIds?.length || options.sourceIds.includes(source.id))) await options.ensurePdfIndex(source, options);}
- if (!globalThis.Worker) return searchSourcesEngine(workspace, query, options);
  return backgroundCompute({type: 'search', workspace: {sources: workspace.sources}, query, options: {sourceIds: options.sourceIds, limit: options.limit}}, options.signal);
 }
 function ensureAgentPdfIndex(source, { signal, onProgress } = {}) {
@@ -1443,7 +1444,7 @@ function renderWorkspace() {
     el('div', { class: 'header-left-group' },
       el('div', { class: 'header-navigation' },
         iconButton('M3 11 12 3l9 8v9a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z', 'Home', renderHome),
-        iconButton('M4 5h16M4 10h11M4 15h16M4 20h11', outlineOpen ? 'Hide outline' : 'Open outline', () => { outlineOpen = !outlineOpen; saveView(); renderWorkspace(); }, outlineOpen)),
+        iconButton('M4 5h16M4 10h11M4 15h16M4 20h11', outlineOpen ? 'Hide outline' : 'Open outline', toggleOutline, outlineOpen)),
       el('div', { class: 'header-left' },
         el('div', { class: 'document-menu-control' },
           button(item.title, () => toggleDocumentMenu(document.querySelector('.document-menu-control')), 'workspace-title document-menu-button', { 'aria-label': `Project options for ${item.title}`, 'aria-haspopup': 'menu', 'aria-expanded': 'false', title: item.title }),
@@ -1472,6 +1473,33 @@ function renderWorkspace() {
   if (selectedPassage) renderPassageToolbar();
   if (aiPanel) renderAiPanel();
   if (researchPanel) renderResearchPanel();
+}
+
+// Panel state does not change the graph. Keep the mounted scene (and its
+// media previews, scroll positions, and window header integration) alive.
+function refreshWorkspacePanels() {
+  const item = work(); if (!item) return;
+  document.querySelectorAll('.sources-panel, .ai-panel, .research-panel').forEach((panel) => panel.remove());
+  if (openSourceId) document.querySelector('.canvas-shell')?.append(renderSourcesPanel(item));
+  if (aiPanel) renderAiPanel();
+  if (researchPanel) renderResearchPanel();
+  for (const [name, active] of [['chat', !!aiPanel], ['research', !!researchPanel], ['library', !!openSourceId]]) {
+    const control = document.querySelector(`[aria-label="Toggle ${name}"]`);
+    control?.classList.toggle('active', active);
+    control?.setAttribute('aria-pressed', String(active));
+  }
+}
+
+function toggleOutline() {
+  outlineOpen = !outlineOpen;
+  saveView();
+  document.querySelector('.outline-panel')?.remove();
+  if (outlineOpen) document.querySelector('.canvas-shell')?.append(renderOutline(work()));
+  const control = document.querySelector('[aria-label="Hide outline"], [aria-label="Open outline"]');
+  const label = outlineOpen ? 'Hide outline' : 'Open outline';
+  control?.setAttribute('aria-label', label);
+  control?.setAttribute('title', label);
+  control?.classList.toggle('active', outlineOpen);
 }
 
 function iconButton(path, label, action, active = false) {
@@ -2635,8 +2663,10 @@ function startNodeResize(event, node, card, grip) {
     showAlignmentGuides();
     const final = item.layout.sizes[node.id] || { width: original.width, height: original.height };
     item.layout.sizes[node.id] = { width: original.width, height: original.height };
-    if (next?.type === 'pointercancel') { renderWorkspace(); return; }
-    if (final.width !== original.width || final.height !== original.height) change((entry) => { entry.layout.sizes[node.id] = final; });
+    if (next?.type !== 'pointercancel' && (final.width !== original.width || final.height !== original.height)) {
+      change((entry) => { entry.layout.sizes[node.id] = final; }, { rerender: false });
+    }
+    syncNodeGeometry(item, [node.id]);
   };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
@@ -2670,8 +2700,8 @@ function resizeNodeWithKeys(event, node) {
       width,
       height: clamp(Math.round(resolved.height), NODE_SIZE_LIMITS.minHeight, card ? maximumNodeHeight(card, width) : size.height)
     };
-  });
-  document.querySelector(`[data-node="${node.id}"] .node-resize`)?.focus();
+  }, { rerender: false });
+  syncNodeGeometry(work(), [node.id]);
 }
 
 function startNodeDrag(event, node, card) {
@@ -2722,14 +2752,26 @@ function startNodeDrag(event, node, card) {
     showAlignmentGuides();
     const final = Object.fromEntries(moving.map((id) => [id, { ...item.layout.positions[id] }]));
     for (const id of moving) item.layout.positions[id] = original[id];
-    if (next?.type === 'pointercancel') { renderWorkspace(); return; }
-    if (moving.some((id) => final[id].x !== original[id].x || final[id].y !== original[id].y)) {
-      change((entry) => { for (const id of moving) entry.layout.positions[id] = final[id]; });
+    if (next?.type !== 'pointercancel' && moving.some((id) => final[id].x !== original[id].x || final[id].y !== original[id].y)) {
+      change((entry) => { for (const id of moving) entry.layout.positions[id] = final[id]; }, { rerender: false });
     }
+    syncNodeGeometry(item, moving);
   };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
   window.addEventListener('pointercancel', up);
+}
+
+function syncNodeGeometry(item, ids) {
+  for (const id of ids) {
+    const card = document.querySelector(`[data-node="${id}"]`);
+    if (!card) continue;
+    const { x, y, width, height } = pointFor(item, id);
+    Object.assign(card.style, { left: `${x}px`, top: `${y}px`, width: `${width}px`, height: `${height}px` });
+    applyNodeSizeClass(card, width, height);
+    updateCardOverflow(card);
+  }
+  updateConnectors();
 }
 
 function selectNodeInPlace(id, card, node, item) {
@@ -2923,13 +2965,13 @@ function openSource(id, page = 1, anchor = null) {
   openSourceId = id;
   sourcePage = page;
   sourceJump = anchor;
-  renderWorkspace();
+  refreshWorkspacePanels();
 }
 
 function toggleAiPanel() {
   if (aiPanel) {
     aiPanel = null;
-    renderWorkspace();
+    refreshWorkspacePanels();
     return;
   }
   researchPanel = null;
@@ -2944,14 +2986,14 @@ function selectedResearchContext(item) {
 }
 
 function toggleResearchPanel() {
-  if (researchPanel) { researchPanel = null; renderWorkspace(); return; }
+  if (researchPanel) { researchPanel = null; refreshWorkspacePanels(); return; }
   const item = work(); if (!item) return;
   normalizeResearch(item);
   const context = selectedResearchContext(item);
   const suggested = context.quote ? `What should I verify about “${shortTitle(context.quote)}”?` : '';
   researchPanel = { tab: 'questions', questionId: item.research.questions.find((question) => question.status === 'open')?.id || null, draftQuestion: suggested, query: '', results: [], error: '', loading: false, ideaIds: new Set(context.targetIds) };
   aiPanel = null; openSourceId = null;
-  renderWorkspace();
+  refreshWorkspacePanels();
 }
 
 function sourceReference(source, page, text, offsets) {
@@ -3817,15 +3859,16 @@ function openAiPanel(seed = null) {
   // Opening Chat from any entry point also closes Sources, not just the
   // top-right toggle, so there can only be one workspace panel visible.
   openSourceId = null;
+  researchPanel = null;
   if (seed || selectedId || selectedIds.size || !chatList().length) {
     newChat(seed || {});
-    renderWorkspace();
+    refreshWorkspacePanels();
     return;
   }
   const chat = [...chatList()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
   chat.assistantMode ||= 'chat';
   aiPanel = { chatId: chat.id, tab: 'chat', draft: '', busy: false, error: '', previewId: null, width: aiPanel?.width, assistantMode: chat.assistantMode };
-  renderWorkspace();
+  refreshWorkspacePanels();
 }
 
 function getChatProposal(id) {
@@ -4545,7 +4588,7 @@ function renderResearchPanel() {
   document.querySelector('.research-panel')?.remove();
   const item = work(); if (!item || !researchPanel) return;
   const panel = el('aside', { class: 'research-panel', 'aria-label': 'Research and consolidation' });
-  const heading = el('header', { class: 'research-heading' }, el('div', {}, el('span', { class: 'research-eyebrow', text: 'PHASE 4' }), el('h2', { text: 'Research & consolidate' })), button('×', () => { researchPanel = null; renderWorkspace(); }, 'panel-close', { 'aria-label': 'Close research' }));
+  const heading = el('header', { class: 'research-heading' }, el('div', {}, el('span', { class: 'research-eyebrow', text: 'PHASE 4' }), el('h2', { text: 'Research & consolidate' })), button('×', () => { researchPanel = null; refreshWorkspacePanels(); }, 'panel-close', { 'aria-label': 'Close research' }));
   const tabs = el('div', { class: 'research-tabs', role: 'tablist' });
   for (const [id, label] of [['questions', 'Questions'], ['compare', 'Compare'], ['closeout', 'Closeout']]) tabs.append(button(label, () => { researchPanel.tab = id; researchPanel.error = ''; renderResearchPanel(); }, '', { role: 'tab', 'aria-selected': String(researchPanel.tab === id) }));
   const body = el('div', { class: 'research-body' });
@@ -4597,7 +4640,7 @@ function renderAiPanel({ focusComposer = true } = {}) {
       button('＋', () => newChat(), 'chat-header-icon', { 'aria-label': 'New chat', title: 'New chat' }),
       button('⚙', renderSettings, 'chat-header-icon', { 'aria-label': 'Open Settings', title: 'Open Settings' }));
   }
-  actions.append(button('×', () => { aiPanel = null; renderWorkspace(); }, 'panel-close', { 'aria-label': 'Close chat' }));
+  actions.append(button('×', () => { aiPanel = null; refreshWorkspacePanels(); }, 'panel-close', { 'aria-label': 'Close chat' }));
   heading.append(left, actions);
   panel.append(heading);
   if (aiPanel.tab === 'history') {

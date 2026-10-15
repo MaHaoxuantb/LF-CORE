@@ -525,6 +525,7 @@ SDK failures reject with `LFOSError`, whose `code` is one of:
 | `CONFLICT` | The document changed since its last read/write, or a Save As destination was taken. Preserve unsaved work and offer review or Save As. |
 | `CONTENT_UNAVAILABLE` | Stored document bytes are missing; an empty document is never substituted. |
 | `RESOURCE_NOT_FOUND` | The selected LFOS resource no longer exists. |
+| `RESOURCE_BUSY` | LFOS background admission is full. Preserve edits and the existing handle/revision; retry later with regenerated transferable bytes. |
 | `RESOURCE_TOO_LARGE` | A write exceeds 50 MB. |
 | `NOT_SUPPORTED` | The page is outside LFOS, the protocol is unavailable, or the method is unsupported. |
 | `INTERNAL_ERROR` | LFOS could not complete the operation for another reason. |
@@ -555,6 +556,73 @@ locale-independent lowercase for uniqueness. Concurrent remote collisions stay
 recoverable; ambiguous paths fail instead of selecting a document arbitrarily.
 Vault switching invalidates handles, temporarily blocks saves, and checkpoints
 the local documents and pending work for recovery after interruption.
+
+## Background saves
+
+LFOS executes filesystem preparation and transactions in a worker. Binary bytes
+are stored directly; saving one document does not reconstruct unrelated files.
+This does not move an app's own serializer off its UI thread. Use an app worker
+for expensive serialization and conversion, then pass its output to `files.write`.
+
+A transferred buffer belongs to its receiver. Retain editable source data so you
+can regenerate a payload after failure. A timeout or worker interruption does not
+prove that a write failed to commit. Keep the document dirty and reconcile its
+saved state; never obtain a newer revision just to overwrite a conflicting save.
+
+---
+
+<!-- Canonical documentation: https://os-docs.linecoflow.com/docs/capabilities/background-work -->
+<!-- Source: docs/capabilities/background-work.mdx -->
+
+> Keep LFOS interactions responsive while parsing, converting, indexing and saving.
+
+LFOS keeps input, DOM updates, permissions, and pickers on the window thread.
+Its runtime worker owns filesystem transactions and sync. Separate, bounded
+workers handle expensive computation. Third-party apps retain the ordinary SDK
+permission boundary and do not receive internal runtime ports.
+
+## App workers
+
+Keep large source data in a worker or IndexedDB. Send changed records, content
+IDs, blobs, or owned `ArrayBuffer` values instead of repeatedly cloning complete
+projects. Serialize document saves and label each snapshot with the content
+revision it contains. Clear dirty state only for that acknowledged revision.
+
+Workers cannot manipulate the DOM or call the window-dependent LFOS SDK. Return
+results to the app's window, then call `lfos.files.write`. Keep browser input and
+rendering coalesced to animation frames.
+
+## Visibility
+
+```js
+const environment = await lfos.ready();
+if (environment.capabilities.includes('lifecycle.subscribeActivity')) {
+  const dispose = lfos.lifecycle.onActivityChange(({visible, focused}) => {
+    processingWorker.postMessage({type: 'activity', visible, focused});
+  });
+  // Call dispose when the editor is removed.
+}
+```
+
+Pause optional indexing and prewarming while hidden. Explicit saves continue.
+Outside LFOS, use the document's visibility state. Do not discard unsaved work
+when its window loses focus.
+
+## Limits and failures
+
+LFOS admits at most 32 active/pending runtime jobs and 64 MiB of copied request
+payloads. Immutable Blob/File backing storage is referenced rather than eagerly
+copied. Owned ArrayBuffers are transferred only when the sender releases ownership.
+`RESOURCE_BUSY` is retryable; it does not authorize overwriting a newer file.
+Foreground reads and saves precede optional background work, with aging to prevent
+starvation. Started transactions finish even when their caller closes.
+
+A stopped worker fails pending requests. Reload authoritative storage before
+accepting further mutations and retain uncertain edits. Optional computations
+such as a replaced search can be cancelled independently of durable storage.
+
+LFOS uses message passing and transferable buffers. Integration does not require
+SharedArrayBuffer, cross-origin isolation, or a provider-side threading service.
 
 ---
 
@@ -1227,6 +1295,8 @@ Current capability names:
 - `appearance.get`
 - `appearance.subscribe`
 - `lifecycle.setUnsavedChanges`
+- `lifecycle.getActivity`
+- `lifecycle.subscribeActivity`
 - `files.open`
 - `files.read`
 - `files.save`
@@ -1366,6 +1436,22 @@ LFOS serves a complete open/read/save/write example at `/examples/file-access/in
 `bindDragRegion(element)` support a single app-owned header with shell-owned
 window controls. See [Shared window headers](https://os-docs.linecoflow.com/ai/docs/reference/window-chrome.md) for geometry,
 layout requirements, and a working example.
+
+## Window activity
+
+`await lfos.lifecycle.getActivity()` returns `{visible, focused}`. Visibility is
+false for minimized windows or hidden host tabs. Focus is true only for the active,
+visible LFOS window.
+
+`lfos.lifecycle.onActivityChange(listener)` subscribes through the canonical
+`lifecycle.subscribeActivity` method and returns a disposer. Pause optional
+indexing and prewarming while hidden. Continue necessary saves and keep unsaved
+state set until their durable acknowledgements arrive. Activity is a scheduling
+hint, not a permission grant.
+
+The SDK belongs on the app's window thread. Use your own workers for parsing,
+conversion, serialization, and search; send their results to the window before
+calling LFOS methods. See [Background work](../capabilities/background-work).
 
 ---
 

@@ -46,3 +46,19 @@ Use an LFOS installation whose `.app` configuration contains both file permissio
 10. home and project headers share the LFOS controls without overlap at normal size, restore the system title bar when too narrow, and support dragging the window from empty header space.
 
 Run `npm test` and `npm run build` for automated adapter and bundle checks.
+# Background processing and activity
+
+Project import parsing, PDF/media attachment decoding, and source-search
+processing use `dist/compute-worker.js`. Owned attachment buffers return by
+transfer. Invalid input returns a typed error without replacing the current
+project. Worker failure/cancellation preserves the current project and permits
+a fresh computation worker on retry. PDF.js and the existing persistence worker
+remain separate; camera state continues to use its separate storage path.
+
+When the host advertises `lifecycle.subscribeActivity`, optional PDF indexing
+pauses while the LFOS window is hidden/minimized. Required saves continue.
+Progress updates are throttled to 100 ms. Outside LFOS, document visibility
+provides the scheduling signal. Include the computation worker in offline assets.
+
+`tests/compute.test.js` runs the actual import worker on a synthetic project,
+checks exact attachment bytes, malformed input and a successful retry.
