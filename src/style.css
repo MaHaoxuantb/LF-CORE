@@ -953,6 +953,7 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .ai-chat-composer .ai-question::placeholder { color: #9a948d; }
 .ai-chat-composer .panel-action { grid-column: 2; grid-row: 2; width: 31px; height: 31px; margin: 0; padding: 0; border-radius: 50%; background: #353330; font-size: 0; }
 .ai-chat-composer .panel-action::after { content: '↑'; font-size: 1rem; line-height: 1; }
+.ai-chat-composer .panel-action.chat-stop::after { content: ''; display: block; width: 10px; height: 10px; margin: auto; border-radius: 2px; background: currentColor; }
 .ai-chat-composer .panel-action:hover { background: #171614; }
 .ai-chat-composer .panel-action:disabled { background: #bdb9b3; }
 .ai-chat-composer-hint { grid-column: 1; grid-row: 2; align-self: center; color: #aaa49d; font-size: .62rem; }

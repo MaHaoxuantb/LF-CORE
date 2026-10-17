@@ -44,6 +44,55 @@ test('alignment tolerance stays constant in screen pixels across zoom levels', (
   assert.equal(resolveMoveGeometry({ bounds, dx: 100, dy: 0, targets, alignment: true, zoom: 2 }).dx, 100);
 });
 
+for (const zoom of [0.5, 1, 2]) {
+  test(`alignment reaches off-grid targets with snap enabled at zoom ${zoom}`, () => {
+    const result = resolveMoveGeometry({
+      bounds: { x: 0, y: 0, width: 20, height: 20 },
+      dx: 108 - 2 / zoom, dy: 29,
+      targets: [{ id: 'target', x: 108, y: 500, width: 20, height: 20 }],
+      snapping: true, alignment: true, zoom
+    });
+    assert.equal(result.dx, 108);
+    assert.equal(result.dy, 24, 'the unaligned axis still snaps to the grid');
+    assert.deepEqual(result.guides.map(({ axis, value }) => ({ axis, value })), [{ axis: 'x', value: 108 }]);
+  });
+}
+
+test('grid snapping cannot pull a distant pointer into alignment tolerance', () => {
+  const result = resolveMoveGeometry({
+    bounds: { x: 0, y: 0, width: 2, height: 20 },
+    dx: 108, dy: 29,
+    targets: [{ id: 'target', x: 120, y: 500, width: 2, height: 20 }],
+    snapping: true, alignment: true
+  });
+  assert.equal(result.dx, 120);
+  assert.deepEqual(result.guides, []);
+});
+
+test('resize alignment takes priority over grid snapping for off-grid edges', () => {
+  const result = resolveResizeGeometry({
+    rect: { x: 10, y: 10, width: 20, height: 20 },
+    width: 97, height: 97,
+    targets: [{ id: 'target', x: 108, y: 108, width: 20, height: 20 }],
+    snapping: true, alignment: true
+  });
+  assert.equal(result.width, 98);
+  assert.equal(result.height, 98);
+  assert.deepEqual(result.guides.map((guide) => guide.value), [108, 108]);
+});
+
+test('resize alignment leaves the inactive axis unchanged with both toggles on', () => {
+  const result = resolveResizeGeometry({
+    rect: { x: 10, y: 10, width: 20, height: 20 },
+    width: 97, height: 97,
+    targets: [{ id: 'target', x: 108, y: 108, width: 20, height: 20 }],
+    snapping: true, alignment: true, axes: ['x']
+  });
+  assert.equal(result.width, 98);
+  assert.equal(result.height, 97);
+  assert.deepEqual(result.guides.map((guide) => guide.axis), ['x']);
+});
+
 test('alignment candidate selection is deterministic when distances tie', () => {
   const result = resolveMoveGeometry({
     bounds: { x: 0, y: 0, width: 20, height: 20 },

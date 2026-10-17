@@ -55,6 +55,61 @@ test('snap and align combinations update controls without remounting the canvas'
   assert.equal(f.saves(), 0);
 });
 
+test('node drag prevents native selection before the first move', () => {
+  const f = fixture();
+  let prevented = false, cleared = false;
+  f.context.window.getSelection = () => ({ removeAllRanges() { cleared = true; } });
+  f.context.startNodeDrag({ ...f.pointer, preventDefault() { prevented = true; } }, { id: 'a' }, f.cards.a);
+  assert.equal(prevented, true);
+  assert.equal(cleared, true);
+  assert.deepEqual(f.item.layout.positions.a, { x: 0, y: 0 });
+  f.listeners.get('pointerup')({ type: 'pointerup' });
+  assert.equal(f.saves(), 0);
+  assert.equal(f.listeners.size, 0);
+});
+
+test('losing window focus during a drag restores geometry and removes listeners', () => {
+  const f = fixture(), original = structuredClone(f.item.layout.positions);
+  f.context.startNodeDrag(f.pointer, { id: 'a' }, f.cards.a);
+  f.listeners.get('pointermove')({ clientX: 80, clientY: 40 });
+  f.listeners.get('blur')();
+  assert.deepEqual(structuredClone(f.item.layout.positions), original);
+  assert.equal(f.saves(), 0);
+  assert.equal(f.listeners.size, 0);
+});
+
+test('single, group, and cleared selection preserve mounted cards and content', () => {
+  const f = fixture();
+  const cards = ['a', 'b'].map((id) => ({
+    dataset: { node: id }, selected: false,
+    classList: { toggle(name, enabled) { if (name === 'selected') cards.find((card) => card.dataset.node === id).selected = enabled; }, remove() {} },
+    querySelector: () => null, append() {}
+  }));
+  let toolbar = null;
+  Object.assign(f.context, {
+    graphFocus: null, editingTarget: null, activeConnection: null,
+    selectedId: 'a', renderNodeActions: () => ({}),
+    el: () => ({ remove() { toolbar = null; } }), button: () => ({}), removeNodes() {},
+    document: {
+      querySelector: (selector) => selector === '.canvas-shell' ? { append(entry) { toolbar = entry; } } : selector === '.selection-toolbar' ? toolbar : null,
+      querySelectorAll: (selector) => selector === '.topic-card' ? cards : []
+    }
+  });
+  f.item.nodes = [{ id: 'a' }, { id: 'b' }];
+  vm.runInContext(source.match(/^function syncCanvasSelection\([^]*?^}/m)[0], f.context);
+  f.context.syncCanvasSelection();
+  assert.deepEqual(cards.map((card) => card.selected), [true, false]);
+  f.context.selectedId = null;
+  f.context.selectedIds = new Set(['a', 'b']);
+  f.context.syncCanvasSelection();
+  assert.deepEqual(cards.map((card) => card.selected), [true, true]);
+  assert.ok(toolbar);
+  f.context.selectedIds.clear();
+  f.context.syncCanvasSelection();
+  assert.deepEqual(cards.map((card) => card.selected), [false, false]);
+  assert.equal(toolbar, null);
+});
+
 for (const group of [false, true]) {
   for (const cancel of [false, true]) {
     test(`${group ? 'group' : 'single'} drag ${cancel ? 'cancellation restores' : 'commit saves'} geometry in place`, () => {

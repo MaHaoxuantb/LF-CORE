@@ -1557,7 +1557,7 @@ function renderCanvas(item) {
   const shell = el('div', { class: `canvas-shell ${graphFocus ? 'graph-focus-active graph-focus-readonly' : ''} ${editingTarget ? 'editing-mode-active' : ''}`.trim() }, viewport, controls);
   if (outlineOpen) shell.append(renderOutline(item));
   if (!graphIsReadOnly() && !selectedId && selectedIds.size > 1) {
-    shell.append(el('div', { class: 'selection-toolbar', role: 'status' }, el('span', { text: `${selectedIds.size} selected` }), button('Delete', () => removeNodes([...selectedIds]), 'selection-delete'), button('Clear', () => { selectedIds.clear(); renderWorkspace(); }, 'selection-clear')));
+    shell.append(el('div', { class: 'selection-toolbar', role: 'status' }, el('span', { text: `${selectedIds.size} selected` }), button('Delete', () => removeNodes([...selectedIds]), 'selection-delete'), button('Clear', () => { selectedIds.clear(); syncCanvasSelection(); }, 'selection-clear')));
   }
   if (graphFocus) shell.append(renderGraphFocusToolbar(item));
   if (editingTarget) shell.append(renderEditingToolbar());
@@ -1623,10 +1623,10 @@ function attachPanAndZoom(viewport) {
           selectedPassage = null;
           suppressCanvasClick = true;
           setTimeout(() => { suppressCanvasClick = false; }, 0);
-          renderWorkspace();
+          syncCanvasSelection();
         } else if (next.type === 'pointerup') {
           selectedId = null; selectedIds.clear(); selectedPassage = null; activeConnection = null;
-          renderWorkspace();
+          syncCanvasSelection();
         } else {
           rectangle.remove();
           viewport.querySelectorAll('.marquee-target').forEach((card) => card.classList.remove('marquee-target'));
@@ -1675,7 +1675,7 @@ function attachPanAndZoom(viewport) {
     if (event.button !== 0 || event.target.closest('.paper, .topic-card, .edge-label-chip, .connector-hit')) return;
     if (!window.getSelection()?.isCollapsed) return;
     closeContextMenu();
-    if (selectedId || selectedIds.size || selectedPassage) { selectedId = null; selectedIds.clear(); selectedPassage = null; renderWorkspace(); }
+    if (selectedId || selectedIds.size || selectedPassage) { selectedId = null; selectedIds.clear(); selectedPassage = null; syncCanvasSelection(); }
   });
   viewport.addEventListener('contextmenu', (event) => {
     if (event.target.closest('input, textarea, select, [contenteditable]')) return;
@@ -2707,6 +2707,10 @@ function resizeNodeWithKeys(event, node) {
 
 function startNodeDrag(event, node, card) {
   if (graphIsReadOnly() || event.button !== 0) return;
+  // Cancel the original pointerdown default before the browser starts a text
+  // selection. Doing this later, on pointermove, cannot cancel that default.
+  event.preventDefault();
+  window.getSelection()?.removeAllRanges();
   const item = work(), moving = selectedIds.has(node.id) ? [...selectedIds] : [node.id];
   const original = Object.fromEntries(moving.map((id) => [id, { ...item.layout.positions[id] }]));
   const originalBounds = selectionBounds(moving.map((id) => pointFor(item, id)));
@@ -2718,9 +2722,7 @@ function startNodeDrag(event, node, card) {
     if (!moved) {
       moved = true;
       card._nodeDragged = true;
-      event.preventDefault();
       card.setPointerCapture?.(event.pointerId);
-      window.getSelection()?.removeAllRanges();
     }
     const pointerDx = Math.round((next.clientX - originX) / view.zoom), pointerDy = Math.round((next.clientY - originY) / view.zoom);
     const resolved = resolveMoveGeometry({
@@ -2748,6 +2750,8 @@ function startNodeDrag(event, node, card) {
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
     window.removeEventListener('pointercancel', up);
+    card.removeEventListener('lostpointercapture', cancel);
+    window.removeEventListener('blur', cancel);
     if (card.hasPointerCapture?.(event.pointerId)) card.releasePointerCapture(event.pointerId);
     if (!moved) return;
     showAlignmentGuides();
@@ -2758,9 +2762,12 @@ function startNodeDrag(event, node, card) {
     }
     syncNodeGeometry(item, moving);
   };
+  const cancel = () => up({ type: 'pointercancel' });
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
   window.addEventListener('pointercancel', up);
+  card.addEventListener('lostpointercapture', cancel);
+  window.addEventListener('blur', cancel);
 }
 
 function syncNodeGeometry(item, ids) {
@@ -2780,14 +2787,37 @@ function selectNodeInPlace(id, card, node, item) {
   selectedIds.clear();
   selectedPassage = null;
   editGroup = null;
-  document.querySelectorAll('.topic-card').forEach((entry) => {
-    entry.classList.toggle('selected', entry === card);
-    entry.querySelector('.node-actions')?.remove();
-  });
-  if (!graphFocus && !editingTarget) card.append(renderNodeActions(node, item));
+  syncCanvasSelection();
 }
 
-function selectNode(id) { selectedId = id; selectedIds.clear(); selectedPassage = null; editGroup = null; renderWorkspace(); }
+function syncCanvasSelection() {
+  const item = work();
+  document.querySelector('.passage-toolbar')?.remove();
+  document.querySelector('.selection-toolbar')?.remove();
+  document.querySelectorAll('.topic-card').forEach((card) => {
+    card.classList.toggle('selected', card.dataset.node === selectedId || selectedIds.has(card.dataset.node));
+    card.classList.remove('marquee-target');
+    card.querySelector('.node-actions')?.remove();
+    if (card.dataset.node === selectedId && !graphFocus && !editingTarget) {
+      const node = item.nodes.find((entry) => entry.id === selectedId);
+      if (node) card.append(renderNodeActions(node, item));
+    }
+  });
+  document.querySelector('.selection-rectangle')?.remove();
+  if (!activeConnection) {
+    document.querySelectorAll('.connection-handle').forEach((handle) => handle.remove());
+    document.querySelectorAll('.edge-label-chip.active').forEach((chip) => {
+      const edge = item.edges.find((entry) => entry.id === chip.dataset.edgeLabel);
+      if (edge) chip.replaceWith(renderEdgeLabel(item, edge));
+    });
+  }
+  if (!graphIsReadOnly() && !selectedId && selectedIds.size > 1) {
+    document.querySelector('.canvas-shell')?.append(el('div', { class: 'selection-toolbar', role: 'status' }, el('span', { text: `${selectedIds.size} selected` }), button('Delete', () => removeNodes([...selectedIds]), 'selection-delete'), button('Clear', () => { selectedIds.clear(); syncCanvasSelection(); }, 'selection-clear')));
+  }
+  updateConnectors();
+}
+
+function selectNode(id) { selectedId = id; selectedIds.clear(); selectedPassage = null; editGroup = null; syncCanvasSelection(); }
 
 function beginNodeMarkdownEdit(id) {
   enterEditingMode(id);
@@ -3467,7 +3497,7 @@ function startPaperResize(event, paper, grip) {
     window.removeEventListener('mouseup', up);
     grip.removeEventListener('lostpointercapture', up);
     const final = { width: Number.parseInt(paper.style.width, 10), minHeight: Number.parseInt(paper.style.minHeight, 10) };
-    if (final.width !== size.width || final.minHeight !== size.minHeight) change((entry) => { entry.layout.articleSize = final; });
+    if (final.width !== size.width || final.minHeight !== size.minHeight) change((entry) => { entry.layout.articleSize = final; }, { rerender: false });
   };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
@@ -4370,8 +4400,15 @@ function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer =
       resizeInput();
     } else form.requestSubmit();
   });
-  const send = button('Send', () => {}, 'panel-action', { 'aria-label': 'Send message' });
-  send.type = 'submit'; send.disabled = unavailable || aiPanel.busy || (!agentMode && snapshot.size > MAX_CONTEXT_CHARS);
+  const stopping = !agentMode && aiPanel.busy;
+  const send = button(stopping ? 'Stop' : 'Send', () => {
+    if (stopping) aiPanel.chatController?.abort();
+  }, `panel-action${stopping ? ' chat-stop' : ''}`, {
+    'aria-label': stopping ? 'Stop generating' : 'Send message',
+    title: stopping ? 'Stop generating' : 'Send message'
+  });
+  send.type = stopping ? 'button' : 'submit';
+  send.disabled = !stopping && (!!unavailable || aiPanel.busy || (!agentMode && snapshot.size > MAX_CONTEXT_CHARS));
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const question = input.value.trim();
@@ -4428,7 +4465,6 @@ function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer =
   if (agentMode) form.append(el('div', { class: 'agent-authority-note' }, el('strong', { text: 'Full project access' }), el('span', { text: 'The agent can inspect sources and propose article, node, and link changes. Nothing is applied without review.' })));
   form.append(input);
   if (!agentMode) form.append(picker);
-  if (!agentMode && aiPanel.busy) form.append(button('Stop', () => aiPanel.chatController?.abort(), 'chat-text-button'));
   form.append(send);
   panel.append(form);
   requestAnimationFrame(() => { if (input.isConnected) resizeInput(); });

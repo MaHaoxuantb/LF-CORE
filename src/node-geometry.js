@@ -90,19 +90,21 @@ export function resolveMoveGeometry({
 }) {
   let x = bounds.x + dx;
   let y = bounds.y + dy;
+  // Find alignment from the pointer position, before the grid can move it
+  // outside the alignment tolerance. The grid is a fallback on each axis.
+  const proposed = { ...bounds, x, y };
   if (snapping) {
     x = snapValue(x, gridSize);
     y = snapValue(y, gridSize);
   }
-  const proposed = { ...bounds, x, y };
   let xMatch = null;
   let yMatch = null;
   if (alignment && targets.length) {
     const tolerance = toleranceInCanvasUnits(zoom, tolerancePx);
     xMatch = bestAlignment(proposed, targets, 'x', tolerance);
     yMatch = bestAlignment(proposed, targets, 'y', tolerance);
-    if (xMatch) x += xMatch.adjustment;
-    if (yMatch) y += yMatch.adjustment;
+    if (xMatch) x = proposed.x + xMatch.adjustment;
+    if (yMatch) y = proposed.y + yMatch.adjustment;
   }
   const finalRect = { ...bounds, x, y };
   return {
@@ -126,19 +128,19 @@ export function resolveResizeGeometry({
 }) {
   let right = rect.x + width;
   let bottom = rect.y + height;
+  const proposed = { x: rect.x, y: rect.y, width, height };
   if (snapping) {
     if (axes.includes('x')) right = snapValue(right, gridSize);
     if (axes.includes('y')) bottom = snapValue(bottom, gridSize);
   }
-  const proposed = { x: rect.x, y: rect.y, width: right - rect.x, height: bottom - rect.y };
   let xMatch = null;
   let yMatch = null;
   if (alignment && targets.length) {
     const tolerance = toleranceInCanvasUnits(zoom, tolerancePx);
     if (axes.includes('x')) xMatch = bestAlignment(proposed, targets, 'x', tolerance, ['right'], ['left', 'right']);
     if (axes.includes('y')) yMatch = bestAlignment(proposed, targets, 'y', tolerance, ['bottom'], ['top', 'bottom']);
-    if (xMatch) right += xMatch.adjustment;
-    if (yMatch) bottom += yMatch.adjustment;
+    if (xMatch) right = rect.x + width + xMatch.adjustment;
+    if (yMatch) bottom = rect.y + height + yMatch.adjustment;
   }
   const finalRect = { x: rect.x, y: rect.y, width: right - rect.x, height: bottom - rect.y };
   return {
