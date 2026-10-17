@@ -1,5 +1,7 @@
 export const MODEL_SETTINGS_KEY = 'learning-canvas:model-settings-v1';
 let unlockedKey = '';
+export const THINKING_EFFORTS = Object.freeze(['none', 'low', 'medium', 'high']);
+export const thinkingEffort = (value) => THINKING_EFFORTS.includes(value) ? value : 'medium';
 
 const KEY_REQUIRED_HOSTS = new Set(['api.openai.com', 'openrouter.ai']);
 
@@ -20,18 +22,19 @@ export function completionUrl(value, allowHttp = false) {
 
 export function loadModelSettings(storage = localStorage) {
   const parsed = JSON.parse(storage.getItem(MODEL_SETTINGS_KEY) || 'null');
-  if (!parsed) return { endpoint: 'https://api.openai.com/v1', models: [], selectedModel: '', secret: null, developerMode: false };
-  return { endpoint: parsed.endpoint || '', models: Array.isArray(parsed.models) ? parsed.models : [], selectedModel: parsed.selectedModel || '', secret: parsed.secret || null, developerMode: parsed.developerMode === true };
+  if (!parsed) return { endpoint: 'https://api.openai.com/v1', models: [], selectedModel: '', secret: null, developerMode: false, provider: 'endpoint', thinkingEffort: 'medium' };
+  return { endpoint: parsed.endpoint || '', models: Array.isArray(parsed.models) ? parsed.models : [], selectedModel: parsed.selectedModel || '', secret: parsed.secret || null, developerMode: parsed.developerMode === true, provider: parsed.provider === 'solos' ? 'solos' : 'endpoint', thinkingEffort: thinkingEffort(parsed.thinkingEffort) };
 }
 
 export function saveModelSettings(settings, storage = localStorage) {
   const models = [...new Set(settings.models.map((name) => name.trim()).filter(Boolean))];
-  if (!models.length) throw new Error('Add at least one model.');
+  const provider = settings.provider === 'solos' ? 'solos' : 'endpoint';
+  if (provider === 'endpoint' && !models.length) throw new Error('Add at least one model.');
   const developerMode = settings.developerMode === true;
-  completionUrl(settings.endpoint, developerMode);
+  if (provider === 'endpoint') completionUrl(settings.endpoint, developerMode);
   const selectedModel = settings.selectedModel?.trim() || models[0];
-  if (!models.includes(selectedModel)) throw new Error('The active model must match a model in the list.');
-  const saved = { endpoint: settings.endpoint.trim(), models, selectedModel, secret: settings.secret || null, developerMode };
+  if (provider === 'endpoint' && !models.includes(selectedModel)) throw new Error('The active model must match a model in the list.');
+  const saved = { endpoint: settings.endpoint.trim(), models, selectedModel: selectedModel || '', secret: settings.secret || null, developerMode, provider, thinkingEffort: thinkingEffort(settings.thinkingEffort) };
   storage.setItem(MODEL_SETTINGS_KEY, JSON.stringify(saved));
   return saved;
 }

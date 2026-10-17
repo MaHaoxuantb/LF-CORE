@@ -8,12 +8,13 @@ Deploy LF CORE over HTTPS, copy [`lfos/LF CORE.app.example`](../lfos/LF%20CORE.a
 
 The deployment also publishes the website-app manifest at `/.well-known/lfos-app.json` for Store → Add App discovery. On Vercel, the well-known route is rewritten to a small serverless handler that builds the manifest using the deployment's own host, so launch and publisher URLs stay same-origin for custom domains. It serves JSON with `Access-Control-Allow-Origin: *` for LFOS's credential-free cross-origin GET. The local development server exposes the same route for inspection, but localhost is not a valid HTTPS Store install origin. If the manifest's normalized contents change, increment its positive integer `version` in `src/website-app-manifest.js`.
 
-The configuration requests only:
+The configuration requests:
 
 - `files:open` for the LFOS picker, file reads, and `.lfcore` Open With activations;
-- `files:save` for Save As and in-place writes to a user-opened file.
+- `files:save` for Save As and in-place writes to a user-opened file;
+- `ai:generate` for optional SolOS Intelligence text generation.
 
-It declares LF CORE as the default handler for `.lfcore` and `application/vnd.linecoflow.project+json`. The website manifest is now version 3; existing Store installations must apply its update (or reinstall) to receive the default association and overlay header configuration. No `ai:generate` permission is declared, and the application does not call LFOS AI APIs.
+It declares LF CORE as the default handler for `.lfcore` and `application/vnd.linecoflow.project+json`. The website manifest is now version 4. Existing Store installations must apply its update and enable the newly requested AI permission to use SolOS Intelligence. LFOS owns the first-use cloud-processing consent prompt.
 
 ## Runtime behavior
 
@@ -30,6 +31,22 @@ It declares LF CORE as the default handler for `.lfcore` and `application/vnd.li
 - Both home and project headers use the canonical `windowChrome` SDK geometry and drag binding. Overlay integration reserves the shell's control insets, adapts to resize/zoom, and falls back to the system title bar when controls do not fit. Browser and Electron headers keep their existing layout.
 - Handles are released after failed imports, project deletion, replacement by Save As, or read failure.
 
+## SolOS Intelligence
+
+AI Settings offers SolOS Intelligence when the connected host advertises
+`ai.responses.text` and exposes the SDK response API. Users explicitly choose it;
+existing endpoint settings and encrypted keys are preserved when switching providers.
+SolOS needs no app-managed API key or model ID. Thinking effort is saved locally
+and offers None, Low, Medium (default), and High.
+
+Chat and workspace-agent requests use `ai.responses.create`, map system prompts to
+developer messages, and consume text deltas while awaiting successful completion.
+Requests use the documented 16K maximum output budget to support complete drafts.
+The existing agent tools still execute locally with changes staged for review.
+Stop and panel teardown cancel generation. Service and permission failures are
+shown without silently switching providers. Standalone browser and Electron
+windows continue to use OpenAI-compatible endpoints.
+
 ## Verification
 
 Use an LFOS installation whose `.app` configuration contains both file permissions, then verify:
@@ -44,6 +61,8 @@ Use an LFOS installation whose `.app` configuration contains both file permissio
 8. removing either permission produces a clean fallback or an actionable error rather than an unrestricted browser picker inside the LFOS frame;
 9. the same deployment still opens and downloads projects in an ordinary top-level browser;
 10. home and project headers share the LFOS controls without overlap at normal size, restore the system title bar when too narrow, and support dragging the window from empty header space.
+
+Also verify that AI Settings offers SolOS Intelligence only with `ai.responses.text`, each thinking effort reaches the SDK request, chat streams, agent proposals stay staged, Stop cancels, and revoked AI permission shows a failure without sending to another provider.
 
 Run `npm test` and `npm run build` for automated adapter and bundle checks.
 # Background processing and activity

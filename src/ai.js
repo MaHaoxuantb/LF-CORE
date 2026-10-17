@@ -1,4 +1,4 @@
-import { completionUrl, endpointRequiresApiKey } from './model-settings.js';
+import { completionUrl, endpointRequiresApiKey, thinkingEffort } from './model-settings.js';
 import { parseChatResponse } from './chat.js';
 import { AGENT_LIMITS, parseAgentResponse } from './agent-service.js';
 
@@ -75,7 +75,11 @@ export function partialChatReply(raw) {
   return result;
 }
 
-export async function complete(settings, key, messages, { signal, fetcher = fetch, onDelta } = {}) {
+export async function complete(settings, key, messages, { signal, fetcher = fetch, onDelta, intelligence } = {}) {
+  if (settings.provider === 'solos') {
+    if (!intelligence) throw new Error('SolOS Intelligence is unavailable. Choose a provider in AI Settings.');
+    return intelligence.completeText(messages, thinkingEffort(settings.thinkingEffort), { signal, onDelta });
+  }
   if (!settings.selectedModel || !settings.models.includes(settings.selectedModel)) throw new Error('Choose a model in Settings.');
   if (endpointRequiresApiKey(settings.endpoint) && !key) throw new Error('This hosted endpoint requires an API key. Store and unlock the key in Settings.');
   const controller = new AbortController();
@@ -169,6 +173,7 @@ function boundedAgentMessages(messages) {
 export async function runAgent(settings, key, request, service, {
   signal,
   fetcher,
+  intelligence,
   onProgress = () => {},
   completeRequest = complete,
   focus = null
@@ -182,7 +187,7 @@ export async function runAgent(settings, key, request, service, {
   for (let turn = 1; turn <= AGENT_LIMITS.maxTurns; turn++) {
     onProgress({ phase: 'model', turn, maxTurns: AGENT_LIMITS.maxTurns, mutations: service.mutationCount });
     let raw;
-    try { raw = await completeRequest(settings, key, boundedAgentMessages(messages), { signal, fetcher }); }
+    try { raw = await completeRequest(settings, key, boundedAgentMessages(messages), { signal, fetcher, intelligence }); }
     catch (error) {
       if (service.operations.length) return { proposal: service.proposal(lastMessage || error.message, 'failed'), turns: turn, error: error.message };
       throw error;

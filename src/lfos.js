@@ -62,6 +62,47 @@ export class LFOSIntegration {
     return this.environment.capabilities?.includes(capability) === true;
   }
 
+  get intelligenceAvailable() {
+    return this.has('ai.responses.text') && typeof this.lfos?.ai?.responses?.create === 'function';
+  }
+
+  async completeText(messages, effort, { signal, onDelta } = {}) {
+    await this.connect();
+    if (!this.intelligenceAvailable) throw new Error('SolOS Intelligence is unavailable. Check SolOS connection and AI permission, or choose another provider in AI Settings.');
+    const cancelled = () => new Error('SolOS Intelligence request was canceled.');
+    if (signal?.aborted) throw cancelled();
+    const stream = await this.lfos.ai.responses.create({
+      input: messages.map(({ role, content }) => ({ role: role === 'system' ? 'developer' : role, content })),
+      reasoning: { effort },
+      text: { format: { type: 'text' } },
+      maxOutputTokens: 16384
+    });
+    // Observe rejection immediately, including cancellation before iteration starts.
+    const completed = stream.completed.then(value => ({ value }), error => ({ error }));
+    const cancel = () => stream.cancel();
+    signal?.addEventListener('abort', cancel, { once: true });
+    let text = '', finished = false;
+    try {
+      if (signal?.aborted) { cancel(); throw cancelled(); }
+      for await (const event of stream) {
+        if (signal?.aborted) throw cancelled();
+        if (event.type === 'output_text.delta') {
+          text += event.delta;
+          onDelta?.(event.delta, text);
+        }
+      }
+      const result = await completed;
+      if (signal?.aborted) throw cancelled();
+      if (result.error) throw result.error;
+      if (!text.trim()) throw new Error('SolOS Intelligence returned an empty response.');
+      finished = true;
+      return text.trim();
+    } finally {
+      signal?.removeEventListener('abort', cancel);
+      if (!finished) cancel();
+    }
+  }
+
   async openProject() {
     await this.connect();
     if (!this.has('files.open') || !this.has('files.read')) return null;

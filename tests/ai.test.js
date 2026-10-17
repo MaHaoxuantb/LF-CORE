@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import { completionUrl, encryptApiKey, unlockApiKey, getApiKey, lockApiKey, saveModelSettings, saveModelSecret, saveDeveloperMode, loadModelSettings, endpointRequiresApiKey } from '../src/model-settings.js';
-import { complete, generateArticle, askModel, partialChatReply, proposeInsertion, runAgent } from '../src/ai.js';
+import { complete, chatModel, generateArticle, askModel, partialChatReply, proposeInsertion, runAgent } from '../src/ai.js';
 import { WorkspaceAgentService } from '../src/agent-service.js';
+import { LFOSIntegration } from '../src/lfos.js';
 import { createWorkspace } from '../src/storage.js';
 
 globalThis.crypto ||= webcrypto;
@@ -169,4 +170,75 @@ test('agent loop returns a labeled partial draft at its step limit', async () =>
   assert.equal(result.limitReached, true);
   assert.equal(result.proposal.runStatus, 'limit_reached');
   assert.equal(result.proposal.operations.length, 1);
+});
+
+test('SolOS settings need no endpoint model and preserve endpoint credentials across switches', () => {
+  const data = new Map();
+  const storage = { setItem: (key, value) => data.set(key, value), getItem: (key) => data.get(key) };
+  const defaults = loadModelSettings(storage);
+  assert.equal(defaults.provider, 'endpoint');
+  assert.equal(defaults.thinkingEffort, 'medium');
+  const solos = saveModelSettings({ ...defaults, provider: 'solos', thinkingEffort: 'high' }, storage);
+  assert.equal(solos.models.length, 0);
+  assert.equal(loadModelSettings(storage).thinkingEffort, 'high');
+  const endpoint = saveModelSettings({ ...solos, provider: 'endpoint', models: ['example'], secret: { version: 1, ciphertext: 'encrypted' } }, storage);
+  saveModelSettings({ ...endpoint, provider: 'solos', thinkingEffort: 'unsupported' }, storage);
+  const restored = loadModelSettings(storage);
+  assert.equal(restored.thinkingEffort, 'medium');
+  assert.equal(restored.endpoint, endpoint.endpoint);
+  assert.equal(restored.selectedModel, 'example');
+  assert.deepEqual(restored.secret, endpoint.secret);
+  const legacy = { ...endpoint }; delete legacy.provider; delete legacy.thinkingEffort;
+  storage.setItem('learning-canvas:model-settings-v1', JSON.stringify(legacy));
+  assert.equal(loadModelSettings(storage).provider, 'endpoint');
+  assert.equal(loadModelSettings(storage).thinkingEffort, 'medium');
+});
+
+test('SolOS completion bypasses endpoint authentication and never falls back to HTTP', async () => {
+  const settings = { provider: 'solos', thinkingEffort: 'none', endpoint: 'https://api.openai.com/v1', models: [] };
+  let calls = 0;
+  const intelligence = { completeText: async (messages, effort) => {
+    calls++;
+    assert.equal(effort, 'none');
+    assert.deepEqual(messages, [{ role: 'user', content: 'Hello' }]);
+    return 'Welcome';
+  } };
+  const fetcher = async () => assert.fail('SolOS must not send endpoint requests');
+  assert.equal(await complete(settings, '', [{ role: 'user', content: 'Hello' }], { intelligence, fetcher }), 'Welcome');
+  assert.equal(calls, 1);
+  await assert.rejects(complete(settings, '', [], { fetcher }), /unavailable/);
+  await assert.rejects(complete(settings, '', [], { fetcher, intelligence: { completeText: async () => { throw new Error('ai_allowance_exhausted'); } } }), /ai_allowance_exhausted/);
+});
+
+
+test('SolOS chat streams parsed replies and its agent preserves staged review behavior', async () => {
+  const workspace = createWorkspace('SolOS agent', '# Article\n\nOriginal.');
+  workspace.id = 'workspace'; workspace.updatedAt = 'base';
+  const replies = [
+    { reply: 'Hello learner', edits: [] },
+    { status: 'continue', message: 'Working', calls: [{ id: 'index', tool: 'get_project_index', args: {} }] },
+    { status: 'continue', message: 'Working', calls: [{ id: 'node', tool: 'create_node', args: { markdown: '# New idea' } }] },
+    { status: 'ready', message: 'Draft ready', calls: [] }
+  ];
+  const requests = [];
+  const intelligence = new LFOSIntegration({ windowRef: { self: {}, top: {} }, loadSdk: async () => ({ lfos: {
+    ready: async () => ({ name: 'LFOS', protocolVersion: 1, capabilities: ['ai.responses.text'] }),
+    ai: { responses: { create: async request => {
+      requests.push(request);
+      const text = JSON.stringify(replies.shift());
+      return { completed: Promise.resolve({ text }), cancel() {}, async *[Symbol.asyncIterator]() { yield { type: 'output_text.delta', delta: text }; } };
+    } } }
+  } }) });
+  const settings = { provider: 'solos', thinkingEffort: 'high' };
+  const updates = [];
+  const chat = await chatModel(settings, '', [], 'Hello', { targets: [], selectedTargetIds: [], text: '' }, { intelligence, onReply: text => updates.push(text) });
+  assert.equal(chat.reply, 'Hello learner');
+  assert.deepEqual(updates, ['Hello learner']);
+  const service = new WorkspaceAgentService(workspace);
+  const result = await runAgent(settings, '', 'Add an idea', service, { intelligence });
+  assert.equal(result.proposal.operations.length, 1);
+  assert.equal(result.proposal.after.nodes.length, 1);
+  assert.equal(workspace.nodes.length, 0);
+  assert.equal(requests.length, 4);
+  assert.ok(requests.every(request => request.reasoning.effort === 'high'));
 });

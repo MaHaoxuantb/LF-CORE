@@ -6,7 +6,7 @@ import { isSourceNode, nodeLabel, sourceNode } from './node-content.js';
 import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
 import { putPdf, getPdf, deletePdf, putMedia, getMedia, deleteMedia, putSourceTextIndex, getSourceTextIndex, deleteSourceTextIndex } from './source-store.js';
 import { connectionPort, crossConnectionRoute, nearestConnectionSide, snappedConnectionSides } from './cross-connection.js';
-import { loadModelSettings, saveModelSettings, saveModelSecret, saveDeveloperMode, encryptApiKey, unlockApiKey, getApiKey, lockApiKey, endpointRequiresApiKey } from './model-settings.js';
+import { loadModelSettings, saveModelSettings, saveModelSecret, saveDeveloperMode, encryptApiKey, unlockApiKey, getApiKey, lockApiKey, endpointRequiresApiKey, THINKING_EFFORTS } from './model-settings.js';
 import { chatModel, runAgent } from './ai.js';
 import { canChangeAssistantMode, contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, proposalStatus } from './chat.js';
 import { WorkspaceAgentService, applyAgentProposal } from './agent-service.js';
@@ -132,7 +132,7 @@ function setProjectAccent(nextColor) {
 function setAiFeaturesEnabled(enabled) {
   aiFeaturesEnabled = !!enabled;
   localStorage.setItem(AI_ENABLED_KEY, String(aiFeaturesEnabled));
-  if (!aiFeaturesEnabled) { aiPanel = null; lockApiKey(); }
+  if (!aiFeaturesEnabled) { disposeAiPanel(); lockApiKey(); }
 }
 function setGeometryPreference(name, enabled) {
   geometryPreferences = { ...geometryPreferences, [name]: !!enabled };
@@ -176,6 +176,7 @@ let selectedPassage = null, editGroup = null, view = { x: 0, y: 0, zoom: 1 };
 let viewFrame = null, toastTimer = null;
 let outlineHeight = null;
 let aiPanel = null;
+lfosConnection.then(() => { if (aiPanel) renderAiPanel({ focusComposer: false }); });
 let researchPanel = null;
 let graphFocus = null, graphFocusNodeIds = null, spaceKeySession = null;
 
@@ -914,7 +915,7 @@ function renderHome() {
   gestureActive = false;
   void flushView().catch(viewPersistence.onError);
   currentId = null; selectedId = null; selectedIds.clear(); editingMarkdown = false; editingTarget = null; editingBeforeView = null; selectedPassage = null; openSourceId = null;
-  graphFocus = null; graphFocusNodeIds = null; spaceKeySession = null; aiPanel = null;
+  graphFocus = null; graphFocusNodeIds = null; spaceKeySession = null; disposeAiPanel();
   applyAppearance();
   const projectUpload = el('input', { type: 'file', accept: PROJECT_EXTENSION, class: 'project-upload-input', 'aria-label': 'Open project file' });
   const uploadProjectButton = button('Open project', async () => {
@@ -1001,7 +1002,7 @@ async function deleteWorkspace(id) {
 }
 
 function openWorkspace(id) {
-  currentId = id; aiPanel = null; selectedId = null; selectedIds.clear(); editingMarkdown = false; editingTarget = null; editingBeforeView = null; selectedPassage = null; editGroup = null; openSourceId = null;
+  currentId = id; disposeAiPanel(); selectedId = null; selectedIds.clear(); editingMarkdown = false; editingTarget = null; editingBeforeView = null; selectedPassage = null; editGroup = null; openSourceId = null;
   graphFocus = null; graphFocusNodeIds = null; spaceKeySession = null;
   const item = work(); if (!item) return renderHome();
   const needsFit = !item.layout?.articleSize;
@@ -2961,16 +2962,22 @@ function openSource(id, page = 1, anchor = null) {
   // Chat and Sources are mutually exclusive workspace panels. Opening one
   // always turns the other one off; clicking the active menu item passes null
   // and simply closes it.
-  if (id !== null) { aiPanel = null; researchPanel = null; }
+  if (id !== null) { disposeAiPanel(); researchPanel = null; }
   openSourceId = id;
   sourcePage = page;
   sourceJump = anchor;
   refreshWorkspacePanels();
 }
 
+function disposeAiPanel() {
+  aiPanel?.agentController?.abort();
+  aiPanel?.chatController?.abort();
+  aiPanel = null;
+}
+
 function toggleAiPanel() {
   if (aiPanel) {
-    aiPanel = null;
+    disposeAiPanel();
     refreshWorkspacePanels();
     return;
   }
@@ -2992,7 +2999,7 @@ function toggleResearchPanel() {
   const context = selectedResearchContext(item);
   const suggested = context.quote ? `What should I verify about “${shortTitle(context.quote)}”?` : '';
   researchPanel = { tab: 'questions', questionId: item.research.questions.find((question) => question.status === 'open')?.id || null, draftQuestion: suggested, query: '', results: [], error: '', loading: false, ideaIds: new Set(context.targetIds) };
-  aiPanel = null; openSourceId = null;
+  disposeAiPanel(); openSourceId = null;
   refreshWorkspacePanels();
 }
 
@@ -3709,7 +3716,8 @@ function createHighlight() {
   } catch (error) { announce(error.message); }
 }
 
-function renderSettings(activeTab = 'ai') {
+async function renderSettings(activeTab = 'ai') {
+  await lfosConnection;
   document.querySelector('.model-settings-overlay')?.remove();
   const saved = loadModelSettings();
   const overlay = el('div', { class: 'model-settings-overlay' });
@@ -3776,7 +3784,16 @@ function renderSettings(activeTab = 'ai') {
     if (currentId) renderWorkspace();
     renderSettings();
   });
-  content.append(master, el('div', { class: 'settings-section-heading' }, el('h3', { text: 'AI Settings' }), el('p', { text: 'Connect an OpenAI-compatible chat endpoint. Only the context shown before a request is sent.' })));
+  content.append(master, el('div', { class: 'settings-section-heading' }, el('h3', { text: 'AI Settings' }), el('p', { text: 'Choose an AI provider. Only the context shown before a request is sent.' })));
+  const provider = el('select', { 'aria-label': 'AI provider' }, el('option', { value: 'endpoint', text: 'OpenAI-compatible endpoint' }));
+  if (lfos.intelligenceAvailable) provider.append(el('option', { value: 'solos', text: 'SolOS Intelligence' }));
+  else if (saved.provider === 'solos') provider.append(el('option', { value: 'solos', text: 'SolOS Intelligence · unavailable', disabled: true }));
+  provider.value = saved.provider;
+  const effort = el('select', { 'aria-label': 'Thinking effort' }, ...THINKING_EFFORTS.map(value => el('option', { value, text: value[0].toUpperCase() + value.slice(1) })));
+  effort.value = saved.thinkingEffort;
+  const solosFields = el('div', {}, el('label', { text: 'THINKING EFFORT' }), effort,
+    el('p', { class: 'ai-muted', text: 'SolOS Intelligence uses your shared AI allowance and a model managed by SolOS. No API key is needed. LFOS asks for cloud-processing approval on first use.' }));
+  const endpointFields = el('fieldset', { class: 'ai-settings-fields' });
   const endpoint = el('input', { type: 'url', value: saved.endpoint, 'aria-label': 'API endpoint', placeholder: 'https://api.openai.com/v1' });
   const models = el('textarea', { 'aria-label': 'Models, one per line', placeholder: 'One model ID per line' }); models.value = saved.models.join('\n');
   const selected = el('input', { value: saved.selectedModel, 'aria-label': 'Selected model', placeholder: 'First listed model is used by default' });
@@ -3789,26 +3806,31 @@ function renderSettings(activeTab = 'ai') {
   const status = el('p', { class: 'ai-status', role: 'status', text: saved.secret ? getApiKey() ? 'Key unlocked for this tab.' : 'Encrypted key is locked. Unlock before requesting.' : 'No stored key. Local endpoints may allow requests without one.' });
   const fields = el('fieldset', { class: 'ai-settings-fields' });
   fields.disabled = !aiFeaturesEnabled;
-  fields.append(el('label', { text: 'ENDPOINT' }), endpoint, el('label', { text: 'MODELS · ONE ID PER LINE' }), models, el('label', { text: 'ACTIVE MODEL' }), selected, el('label', { text: 'API KEY' }), apiKey, el('label', { text: 'PASSPHRASE' }), passphrase, status);
+  fields.append(el('label', { text: 'AI PROVIDER' }), provider, solosFields);
+  endpointFields.append(el('label', { text: 'ENDPOINT' }), endpoint, el('label', { text: 'MODELS · ONE ID PER LINE' }), models, el('label', { text: 'ACTIVE MODEL' }), selected, el('label', { text: 'API KEY' }), apiKey, el('label', { text: 'PASSPHRASE' }), passphrase);
+  fields.append(endpointFields, status);
   const controls = el('div', { class: 'ai-actions' });
   controls.append(button('Save AI settings', async () => {
     try {
       const ids = models.value.split(/\r?\n/).map((id) => id.trim()).filter(Boolean);
-      if (!ids.length) throw new Error('Add at least one model ID.');
-      if (!selected.value.trim()) selected.value = ids[0];
-      if (!ids.includes(selected.value.trim())) throw new Error('Select a model from the list.');
+      const useSolos = provider.value === 'solos';
+      if (useSolos && !lfos.intelligenceAvailable) throw new Error('SolOS Intelligence is unavailable. Choose another provider.');
+      if (!useSolos && !ids.length) throw new Error('Add at least one model ID.');
+      if (!selected.value.trim()) selected.value = ids[0] || '';
+      if (!useSolos && !ids.includes(selected.value.trim())) throw new Error('Select a model from the list.');
       let secret = loadModelSettings().secret;
-      if (apiKey.value.trim()) secret = await encryptApiKey(apiKey.value, passphrase.value);
-      if (endpointRequiresApiKey(endpoint.value) && !secret) throw new Error('Enter an API key and a passphrase for this hosted endpoint.');
-      saveModelSettings({ endpoint: endpoint.value, models: ids, selectedModel: selected.value.trim(), secret, developerMode: loadModelSettings().developerMode });
-      const storedKey = !!apiKey.value.trim();
+      if (!useSolos && apiKey.value.trim()) secret = await encryptApiKey(apiKey.value, passphrase.value);
+      if (!useSolos && endpointRequiresApiKey(endpoint.value) && !secret) throw new Error('Enter an API key and a passphrase for this hosted endpoint.');
+      saveModelSettings({ provider: provider.value, thinkingEffort: effort.value, endpoint: endpoint.value, models: ids, selectedModel: selected.value.trim(), secret, developerMode: loadModelSettings().developerMode });
+      const storedKey = !useSolos && !!apiKey.value.trim();
       apiKey.value = ''; passphrase.value = '';
-      status.textContent = storedKey ? 'AI settings saved; key encrypted and unlocked for this tab.' : 'AI endpoint and model settings saved locally.';
+      status.textContent = useSolos ? 'SolOS Intelligence settings saved.' : storedKey ? 'AI settings saved; key encrypted and unlocked for this tab.' : 'AI endpoint and model settings saved locally.';
       refreshChatAvailability();
       announce('AI settings saved.');
     } catch (error) { status.textContent = error.message; }
   }, 'panel-action'));
-  controls.append(button('Store & unlock key', async () => {
+  const keyControls = el('div', { class: 'ai-actions' });
+  keyControls.append(button('Store & unlock key', async () => {
     try {
       const secret = await encryptApiKey(apiKey.value, passphrase.value);
       saveModelSecret(secret);
@@ -3818,18 +3840,28 @@ function renderSettings(activeTab = 'ai') {
       announce('API key stored and unlocked.');
     } catch (error) { status.textContent = error.message; }
   }, 'panel-secondary'));
-  controls.append(button('Unlock key', async () => {
+  keyControls.append(button('Unlock key', async () => {
     try { await unlockApiKey(loadModelSettings().secret, passphrase.value); passphrase.value = ''; status.textContent = 'Key unlocked for this tab. AI requests are ready.'; refreshChatAvailability(); announce('API key unlocked.'); }
     catch (error) { status.textContent = error.message; }
   }, 'panel-secondary'));
-  controls.append(button('Lock key', () => { lockApiKey(); status.textContent = 'Key locked.'; refreshChatAvailability(); }, 'panel-secondary'));
-  controls.append(button('Remove key', () => {
+  keyControls.append(button('Lock key', () => { lockApiKey(); status.textContent = 'Key locked.'; refreshChatAvailability(); }, 'panel-secondary'));
+  keyControls.append(button('Remove key', () => {
     try { saveModelSecret(null); lockApiKey(); apiKey.value = ''; passphrase.value = ''; status.textContent = 'Stored key removed.'; refreshChatAvailability(); }
     catch (error) { status.textContent = error.message; }
   }, 'panel-secondary'));
-  fields.append(controls, el('p', { class: 'ai-muted', text: 'The endpoint and model IDs are stored in browser storage. Your key is stored only as AES-GCM ciphertext; losing the passphrase means replacing the key. Browser site data can be cleared to remove settings. Use a trusted endpoint that permits browser CORS requests.' }));
+  endpointFields.append(keyControls, el('p', { class: 'ai-muted', text: 'The endpoint and model IDs are stored in browser storage. Your key is stored only as AES-GCM ciphertext; losing the passphrase means replacing the key. Browser site data can be cleared to remove settings. Use a trusted endpoint that permits browser CORS requests.' }));
+  fields.append(controls);
+  const updateProvider = () => {
+    const useSolos = provider.value === 'solos';
+    endpointFields.hidden = useSolos;
+    endpointFields.disabled = useSolos;
+    solosFields.hidden = !useSolos;
+    status.textContent = useSolos ? (lfos.intelligenceAvailable ? 'SolOS Intelligence is available.' : 'SolOS Intelligence is unavailable. Choose another provider or restore its AI permission in SolOS.') : saved.secret ? getApiKey() ? 'Key unlocked for this tab.' : 'Encrypted key is locked. Unlock before requesting.' : 'No stored key. Local endpoints may allow requests without one.';
+  };
+  provider.addEventListener('change', updateProvider);
+  updateProvider();
   content.append(fields);
-  overlay.append(panel); document.body.append(overlay); (aiFeaturesEnabled ? endpoint : master).focus();
+  overlay.append(panel); document.body.append(overlay); (aiFeaturesEnabled ? provider : master).focus();
 }
 
 function chatList() { return state.chats[currentId] ||= []; }
@@ -3850,6 +3882,8 @@ function newChat(seed = {}) {
     context: { mode, nodeIds, passage }, messages: [] };
   chatList().push(chat);
   persist();
+  aiPanel?.agentController?.abort();
+  aiPanel?.chatController?.abort();
   aiPanel = { chatId: chat.id, tab: 'chat', draft: seed.draft || '', busy: false, error: '', previewId: null, width: aiPanel?.width, assistantMode: chat.assistantMode };
   renderAiPanel();
 }
@@ -3867,6 +3901,8 @@ function openAiPanel(seed = null) {
   }
   const chat = [...chatList()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
   chat.assistantMode ||= 'chat';
+  aiPanel?.agentController?.abort();
+  aiPanel?.chatController?.abort();
   aiPanel = { chatId: chat.id, tab: 'chat', draft: '', busy: false, error: '', previewId: null, width: aiPanel?.width, assistantMode: chat.assistantMode };
   refreshWorkspacePanels();
 }
@@ -4163,7 +4199,7 @@ function currentAgentFocus() {
 async function executeAgentRequest(item, chat, question, { focusOverride = null } = {}) {
   if (!question || aiPanel.busy) return;
   const config = loadModelSettings();
-  if (!config.models.length || (endpointRequiresApiKey(config.endpoint) && !config.secret) || (config.secret && !getApiKey())) { renderSettings(); return; }
+  if (aiConfigurationIssue(config)) { renderSettings(); return; }
   const scope = aiPanel, workspaceId = item.id, chatId = chat.id;
   const captured = focusOverride || currentAgentFocus();
   const controller = new AbortController();
@@ -4191,19 +4227,19 @@ async function executeAgentRequest(item, chat, question, { focusOverride = null 
       searchSources: (query, options) => searchWorkspaceSources(service.draft, query, { ...options, signal: controller.signal, ensurePdfIndex: ensureIndex }),
       readSource: (sourceId, range) => readWorkspaceSource(service.draft, sourceId, range, { signal: controller.signal, ensurePdfIndex: ensureIndex })
     });
-    const result = await runAgent(config, getApiKey(), question, service, { signal: controller.signal, focus: captured.focus, onProgress: progress });
+    const result = await runAgent(config, getApiKey(), question, service, { intelligence: lfos, signal: controller.signal, focus: captured.focus, onProgress: progress });
     const savedChat = state.chats[workspaceId]?.find((entry) => entry.id === chatId);
     if (!savedChat) return;
     result.proposal.request = question;
     result.proposal.focus = captured.focus;
     savedChat.messages.push({ id: crypto.randomUUID(), role: 'assistant', content: result.proposal.message, agentProposal: result.proposal,
-      model: config.selectedModel, endpoint: config.endpoint, createdAt: new Date().toISOString() });
+      ...aiRequestMetadata(config), createdAt: new Date().toISOString() });
     savedChat.updatedAt = new Date().toISOString(); persist(false, workspaceId);
     if (result.error && scope === aiPanel) scope.error = result.error;
   } catch (error) {
     const savedChat = state.chats[workspaceId]?.find((entry) => entry.id === chatId);
     if (savedChat) savedChat.messages.push({ id: crypto.randomUUID(), role: 'assistant', content: controller.signal.aborted ? 'Agent run stopped before it produced a valid draft.' : `Agent run failed: ${error.message}`,
-      model: config.selectedModel, endpoint: config.endpoint, createdAt: new Date().toISOString() });
+      ...aiRequestMetadata(config), createdAt: new Date().toISOString() });
     if (scope === aiPanel) scope.error = controller.signal.aborted ? 'Agent run stopped.' : error.message;
     persist(false, workspaceId);
   } finally {
@@ -4279,13 +4315,25 @@ function updateStreamingChatReply(reply) {
   transcript.scrollTop = transcript.scrollHeight;
 }
 
+function aiConfigurationIssue(settings) {
+  if (settings.provider === 'solos') return lfos.intelligenceAvailable ? '' : 'SolOS Intelligence is unavailable. Check SolOS connection and AI permission, or choose another provider.';
+  if (!settings.models.length) return 'Choose an endpoint and model to start chatting.';
+  if (endpointRequiresApiKey(settings.endpoint) && !settings.secret) return 'Store an API key for this hosted endpoint.';
+  return settings.secret && !getApiKey() ? 'Unlock your API key to continue chatting.' : '';
+}
+
+function aiRequestMetadata(settings) {
+  return settings.provider === 'solos'
+    ? { provider: 'solos', model: 'SolOS Intelligence', thinkingEffort: settings.thinkingEffort }
+    : { model: settings.selectedModel, endpoint: settings.endpoint };
+}
+
 function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer = true) {
   const agentMode = chat.assistantMode === 'agent';
   const settings = loadModelSettings();
-  const missingRequiredKey = endpointRequiresApiKey(settings.endpoint) && !settings.secret;
-  const unavailable = !settings.models.length || missingRequiredKey || !!(settings.secret && !getApiKey());
+  const unavailable = aiConfigurationIssue(settings);
   if (unavailable) panel.append(el('div', { class: 'chat-config-notice' },
-    el('span', { text: !settings.models.length ? 'Choose an endpoint and model to start chatting.' : missingRequiredKey ? 'Store an API key for this hosted endpoint.' : 'Unlock your API key to continue chatting.' }),
+    el('span', { text: unavailable }),
     button('Open Settings', renderSettings, 'chat-text-button')));
   if (!agentMode && snapshot.size > MAX_CONTEXT_CHARS) panel.append(el('p', { class: 'ai-error chat-error', text: 'Context is too large. Choose a smaller scope before sending.' }));
   if (aiPanel.error) panel.append(el('p', { class: 'ai-error chat-error', role: 'alert', text: aiPanel.error }));
@@ -4335,8 +4383,10 @@ function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer =
     const selected = contextSnapshot(work(), effectiveChatContext(chat));
     if (selected.size > MAX_CONTEXT_CHARS) { aiPanel.error = 'Context is too large. Deselect items before sending.'; renderAiPanel(); return; }
     const config = loadModelSettings();
-    if (!config.models.length || (endpointRequiresApiKey(config.endpoint) && !config.secret) || (config.secret && !getApiKey())) { renderSettings(); return; }
+    if (aiConfigurationIssue(config)) { renderSettings(); return; }
     const scope = aiPanel, workspaceId = item.id, chatId = chat.id;
+    const controller = new AbortController();
+    scope.chatController = controller;
     const prior = chat.messages.filter((message) => message.role === 'user' || message.role === 'assistant').map((message) => ({ role: message.role, content: message.content }));
     const userMessage = { id: crypto.randomUUID(), role: 'user', content: question, contextSnapshot: selected, createdAt: new Date().toISOString() };
     chat.messages.push(userMessage);
@@ -4346,7 +4396,7 @@ function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer =
     persist(); renderAiPanel();
     try {
       let renderScheduled = false;
-      const result = await chatModel(config, getApiKey(), prior, question, selected, { onReply: (reply) => {
+      const result = await chatModel(config, getApiKey(), prior, question, selected, { signal: controller.signal, intelligence: lfos, onReply: (reply) => {
         if (scope !== aiPanel || currentId !== workspaceId) return;
         scope.streamingReply = reply;
         if (renderScheduled) return;
@@ -4361,23 +4411,24 @@ function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer =
       const proposals = result.edits.map((edit) => ({
         id: crypto.randomUUID(), targetId: edit.targetId,
         before: selected.targets.find((target) => target.id === edit.targetId).markdown,
-        after: edit.markdown, status: 'proposed', model: config.selectedModel
+        after: edit.markdown, status: 'proposed', ...aiRequestMetadata(config)
       }));
       savedChat.messages.push({ id: crypto.randomUUID(), role: 'assistant', content: result.reply, proposals,
-        model: config.selectedModel, endpoint: config.endpoint, createdAt: new Date().toISOString() });
+        ...aiRequestMetadata(config), createdAt: new Date().toISOString() });
       savedChat.updatedAt = new Date().toISOString(); persist(false, workspaceId);
     } catch (error) {
       chat.messages = chat.messages.filter((message) => message.id !== userMessage.id);
       if (scope === aiPanel) { scope.error = error.message; scope.draft = question; }
       persist(false, workspaceId);
     } finally {
-      scope.busy = false; scope.streamingReply = '';
+      scope.busy = false; scope.streamingReply = ''; scope.chatController = null;
       if (scope === aiPanel && currentId === workspaceId) renderAiPanel();
     }
   });
   if (agentMode) form.append(el('div', { class: 'agent-authority-note' }, el('strong', { text: 'Full project access' }), el('span', { text: 'The agent can inspect sources and propose article, node, and link changes. Nothing is applied without review.' })));
   form.append(input);
   if (!agentMode) form.append(picker);
+  if (!agentMode && aiPanel.busy) form.append(button('Stop', () => aiPanel.chatController?.abort(), 'chat-text-button'));
   form.append(send);
   panel.append(form);
   requestAnimationFrame(() => { if (input.isConnected) resizeInput(); });
@@ -4640,7 +4691,7 @@ function renderAiPanel({ focusComposer = true } = {}) {
       button('＋', () => newChat(), 'chat-header-icon', { 'aria-label': 'New chat', title: 'New chat' }),
       button('⚙', renderSettings, 'chat-header-icon', { 'aria-label': 'Open Settings', title: 'Open Settings' }));
   }
-  actions.append(button('×', () => { aiPanel = null; refreshWorkspacePanels(); }, 'panel-close', { 'aria-label': 'Close chat' }));
+  actions.append(button('×', () => { disposeAiPanel(); refreshWorkspacePanels(); }, 'panel-close', { 'aria-label': 'Close chat' }));
   heading.append(left, actions);
   panel.append(heading);
   if (aiPanel.tab === 'history') {

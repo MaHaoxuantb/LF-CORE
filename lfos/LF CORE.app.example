@@ -8,7 +8,7 @@
   "embedPolicy": "embed",
   "rememberWindowBounds": true,
   "windowChrome": { "mode": "overlay", "background": "surface" },
-  "permissions": ["files:open", "files:save"],
+  "permissions": ["files:open", "files:save", "ai:generate"],
   "fileAssociations": [
     {
       "extensions": [".lfcore"],

@@ -37,7 +37,7 @@ function fixture() {
       removeEventListener: (name) => listeners.delete(name)
     }
   });
-  for (const name of ['setGeometryPreference', 'change', 'syncNodeGeometry', 'startNodeDrag', 'startNodeResize', 'resizeNodeWithKeys', 'refreshWorkspacePanels', 'toggleOutline', 'openSource', 'toggleAiPanel', 'toggleResearchPanel']) {
+  for (const name of ['setGeometryPreference', 'change', 'syncNodeGeometry', 'startNodeDrag', 'startNodeResize', 'resizeNodeWithKeys', 'refreshWorkspacePanels', 'toggleOutline', 'openSource', 'disposeAiPanel', 'toggleAiPanel', 'toggleResearchPanel']) {
     const match = source.match(new RegExp(`^function ${name}\\([^]*?^}`, 'm'));
     assert.ok(match, `${name} exists`);
     vm.runInContext(match[0], context);
@@ -126,7 +126,10 @@ test('opening, switching, and closing panels only replaces panel DOM', () => {
   assert.deepEqual([...mounted].map((entry) => entry.name), ['library']);
   f.context.toggleAiPanel();
   assert.deepEqual([...mounted].map((entry) => entry.name), ['chat']);
+  let cancelled = 0;
+  f.context.aiPanel.chatController = { abort: () => cancelled++ };
   f.context.toggleAiPanel();
+  assert.equal(cancelled, 1);
   assert.equal(mounted.size, 0);
   f.context.researchPanel = {};
   f.context.refreshWorkspacePanels();

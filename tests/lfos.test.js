@@ -158,3 +158,80 @@ test('lifecycle updates remain ordered when dirty state changes during a request
   assert.deepEqual(states, [true, false]);
   assert.equal(integration.unsavedChanges, false);
 });
+
+function intelligenceIntegration({ capabilities = ['ai.responses.text'], create } = {}) {
+  return new LFOSIntegration({ windowRef: framedWindow(), loadSdk: async () => ({ lfos: {
+    ready: async () => ({ name: 'LFOS', protocolVersion: 1, capabilities }),
+    ai: { responses: { create } }
+  } }) });
+}
+
+test('SolOS AI detection requires both advertised capability and SDK method', async () => {
+  for (const options of [{ capabilities: [], create: () => assert.fail('must not generate') }, {}]) {
+    const integration = intelligenceIntegration(options);
+    await integration.connect();
+    assert.equal(integration.intelligenceAvailable, false);
+    await assert.rejects(integration.completeText([], 'medium'), /unavailable/);
+  }
+});
+
+test('SolOS streams map roles, forward each thinking effort, and await completion', async () => {
+  for (const effort of ['none', 'low', 'medium', 'high']) {
+    let request, cancels = 0;
+    const integration = intelligenceIntegration({ create: async value => {
+      request = value;
+      return {
+        completed: Promise.resolve({ text: 'Hello' }),
+        cancel: () => cancels++,
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'output_text.delta', delta: 'Hel' };
+          yield { type: 'output_text.delta', delta: 'lo' };
+          yield { type: 'completed', usage: {} };
+        }
+      };
+    } });
+    const updates = [];
+    const messages = [{ role: 'system', content: 'Instructions' }, { role: 'user', content: 'Question' }, { role: 'assistant', content: 'History' }];
+    assert.equal(await integration.completeText(messages, effort, { onDelta: (...args) => updates.push(args) }), 'Hello');
+    assert.deepEqual(request.input.map(message => message.role), ['developer', 'user', 'assistant']);
+    assert.equal(messages[0].role, 'system');
+    assert.equal(request.reasoning.effort, effort);
+    assert.equal(request.maxOutputTokens, 16384);
+    assert.equal('model' in request, false);
+    assert.deepEqual(updates, [['Hel', 'Hel'], ['lo', 'Hello']]);
+    assert.equal(cancels, 0);
+  }
+});
+
+test('SolOS rejects failed completion even after partial output and cancels stream', async () => {
+  let cancels = 0;
+  const failure = Object.assign(new Error('Shared allowance exhausted'), { code: 'ai_allowance_exhausted' });
+  const integration = intelligenceIntegration({ create: async () => ({
+    completed: Promise.reject(failure), cancel: () => cancels++,
+    async *[Symbol.asyncIterator]() { yield { type: 'output_text.delta', delta: 'Partial' }; }
+  }) });
+  await assert.rejects(integration.completeText([], 'high'), error => error === failure);
+  assert.equal(cancels, 1);
+});
+
+test('SolOS cancellation during creation and streaming cancels and rejects', async () => {
+  for (const duringCreation of [true, false]) {
+    const controller = new AbortController();
+    let cancels = 0;
+    const integration = intelligenceIntegration({ create: async () => {
+      if (duringCreation) controller.abort();
+      return {
+        completed: Promise.resolve({ text: 'Partial' }), cancel: () => cancels++,
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'output_text.delta', delta: 'Partial' };
+          controller.abort();
+        }
+      };
+    } });
+    await assert.rejects(integration.completeText([], 'low', { signal: controller.signal }), /canceled/);
+    assert.ok(cancels >= 1);
+  }
+  const controller = new AbortController(); controller.abort();
+  const integration = intelligenceIntegration({ create: async () => assert.fail('already canceled') });
+  await assert.rejects(integration.completeText([], 'low', { signal: controller.signal }), /canceled/);
+});

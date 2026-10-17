@@ -868,7 +868,7 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .ai-panel .panel-action, .ai-panel .panel-secondary { width: auto; margin: 5px 6px 5px 0; }
 .ai-muted { font-size: .75rem; line-height: 1.5; color: #687486; overflow-wrap: anywhere; }
 .ai-context { max-height: 130px; overflow: auto; padding: 10px; border-left: 3px solid var(--accent); background: var(--accent-soft); font-size: .78rem; white-space: pre-wrap; overflow-wrap: anywhere; }
-.ai-question, .ai-diff, .model-settings-card input, .model-settings-card textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 10px; border: 1px solid #cdd5e3; border-radius: 8px; background: #fff; color: inherit; font-size: .82rem; line-height: 1.45; }
+.ai-question, .ai-diff, .model-settings-card input, .model-settings-card textarea, .model-settings-card select { box-sizing: border-box; width: 100%; min-width: 0; padding: 10px; border: 1px solid #cdd5e3; border-radius: 8px; background: #fff; color: inherit; font-size: .82rem; line-height: 1.45; }
 .ai-question { min-height: 110px; resize: vertical; }
 .ai-diff { min-height: 155px; max-height: 300px; margin: 5px 0; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
 .ai-output { max-height: 40vh; overflow: auto; border: 1px solid #dce1e9; border-radius: 8px; padding: 13px; font-size: .82rem; user-select: text; }
@@ -916,7 +916,7 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .ai-history-item { display: block; width: 100%; margin: 6px 0; padding: 11px; border: 1px solid #dce1e9; border-radius: 8px; background: transparent; color: inherit; text-align: left; font-size: .78rem; cursor: pointer; }
 .ai-history-item:hover { border-color: var(--accent); }
 :root[data-dark='true'] .ai-panel, :root[data-dark='true'] .model-settings-card { background: #242424; color: #e7e7eb; border-color: #484848; }
-:root[data-dark='true'] .ai-question, :root[data-dark='true'] .ai-diff, :root[data-dark='true'] .model-settings-card input, :root[data-dark='true'] .model-settings-card textarea, :root[data-dark='true'] .ai-output { background: #202024; color: #e7e7eb; border-color: #484848; }
+:root[data-dark='true'] .ai-question, :root[data-dark='true'] .ai-diff, :root[data-dark='true'] .model-settings-card input, :root[data-dark='true'] .model-settings-card textarea, :root[data-dark='true'] .model-settings-card select, :root[data-dark='true'] .ai-output { background: #202024; color: #e7e7eb; border-color: #484848; }
 :root[data-dark='true'] .ai-muted, :root[data-dark='true'] .model-settings-card label { color: #aeb3bf; }
 /* AskAI: calm, Claude-inspired reading layout with a generous transcript and pill composer. */
 .ai-panel { top: 70px; right: 16px; bottom: 16px; width: min(500px, calc(100vw - 32px)); padding: 0; overflow: hidden; border-color: #e7e4df; border-radius: 16px; box-shadow: 0 18px 55px #1e24301f; display: flex; flex-direction: column; }
