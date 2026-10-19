@@ -709,8 +709,8 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .sources-heading strong { color: #29313e; font-size: 1.08rem; letter-spacing: -.025em; }
 .sources-heading small { color: #8b93a1; font-size: .65rem; }
 .sources-heading .panel-close { display: grid; place-items: center; width: 29px; height: 29px; padding: 0; border-radius: 9px; background: #eceef2; color: #707887; line-height: 1; }
-.library-dropzone { display: flex; align-items: center; gap: 10px; min-height: 62px; margin-bottom: 13px; padding: 10px 12px; border: 1px dashed #cbd1dc; border-radius: 13px; background: #ffffffb8; color: #4f5969; cursor: pointer; transition: border-color .16s ease, background .16s ease, transform .16s ease; }
-.library-dropzone:hover, .library-dropzone:focus-visible, .library-dropzone.dragging { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, white); outline: 0; transform: translateY(-1px); }
+.library-dropzone { display: flex; align-items: center; gap: 10px; min-height: 62px; margin-bottom: 13px; padding: 10px 12px; border: 1px dashed #cbd1dc; border-radius: 13px; background: #ffffffb8; color: #4f5969; cursor: pointer; transition: border-color .16s ease, background .16s ease; }
+.library-dropzone:hover, .library-dropzone:focus-visible, .library-dropzone.dragging { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, white); outline: 0; }
 .library-import-icon { flex: 0 0 auto; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: var(--accent); color: #fff; font-size: 1.05rem; box-shadow: 0 5px 14px color-mix(in srgb, var(--accent) 28%, transparent); }
 .library-dropzone > span:last-child { display: grid; gap: 2px; min-width: 0; }
 .library-dropzone strong { color: #343d4b; font-size: .75rem; }
