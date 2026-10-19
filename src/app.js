@@ -1,7 +1,7 @@
-import { makeAnchor, resolveAnchor, selectionOffsets } from './anchors.js';
+import { makeAnchor, resolveAnchor, selectionOffsets, passageText, passageOffset, highlightAtSelection } from './anchors.js';
 import { createWorkspace, emptyState, loadSaveMode, saveSaveMode, snapshotWorkspace } from './storage.js';
 import { loadDatabaseState, requestPersistentStorage, restoreDatabaseViews, writeDatabaseView } from './state-store.js';
-import { renderMarkdown, headingTokens, wrapMarkdownHighlight, unwrapMarkdownHighlight } from './markdown.js';
+import { renderMarkdown, headingTokens, wrapMarkdownHighlight, unwrapMarkdownHighlight, markdownHTMLText } from './markdown.js';
 import { isSourceNode, nodeLabel, sourceNode } from './node-content.js';
 import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
 import { putPdf, getPdf, deletePdf, putMedia, getMedia, deleteMedia, putSourceTextIndex, getSourceTextIndex, deleteSourceTextIndex } from './source-store.js';
@@ -1385,18 +1385,20 @@ function markdownTarget(item, targetId) {
 }
 
 function markAnchorInMarkdown(item, anchor) {
+  if (anchor?.containsMath) return false;
   const target = markdownTarget(item, anchor?.targetId);
   if (!target || typeof target.markdown !== 'string') return false;
-  const next = wrapMarkdownHighlight(target.markdown, anchor.quote, anchor.start);
+  const next = wrapMarkdownHighlight(target.markdown, anchor.quote, anchor, markdownHTMLText);
   if (next === target.markdown) return false;
   target.markdown = next;
   return true;
 }
 
 function unmarkAnchorInMarkdown(item, anchor) {
+  if (anchor?.containsMath) return false;
   const target = markdownTarget(item, anchor?.targetId);
   if (!target || typeof target.markdown !== 'string') return false;
-  const next = unwrapMarkdownHighlight(target.markdown, anchor.quote, anchor.start);
+  const next = unwrapMarkdownHighlight(target.markdown, anchor.quote, anchor, markdownHTMLText);
   if (next === target.markdown) return false;
   target.markdown = next;
   return true;
@@ -1466,6 +1468,7 @@ function renderWorkspace() {
     const targetId = preview.dataset.documentId;
     markAnchors(preview, item.highlights.filter((highlight) => highlight.targetId === targetId));
     activateMarkdownHighlightDrag(preview, targetId);
+    activateFormulaSelection(preview, targetId);
   }
   document.querySelectorAll('.topic-card').forEach(updateCardOverflow);
   document.querySelectorAll('.markdown-editor').forEach(resizeEditor);
@@ -1967,7 +1970,8 @@ function renderConnectionHandles(scene, item) {
       let moved = false;
       let replacementId = null;
       const move = (next) => {
-        if (!moved && Math.hypot(next.clientX - event.clientX, next.clientY - event.clientY) < 5) return;
+        if (next.pointerId != null && next.pointerId !== event.pointerId) return;
+    if (!moved && Math.hypot(next.clientX - event.clientX, next.clientY - event.clientY) < 5) return;
         moved = true;
         const sceneRect = scene.getBoundingClientRect();
         const x = (next.clientX - sceneRect.left) / view.zoom;
@@ -2370,8 +2374,7 @@ function renderNode(node, item) {
     content.append(editor);
   } else {
     content.innerHTML = renderMarkdown(node.document?.markdown || '');
-    content.addEventListener('mouseup', (event) => capturePassage(content, node.id, event));
-    content.addEventListener('keyup', (event) => capturePassage(content, node.id, event));
+    attachPassageSelection(content, node.id);
     content.addEventListener('dblclick', (event) => {
       if (event.target.closest('.anchor-mark')) return;
       event.stopPropagation(); beginNodeMarkdownEdit(node.id);
@@ -2464,6 +2467,7 @@ function renderNodeActions(node, item) {
 }
 
 function openLinkMenu(sourceId, grip) {
+  if (graphIsReadOnly()) return;
   closeContextMenu();
   const item = work();
   const candidates = [
@@ -2474,6 +2478,9 @@ function openLinkMenu(sourceId, grip) {
     !item.edges.some((edge) => (edge.fromId === sourceId && edge.toId === candidate.id) || (edge.toId === sourceId && edge.fromId === candidate.id)));
   if (!available.length && !isHighlightId(sourceId)) return announce('No unconnected endpoints are available.');
   const menu = el('div', { class: 'context-menu', role: 'menu', 'aria-label': 'Connect endpoint' });
+  for (const edge of item.edges.filter((edge) => isHighlightId(sourceId) && (edge.fromId === sourceId || edge.toId === sourceId))) {
+    menu.append(button(`Edit connection${edge.label ? `: ${edge.label}` : ''}`, () => selectConnection('edge', edge.id), 'context-option', { role: 'menuitem' }));
+  }
   for (const candidate of available) menu.append(button(`Connect to ${candidate.title}`, () => {
     closeContextMenu();
     const points = edgePoints(item, { fromId: sourceId, toId: candidate.id });
@@ -2501,7 +2508,7 @@ function openLinkMenu(sourceId, grip) {
   menu.querySelector('button')?.focus();
 }
 
-function startEdgeDrag(event, node, grip, preserveClick = false, prepareSource = null) {
+function startEdgeDrag(event, node, grip, preserveClick = false, prepareSource = null, onTap = null) {
   if (graphIsReadOnly() || event.button !== 0) return;
   if (!preserveClick) event.preventDefault();
   event.stopPropagation();
@@ -2534,12 +2541,19 @@ function startEdgeDrag(event, node, grip, preserveClick = false, prepareSource =
     preview.setAttribute('d', route.d);
     snapPort.setAttribute('cx', route.x2); snapPort.setAttribute('cy', route.y2);
   };
+  let finished = false;
   const finish = (next) => {
+    if (finished || (next.pointerId != null && next.pointerId !== event.pointerId)) return;
+    finished = true;
+    window.removeEventListener('blur', finish);
+    grip.removeEventListener('lostpointercapture', finish);
     window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', finish); window.removeEventListener('pointercancel', finish);
     if (target && !isHighlightId(target)) document.querySelector(`[data-node="${target}"]`)?.classList.remove('edge-target');
     preview.remove(); snapPort.remove();
     if (grip.hasPointerCapture?.(event.pointerId)) grip.releasePointerCapture(event.pointerId);
-    if (next.type !== 'pointerup' || !destination || !moved) return;
+    if (next.type !== 'pointerup') return;
+    if (!moved) { onTap?.(); return; }
+    if (!destination) return;
     const item = work();
     if (target && item.edges.some((edge) => (edge.fromId === sourceId && edge.toId === target) || (edge.fromId === target && edge.toId === sourceId))) return announce('These endpoints are already connected.');
     // An empty-space drop is the point where the connection should land, not
@@ -2576,6 +2590,7 @@ function startEdgeDrag(event, node, grip, preserveClick = false, prepareSource =
     selectedId = target && !isHighlightId(target) ? target : null;
     announce(target ? 'Endpoints connected.' : 'Node created and connected.');
   };
+  window.addEventListener('blur', finish); grip.addEventListener('lostpointercapture', finish);
   window.addEventListener('pointermove', move); window.addEventListener('pointerup', finish); window.addEventListener('pointercancel', finish); move(event);
 }
 
@@ -3409,11 +3424,14 @@ function reconnect(node) {
   try {
     const targetId = selectedPassage.targetId;
     if (targetId === node.id || isDescendant(work(), targetId, node.id)) return announce('Choose a passage outside this node and its descendants.');
-    const anchor = { ...makeAnchor(targetId, sourcePlainText(work(), targetId), selectedPassage.start, selectedPassage.end), id: node.anchor?.id || crypto.randomUUID() };
+    const anchor = { ...makeAnchor(targetId, sourcePlainText(work(), targetId), selectedPassage.start, selectedPassage.end), id: node.anchor?.id || crypto.randomUUID(), ...(selectedPassage.containsMath ? { containsMath: true } : {}) };
     change((entry) => {
       const target = entry.nodes.find((n) => n.id === node.id);
       if (target.anchor) unmarkAnchorInMarkdown(entry, target.anchor);
       target.anchor = anchor; target.parentId = null;
+      // Several nodes can share one passage. Keep their stored copies in sync
+      // so normalization cannot restore the old highlight after repair.
+      for (const linked of entry.nodes) if (linked.anchor?.id === anchor.id) linked.anchor = { ...anchor };
       const index = entry.highlights.findIndex((highlight) => highlight.id === anchor.id);
       if (index >= 0) entry.highlights[index] = { ...anchor };
       else entry.highlights.push({ ...anchor });
@@ -3449,8 +3467,7 @@ function renderPaper(item) {
   } else {
     const preview = el('div', { class: 'markdown-preview', 'data-document-id': 'article', tabindex: '0' });
     preview.innerHTML = renderMarkdown(item.article.markdown);
-    preview.addEventListener('mouseup', (event) => capturePassage(preview, 'article', event));
-    preview.addEventListener('keyup', (event) => capturePassage(preview, 'article', event));
+    attachPassageSelection(preview, 'article');
     scroll.append(preview);
   }
   paper.append(scroll);
@@ -3512,7 +3529,7 @@ function resizeEditor(editor) {
 }
 
 function textOf(element) {
-  const range = document.createRange(); range.selectNodeContents(element); return range.toString();
+  return passageText(element);
 }
 
 function markdownPlainText(markdown) {
@@ -3525,13 +3542,42 @@ function sourcePlainText(item, targetId) {
   return markdown == null ? '' : markdownPlainText(markdown);
 }
 
+function attachPassageSelection(preview, targetId) {
+  preview.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || event.target.closest('.anchor-mark')) return;
+    // Capture at the window so either selection direction can end outside the
+    // preview. Remove the previous toolbar before it can intercept the drag.
+    selectedPassage = null;
+    document.querySelector('.passage-toolbar')?.remove();
+    const finish = (next) => {
+      window.removeEventListener('mouseup', finish);
+      window.removeEventListener('pointercancel', cancel);
+      window.removeEventListener('blur', cancel);
+      if (preview.isConnected) capturePassage(preview, targetId, next);
+    };
+    const cancel = () => {
+      window.removeEventListener('mouseup', finish);
+      window.removeEventListener('pointercancel', cancel);
+      window.removeEventListener('blur', cancel);
+    };
+    window.addEventListener('mouseup', finish);
+    window.addEventListener('pointercancel', cancel);
+    window.addEventListener('blur', cancel);
+  });
+  preview.addEventListener('keyup', (event) => {
+    if (event.target.closest('.anchor-mark, .math-formula')) return;
+    capturePassage(preview, targetId, event);
+  });
+}
+
 function capturePassage(preview, targetId, event) {
   if (event.type === 'mouseup' && event.button !== 0) return;
   const offsets = selectionOffsets(preview);
   if (!offsets) { selectedPassage = null; document.querySelector('.passage-toolbar')?.remove(); return; }
   const selection = window.getSelection();
-  const rect = selection?.rangeCount ? selection.getRangeAt(0).getBoundingClientRect() : null;
-  selectedPassage = { ...offsets, targetId, x: event.clientX || rect?.right || window.innerWidth / 2, y: event.clientY || rect?.bottom || window.innerHeight / 2 };
+  const rects = selection?.rangeCount ? [...selection.getRangeAt(0).getClientRects()] : [];
+  const rect = rects[0];
+  selectedPassage = { ...offsets, targetId, x: rect?.left ?? event.clientX ?? window.innerWidth / 2, y: rect?.top ?? event.clientY ?? window.innerHeight / 2 };
   renderPassageToolbar();
 }
 
@@ -3548,12 +3594,19 @@ function markAnchors(preview, highlights) {
   const allText = textOf(preview);
   const links = highlights.map((highlight) => ({ highlight, range: resolveAnchor(highlight, allText) })).filter((entry) => entry.range);
   if (!links.length) return;
+  for (const formula of preview.querySelectorAll('[data-math-source]')) {
+    const start = passageOffset(preview, formula), end = start + formula.dataset.mathSource.length;
+    const match = links.find((link) => link.range.start < end && link.range.end > start);
+    if (!match) continue;
+    formula.classList.add('anchor-mark');
+    formula.dataset.highlight = match.highlight.id;
+    activateHighlightActions(formula, match.highlight);
+  }
   const walker = document.createTreeWalker(preview, NodeFilter.SHOW_TEXT);
   const textNodes = []; while (walker.nextNode()) textNodes.push(walker.currentNode);
   for (const textNode of textNodes) {
-    if (!textNode.nodeValue || textNode.parentElement?.closest('.katex, .anchor-mark')) continue;
-    const before = document.createRange(); before.selectNodeContents(preview); before.setEnd(textNode, 0);
-    const start = before.toString().length, end = start + textNode.nodeValue.length;
+    if (!textNode.nodeValue || textNode.parentElement?.closest('.math-formula, .katex, .anchor-mark')) continue;
+    const start = passageOffset(preview, textNode), end = start + textNode.nodeValue.length;
     const cuts = new Set([start, end]);
     for (const link of links) if (link.range.start < end && link.range.end > start) { cuts.add(Math.max(start, link.range.start)); cuts.add(Math.min(end, link.range.end)); }
     if (!links.some((link) => link.range.start < end && link.range.end > start)) continue;
@@ -3564,25 +3617,11 @@ function markAnchors(preview, highlights) {
       if (!match) fragment.append(document.createTextNode(text));
       else {
         const item = work();
-        const link = item.edges.find((edge) => edge.fromId === `h:${match.highlight.id}` || edge.toId === `h:${match.highlight.id}`);
         const linkedNode = item.nodes.find((node) => node.anchor?.id === match.highlight.id);
         const mark = el('span', { class: 'anchor-mark', tabindex: '0', role: 'button', 'data-highlight': match.highlight.id, ...(linkedNode ? { 'data-anchor-node': linkedNode.id } : {}), title: 'Click to edit connections', text });
         mark.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--accent-soft').trim();
         mark.style.borderBottomColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
-        const open = (event) => {
-          if (event.type === 'click' && !window.getSelection()?.isCollapsed) return;
-          event.stopPropagation(); selectedPassage = null;
-          if (link) selectConnection('edge', link.id);
-        };
-        mark.addEventListener('click', open);
-        mark.addEventListener('pointerdown', (event) => {
-          if (event.button !== 0) return;
-          event.stopPropagation();
-          startEdgeDrag(event, `h:${match.highlight.id}`, mark);
-        });
-        mark.addEventListener('keydown', (event) => {
-          if (event.key === 'Enter') { event.preventDefault(); open(event); }
-        });
+        activateHighlightActions(mark, match.highlight);
         fragment.append(mark);
       }
     }
@@ -3590,11 +3629,43 @@ function markAnchors(preview, highlights) {
   }
 }
 
+function activateHighlightActions(mark, anchor, register = null) {
+  const open = () => {
+    if (graphIsReadOnly()) return;
+    register?.();
+    selectedPassage = null;
+    document.querySelector('.passage-toolbar')?.remove();
+    openLinkMenu(`h:${anchor.id}`, mark);
+  };
+  mark.tabIndex = 0;
+  mark.setAttribute('role', 'button');
+  mark.title = 'Click for highlight actions; drag to connect';
+  mark.addEventListener('click', (event) => {
+    event.preventDefault(); event.stopPropagation();
+    if (event.detail === 0) open();
+  });
+  mark.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) {
+      if (event.button === 2) event.stopPropagation();
+      return;
+    }
+    event.stopPropagation();
+    startEdgeDrag(event, `h:${anchor.id}`, mark, false, register, open);
+  });
+  mark.addEventListener('contextmenu', (event) => {
+    event.preventDefault(); event.stopPropagation(); open();
+  });
+  mark.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ' || (event.shiftKey && event.key === 'F10')) {
+      event.preventDefault(); event.stopPropagation(); open();
+    }
+  });
+}
+
 function activateMarkdownHighlightDrag(preview, targetId) {
   for (const mark of preview.querySelectorAll('.markdown-highlight')) {
     if (mark.querySelector('.anchor-mark')) continue;
-    const before = document.createRange(); before.selectNodeContents(preview); before.setEnd(mark, 0);
-    const plain = textOf(preview), start = before.toString().length, end = start + textOf(mark).length;
+    const plain = textOf(preview), start = passageOffset(preview, mark), end = start + textOf(mark).length;
     const anchor = makeAnchor(targetId, plain, start, end);
     let registered = false;
     const register = () => {
@@ -3605,11 +3676,28 @@ function activateMarkdownHighlightDrag(preview, targetId) {
       mark.dataset.highlight = anchor.id;
     };
     mark.classList.add('connectable-highlight');
-    mark.title = 'Drag to connect; drop on empty space to create a node';
-    mark.addEventListener('pointerdown', (event) => {
-      if (event.button !== 0) return;
-      event.stopPropagation();
-      startEdgeDrag(event, `h:${anchor.id}`, mark, false, register);
+    activateHighlightActions(mark, anchor, register);
+  }
+}
+
+function activateFormulaSelection(preview, targetId) {
+  for (const formula of preview.querySelectorAll('[data-math-source]')) {
+    if (formula.closest('.anchor-mark, .markdown-highlight')) continue;
+    const select = () => {
+      const start = passageOffset(preview, formula), rect = formula.getBoundingClientRect();
+      selectedPassage = { targetId, start, end: start + formula.dataset.mathSource.length, containsMath: true, x: rect.left, y: rect.top };
+      renderPassageToolbar();
+    };
+    formula.tabIndex = 0;
+    formula.setAttribute('role', 'button');
+    formula.title = 'Select whole formula';
+    formula.addEventListener('click', (event) => {
+      event.preventDefault(); event.stopPropagation();
+      if (window.getSelection()?.isCollapsed) select();
+    });
+    formula.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault(); event.stopPropagation(); select();
     });
   }
 }
@@ -3715,9 +3803,15 @@ function renderPassageToolbar() {
   if (aiFeaturesEnabled) actions.push(button('Chat', () => openAiPanel({ targetId: selectedPassage.targetId, quote: sourcePlainText(work(), selectedPassage.targetId).slice(selectedPassage.start, selectedPassage.end) }), 'passage-create'));
   actions.push(button('×', () => { selectedPassage = null; toolbar.remove(); }, 'passage-close', { 'aria-label': 'Dismiss selection action' }));
   const toolbar = el('div', { class: 'passage-toolbar' }, actions);
-  toolbar.style.left = `${clamp(selectedPassage.x + 12, 12, window.innerWidth - 135)}px`;
-  toolbar.style.top = `${clamp(selectedPassage.y - 48, 72, window.innerHeight - 58)}px`;
+  toolbar.addEventListener('pointerdown', (event) => {
+    // Keep the captured selection and button alive until its click action runs.
+    event.preventDefault(); event.stopPropagation();
+  });
   document.querySelector('.workspace-shell')?.append(toolbar);
+  const bounds = toolbar.getBoundingClientRect();
+  toolbar.style.left = `${clamp(selectedPassage.x, 8, Math.max(8, window.innerWidth - bounds.width - 8))}px`;
+  const above = selectedPassage.y - bounds.height - 8;
+  toolbar.style.top = `${clamp(above >= 72 ? above : selectedPassage.y + 24, 72, Math.max(72, window.innerHeight - bounds.height - 8))}px`;
 }
 
 function createAnchoredNode() {
@@ -3725,8 +3819,9 @@ function createAnchoredNode() {
   const selection = selectedPassage; if (!selection) return;
   try {
     const item = work();
-    const existing = item.highlights.find((highlight) => highlight.targetId === selection.targetId && highlight.start === selection.start && highlight.end === selection.end);
-    const anchor = { ...(existing || makeAnchor(selection.targetId, sourcePlainText(item, selection.targetId), selection.start, selection.end)) };
+    const plain = sourcePlainText(item, selection.targetId);
+    const existing = highlightAtSelection(item.highlights, selection.targetId, plain, selection);
+    const anchor = { ...(existing || makeAnchor(selection.targetId, plain, selection.start, selection.end)), ...(selection.containsMath ? { containsMath: true } : {}) };
     addNode(null, anchor, positionForPassage(item, selection.targetId));
   }
   catch (error) { announce(error.message); }
@@ -3737,12 +3832,13 @@ function createHighlight() {
   const selection = selectedPassage; if (!selection) return;
   try {
     const item = work();
-    const existing = item.highlights.find((highlight) => highlight.targetId === selection.targetId && highlight.start === selection.start && highlight.end === selection.end);
+    const plain = sourcePlainText(item, selection.targetId);
+    const existing = highlightAtSelection(item.highlights, selection.targetId, plain, selection);
     if (existing) { selectedPassage = null; renderWorkspace(); return announce('This passage is already highlighted. Drag its highlight to connect it.'); }
-    const anchor = makeAnchor(selection.targetId, sourcePlainText(item, selection.targetId), selection.start, selection.end);
+    const anchor = { ...makeAnchor(selection.targetId, plain, selection.start, selection.end), ...(selection.containsMath ? { containsMath: true } : {}) };
     selectedPassage = null;
     change((entry) => { markAnchorInMarkdown(entry, anchor); (entry.highlights ||= []).push(anchor); });
-    announce('Highlight saved as ==marked text==. Drag it to a node or another highlight to connect.');
+    announce('Highlight saved. Drag it to a node or another highlight to connect.');
   } catch (error) { announce(error.message); }
 }
 

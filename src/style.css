@@ -1366,3 +1366,9 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
   max-width: none;
 }
 .workspace-chrome.lfos-adaptive-header .workspace-title { max-width: 100%; }
+
+/* Formula wrappers preserve KaTeX's layout while acting as one highlight. */
+.math-formula { display: inline-block; max-width: 100%; border-radius: 3px; }
+.math-formula:has(> .katex-display) { display: block; }
+.math-formula.anchor-mark { cursor: crosshair; }
+.math-formula:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

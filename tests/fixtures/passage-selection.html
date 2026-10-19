@@ -1,0 +1,71 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Passage selection regression checks</title>
+<h1>Passage selection regression checks</h1>
+<pre id="results"></pre>
+<script type="module">
+import { passageText, passageOffset, selectionOffsets, makeAnchor, resolveAnchor } from '../../src/anchors.js';
+const results = document.querySelector('#results');
+let failures = 0, checks = 0;
+function check(name, action) {
+  checks++;
+  try { action(); results.textContent += `PASS ${name}\n`; }
+  catch (error) { failures++; results.textContent += `FAIL ${name}: ${error.message}\n`; }
+}
+function equal(actual, expected) {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`${JSON.stringify(actual)} != ${JSON.stringify(expected)}`);
+}
+const root = document.createElement('div');
+root.innerHTML = 'Energy <span class="math-formula" data-math-source="$E=mc^2$"><span class="katex-mathml">duplicate annotation</span><span class="katex-html">E=mc2</span></span> end.';
+document.body.append(root);
+const formula = root.querySelector('.math-formula');
+const before = root.firstChild, after = root.lastChild, visual = formula.lastChild.firstChild;
+const selection = window.getSelection();
+check('formula source appears exactly once in anchor text', () => equal(passageText(root), 'Energy $E=mc^2$ end.'));
+check('formula and trailing text offsets use source lengths', () => {
+  equal(passageOffset(root, formula), 7);
+  equal(passageOffset(root, after), 15);
+});
+for (const reverse of [false, true]) {
+  check(`${reverse ? 'reverse' : 'forward'} partial formula selection expands to whole formula`, () => {
+    selection.setBaseAndExtent(visual, reverse ? 4 : 1, visual, reverse ? 1 : 4);
+    equal(selectionOffsets(root), { start: 7, end: 15, containsMath: true });
+  });
+  check(`${reverse ? 'reverse' : 'forward'} mixed selection includes the whole formula`, () => {
+    selection.setBaseAndExtent(reverse ? visual : before, reverse ? 3 : 0, reverse ? before : visual, reverse ? 0 : 3);
+    equal(selectionOffsets(root), { start: 0, end: 15, containsMath: true });
+  });
+  check(`${reverse ? 'reverse' : 'forward'} ordinary text selection has identical offsets`, () => {
+    selection.setBaseAndExtent(after, reverse ? 4 : 1, after, reverse ? 1 : 4);
+    equal(selectionOffsets(root), { start: 16, end: 19 });
+  });
+}
+check('selection ending at the start of a formula excludes the formula', () => {
+  selection.setBaseAndExtent(before, 0, formula, 0);
+  equal(selectionOffsets(root), { start: 0, end: 7 });
+});
+check('selection starting at the end of a formula excludes the formula', () => {
+  selection.setBaseAndExtent(formula, formula.childNodes.length, after, 5);
+  equal(selectionOffsets(root), { start: 15, end: 20 });
+});
+check('reverse selection ending outside preview keeps its inner passage', () => {
+  const outside = document.createTextNode('outside'); root.before(outside);
+  selection.setBaseAndExtent(before, 6, outside, 0);
+  equal(selectionOffsets(root), { start: 0, end: 6 });
+  outside.remove();
+});
+check('repeated formulas resolve by surrounding context after edits', () => {
+  const text = 'First $x^2$ and second $x^2$ end.';
+  const start = text.lastIndexOf('$x^2$'), anchor = makeAnchor('article', text, start, start + 5);
+  const edited = 'New intro. ' + text;
+  equal(resolveAnchor(anchor, edited), { start: start + 11, end: start + 16 });
+});
+check('saved formula anchors survive JSON round trip', () => {
+  const anchor = { ...makeAnchor('article', passageText(root), 7, 15), containsMath: true };
+  equal(resolveAnchor(JSON.parse(JSON.stringify(anchor)), passageText(root)), { start: 7, end: 15 });
+});
+selection.removeAllRanges();
+root.remove();
+results.textContent += `\n${failures ? `${failures} FAILED` : `All ${checks} checks passed`}`;
+document.title = failures ? 'FAIL: passage selection' : 'PASS: passage selection';
+</script>

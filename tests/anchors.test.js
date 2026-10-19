@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { marked } from 'marked';
-import { makeAnchor, resolveAnchor } from '../src/anchors.js';
+import { makeAnchor, resolveAnchor, highlightAtSelection } from '../src/anchors.js';
 import { createWorkspace, emptyState, loadSaveMode, loadState, saveSaveMode, saveState, saveStateWithQuotaRecovery } from '../src/storage.js';
 import { headingTokens, wrapMarkdownHighlight, unwrapMarkdownHighlight } from '../src/markdown.js';
 import { isSourceNode, nodeLabel, sourceNode } from '../src/node-content.js';
@@ -266,4 +266,59 @@ test('outline uses headings and skips fenced code', () => {
   assert.deepEqual(headingTokens('# A\n\nText\n\n```md\n# Not a heading\n```\n\n### B'), [
     { level: 1, title: 'A' }, { level: 3, title: 'B' }
   ]);
+});
+
+test('inline and display formulas retain source exactly once on an outer wrapper', () => {
+  for (const source of ['$E=mc^2$', '$\\frac{a}{b}$', '$$\nx^2 + y^2\n$$']) {
+    const html = marked.parse(source);
+    assert.equal((html.match(/data-math-source=/g) || []).length, 1);
+    assert.ok(html.includes(`data-math-source="${source}"`));
+    assert.match(html, /class="math-formula"/);
+    assert.match(html, /class="katex/);
+  }
+  const html = marked.parse('$a < b$');
+  assert.match(html, /data-math-source="\$a &lt; b\$"/);
+  assert.doesNotMatch(marked.parse('`$x$`'), /data-math-source/);
+  assert.doesNotMatch(marked.parse('```tex\n$x$\n```'), /data-math-source/);
+});
+
+test('manual highlights containing formulas preserve LaTeX commands on removal', () => {
+  const formula = '$\\frac{a_1}{b^2}$';
+  assert.equal(unwrapMarkdownHighlight(`==${formula}==`, formula), formula);
+  assert.equal(unwrapMarkdownHighlight(`==Energy ${formula} now==`, `Energy ${formula} now`), `Energy ${formula} now`);
+});
+
+
+test('highlight creation preserves partial bold formatting and rejects unsafe nesting', () => {
+  assert.equal(wrapMarkdownHighlight('A **bold word** ends', 'bold'), 'A **==bold== word** ends');
+  assert.equal(wrapMarkdownHighlight('==one two==', 'two'), '==one two==');
+  assert.equal(wrapMarkdownHighlight('==*hello*==', 'hello'), '==*hello*==');
+  assert.equal(wrapMarkdownHighlight('`hello`', 'ell'), '`hello`');
+});
+
+test('formatted and entity-containing Markdown highlights can be removed', () => {
+  for (const [source, quote, expected] of [
+    ['==*hello*==', 'hello', '*hello*'],
+    ['==[hello](https://example.com)==', 'hello', '[hello](https://example.com)'],
+    ['==a &amp; b==', 'a & b', 'a &amp; b'],
+    ['==hello **world**!==', 'hello world!', 'hello **world**!'],
+  ]) assert.equal(unwrapMarkdownHighlight(source, quote), expected);
+  assert.equal(unwrapMarkdownHighlight('`==hello==` and ==hello==', 'hello', 0), '`==hello==` and ==hello==');
+  assert.equal(unwrapMarkdownHighlight('`==hello==` and ==hello==', 'hello', 14), '`==hello==` and hello');
+});
+
+test('highlight lookup uses the current passage after document edits', () => {
+  const anchor = makeAnchor('article', 'Before. target. After.', 8, 15);
+  const text = 'New intro. Before. target. After.';
+  assert.equal(highlightAtSelection([anchor], 'article', text, { start: 19, end: 26 }), anchor);
+  assert.equal(highlightAtSelection([anchor], 'article', text, { start: 8, end: 15 }), undefined);
+  assert.equal(highlightAtSelection([anchor], 'other', text, { start: 19, end: 26 }), undefined);
+});
+
+test('removal follows repeated quote context rather than an obsolete offset', () => {
+  const original = 'First hello. Second hello. End.';
+  const start = original.lastIndexOf('hello');
+  const anchor = makeAnchor('article', original, start, start + 5);
+  const source = 'A long new introduction. First ==hello==. Second ==hello==. End.';
+  assert.equal(unwrapMarkdownHighlight(source, 'hello', anchor), 'A long new introduction. First ==hello==. Second hello. End.');
 });
