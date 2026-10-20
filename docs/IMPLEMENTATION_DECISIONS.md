@@ -32,11 +32,11 @@ The original manual slice kept AI out of Phase 1; current Chat and Agent proposa
 
 ## Agent mode
 
-Agent mode is implemented as a transport-neutral in-app workspace service rather than a localhost network API. A remote OpenAI-compatible model cannot call the user's loopback server directly, so the browser brokers a strict JSON tool protocol. Read tools expose a paginated project index, bounded Markdown ranges, and searchable imported-source passages. Mutation tools operate only on a cloned workspace and can create or edit Markdown nodes, revise the article, reparent branches, create or update links, and attach source passages issued by the service. There is no arbitrary JavaScript, file, network, deletion, source-editing, or raw-coordinate tool.
+Agent execution belongs to LFOS. LF CORE exposes project operations through the native `lfos.agent/v1` capability protocol and uses the same host runtime as LFAssistant. The existing SolOS Intelligence JSON-schema text interface supplies decisions; no backend API changes or MCP dependency are introduced.
 
-One run is limited to six model turns, eight calls per turn, 24 mutations, and 12 new nodes. Returned call batches validate atomically before touching the draft. The completed draft is stored with the chat as one proposal and can only be applied as one workspace history change; stale proposals are rejected when the workspace timestamp no longer matches. Agent origins are retained on affected article, node, edge, and source-reference records so Undo can be distinguished from acceptance without deleting the chat record.
+Project operations execute against the authoritative library instance, protected by a browser ownership lock. Mutations validate the expected revision, prepare a cloned candidate, record receipts/provenance, create an Undo snapshot, and acknowledge only after local durable persistence. Lost replies reconcile through stored receipts. Linked LFOS document autosave remains a separate durability stage. Required source indexing continues while a retained project window is hidden.
 
-Pasted text is directly searchable. PDF text is extracted page-by-page with PDF.js and stored in a separate version-2 IndexedDB cache keyed by source ID and checksum. This cache is disposable, excluded from `.lfcore` files and undo snapshots, and rebuilt from the canonical PDF bytes after import. Scanned pages remain unavailable without OCR.
+The host owns task checkpoints, task grants, tool discovery, clarification, verification, and execution budgets. Defaults are 50 model turns and 10 minutes per resumable segment. Tasks become interrupted after LFOS restart. Existing saved proposals can still be reviewed and applied, but new Agent requests use the host runtime. See [Agent integration](AGENT_MODE.md).
 
 ## Phase 4 research and consolidation
 

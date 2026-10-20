@@ -25,7 +25,7 @@ function fixture() {
   });
   const shell = element(), layer = element(), mark = element();
   const context = vm.createContext({
-    item, selectedPassage: null, state: { history: {}, redo: {} }, editGroup: null,
+    committingProject: false, item, selectedPassage: null, state: { history: {}, redo: {} }, editGroup: null,
     graphIsReadOnly: () => false, work: () => item, persist() {}, renderWorkspace() {},
     snapshotWorkspace: structuredClone, crypto, wrapMarkdownHighlight, unwrapMarkdownHighlight, markdownHTMLText: undefined,
     isHighlightId: (id) => id.startsWith('h:'),

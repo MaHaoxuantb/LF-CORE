@@ -85,7 +85,7 @@ export async function searchWorkspaceSources(workspace, query, {
   for (const source of workspace.sources || []) {
     if (allowed && !allowed.has(source.id)) continue;
     abortIfNeeded(signal);
-    if (source.type === 'text') {
+    if ((source.type === 'text' || source.type === 'web' && typeof source.text === 'string')) {
       for (const match of excerpts(source.text || '', query, terms, limit)) results.push({ sourceId: source.id, title: source.title, page: null, fullText: source.text || '', ...match });
     } else if (source.type === 'pdf') {
       const record = await ensurePdfIndex(source, { signal, onProgress });
@@ -101,7 +101,7 @@ export async function readWorkspaceSource(workspace, sourceId, { page = 1, start
   const source = (workspace.sources || []).find((entry) => entry.id === sourceId);
   if (!source) throw new Error('Source not found.');
   let text, resolvedPage = null;
-  if (source.type === 'text') text = source.text || '';
+  if ((source.type === 'text' || source.type === 'web' && typeof source.text === 'string')) text = source.text || '';
   else if (source.type === 'pdf') {
     const record = await ensurePdfIndex(source, { signal, onProgress });
     if (!Number.isInteger(Number(page)) || Number(page) < 1 || Number(page) > record.pages.length) throw new Error('PDF page is outside the document.');

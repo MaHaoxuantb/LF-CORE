@@ -8,7 +8,7 @@ export function createWebsiteAppManifest(origin) {
   return {
     schemaVersion: 1,
     id: 'com.linecoflow.lfcore',
-    version: 4,
+    version: 5,
     name: 'LF CORE',
     summary: 'LF-Core is a mind-map-like tool for explorers.',
     description: 'LF-Core is a mind-map-like tool for explorers.',
@@ -25,7 +25,7 @@ export function createWebsiteAppManifest(origin) {
       defaultZoom: 100,
       rememberWindowBounds: true,
       windowChrome: { mode: 'overlay', background: 'surface' },
-      permissions: ['files:open', 'files:save', 'ai:generate'],
+      permissions: ['files:open', 'files:save', 'ai:generate', 'agent:use', 'agent:provide'],
       fileAssociations: [
         {
           extensions: ['.lfcore'],

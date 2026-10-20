@@ -15,7 +15,7 @@ function fixture() {
   const listeners = new Map();
   let saves = 0, connections = 0;
   const context = vm.createContext({
-    console, structuredClone, item, cards, geometryPreferences: { snapping: true, alignment: true },
+    console, structuredClone, committingProject: false, item, cards, geometryPreferences: { snapping: true, alignment: true },
     GEOMETRY_GUIDES_KEY: 'geometry', localStorage: { setItem() {} },
     selectedIds: new Set(), editGroup: null, state: { history: {}, redo: {} }, view: { zoom: 1 },
     NODE_SIZE_LIMITS: { minWidth: 160, maxWidth: 920, minHeight: 80, maxHeight: 920 },

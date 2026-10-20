@@ -12,9 +12,10 @@ The configuration requests:
 
 - `files:open` for the LFOS picker, file reads, and `.lfcore` Open With activations;
 - `files:save` for Save As and in-place writes to a user-opened file;
-- `ai:generate` for optional SolOS Intelligence text generation.
+- `ai:generate` for SolOS Intelligence text generation;
+- `agent:use` for LFOS task controls and `agent:provide` for the live project provider.
 
-It declares LF CORE as the default handler for `.lfcore` and `application/vnd.linecoflow.project+json`. The website manifest is now version 4. Existing Store installations must apply its update and enable the newly requested AI permission to use SolOS Intelligence. LFOS owns the first-use cloud-processing consent prompt.
+It declares LF CORE as the default handler for `.lfcore` and `application/vnd.linecoflow.project+json`. The website manifest is now version 5. Existing Store installations must apply its update and enable the newly requested AI permission to use SolOS Intelligence. LFOS owns the first-use cloud-processing consent prompt.
 
 ## Runtime behavior
 
@@ -42,7 +43,7 @@ and offers None, Low, Medium (default), and High.
 Chat and workspace-agent requests use `ai.responses.create`, map system prompts to
 developer messages, and consume text deltas while awaiting successful completion.
 Requests use the documented 16K maximum output budget to support complete drafts.
-The existing agent tools still execute locally with changes staged for review.
+New Agent tasks run in the LFOS host and apply project operations through the native capability protocol. Historical staged proposals remain reviewable. See [Agent integration](AGENT_MODE.md).
 Stop and panel teardown cancel generation. Service and permission failures are
 shown without silently switching providers. Standalone browser and Electron
 windows continue to use OpenAI-compatible endpoints.
@@ -62,7 +63,7 @@ Use an LFOS installation whose `.app` configuration contains both file permissio
 9. the same deployment still opens and downloads projects in an ordinary top-level browser;
 10. home and project headers share the LFOS controls without overlap at normal size, restore the system title bar when too narrow, and support dragging the window from empty header space.
 
-Also verify that AI Settings offers SolOS Intelligence only with `ai.responses.text`, each thinking effort reaches the SDK request, chat streams, agent proposals stay staged, Stop cancels, and revoked AI permission shows a failure without sending to another provider.
+Also verify that AI Settings offers SolOS Intelligence only with `ai.responses.text`, each thinking effort reaches the SDK request, chat streams, Agent mode uses the host runtime, direct project changes have Undo, Stop cancels, and revoked AI permission shows a failure without sending to another provider.
 
 Run `npm test` and `npm run build` for automated adapter and bundle checks.
 # Background processing and activity

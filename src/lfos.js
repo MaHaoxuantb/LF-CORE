@@ -62,6 +62,8 @@ export class LFOSIntegration {
     return this.environment.capabilities?.includes(capability) === true;
   }
 
+  get agentAvailable() { return this.has('agent.tasks') && this.has('agent.provider') && this.intelligenceAvailable && !!this.lfos?.agent; }
+
   get intelligenceAvailable() {
     return this.has('ai.responses.text') && typeof this.lfos?.ai?.responses?.create === 'function';
   }

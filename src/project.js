@@ -51,11 +51,16 @@ export function serializeProject(workspace, chats = [], fileBytes = new Map(), e
     if (!bytes) throw new Error(`The ${source.type === 'pdf' ? 'PDF' : 'media file'} “${source.title || source.fileName || 'Untitled item'}” is missing. Reattach it before downloading this project.`);
     files[source.id] = { encoding: 'base64', data: bytesToBase64(bytes) };
   }
+  const exportedWorkspace = structuredClone(workspace);
+  delete exportedWorkspace.agentReceipts;
+  delete exportedWorkspace.agentArtifacts;
+  const exportedChats = structuredClone(Array.isArray(chats) ? chats : []);
+  for (const chat of exportedChats) for (const message of chat.messages || []) delete message.agentTaskId;
   return JSON.stringify({
     format: PROJECT_FORMAT,
     version: PROJECT_VERSION,
     exportedAt,
-    project: { workspace: structuredClone(workspace), chats: structuredClone(Array.isArray(chats) ? chats : []) },
+    project: { workspace: exportedWorkspace, chats: exportedChats },
     files
   });
 }
@@ -121,6 +126,9 @@ export function parseProject(serialized, { uuid = () => crypto.randomUUID(), now
   const originalUpdatedAt = workspace.updatedAt;
   remapSourceIds(workspace, idMap);
   workspace.id = uuid();
+  workspace.projectRevision = 0;
+  delete workspace.agentReceipts;
+  delete workspace.agentArtifacts;
   workspace.createdAt = now();
   workspace.updatedAt = workspace.createdAt;
   const chats = Array.isArray(bundle.project.chats) ? structuredClone(bundle.project.chats) : [];
