@@ -806,7 +806,7 @@ The Store review should confirm that every claimed type opens safely and that re
 
 # AI text generation
 
-The LFOS AI Framework lets a web app generate text without owning an AI-provider key or infrastructure. Version 1 is available only in SolOS. The system chooses the model, sends transient request text through the SolOS backend to OpenAI, and enforces one shared account allowance plus rate and concurrency limits.
+The LFOS AI Framework lets a web app generate text without owning an AI-provider key or infrastructure. Version 1 is available only in SolOS. The system chooses the model, sends transient request text through the SolOS backend to OpenAI, and enforces one account allowance plus rate and concurrency limits.
 
 Tools, function calls, web search, MCP, files, images, audio, background jobs, stored conversations, provider headers, and model selection are not available.
 
@@ -827,7 +827,7 @@ Declare the permission in the installed app configuration:
 }
 ```
 
-On first use, LFOS explains that text leaves the encrypted SolOS environment for OpenAI processing and uses the shared AI allowance. The parent shell owns this prompt. Approval is stored on the device and is invalidated after an app identity, origin, catalog version, or permission-manifest change.
+On first use, LFOS explains that text leaves the encrypted SolOS environment for OpenAI processing and uses the AI allowance. The parent shell owns this prompt. Approval is stored on the device and is invalidated after an app identity, origin, catalog version, or permission-manifest change.
 
 Check runtime support after connecting:
 
@@ -915,7 +915,7 @@ Generation may fail with these stable service codes:
 
 | Code | Meaning |
 | --- | --- |
-| `ai_allowance_exhausted` | The shared account allowance is unavailable until its displayed refresh date. |
+| `ai_allowance_exhausted` | The account allowance is unavailable until its displayed refresh date. |
 | `ai_rate_limited` | Too many attempts were made; inspect `retryAfterSeconds` when present. |
 | `ai_busy` | The account already has the allowed number of concurrent requests. |
 | `ai_request_too_large` | A body, text, schema, token, message, or output limit was exceeded. |
@@ -1892,7 +1892,7 @@ This page separates available behavior from planned platform work. Website-manif
 | `files.save` / `files.write` | Available | Save As destination dialog, permission-checked in-place writes to opened files, and 50 MB per-write limit. |
 | `files.release` | Available | Explicitly expires an app-window file handle. |
 | File associations | Available | Built-in and web apps share extension/MIME resolution, Open with menus, defaults, and activation handles. |
-| AI text responses | Available in SolOS | Permissioned streaming text and structured-text output through a backend-controlled model and shared allowance. |
+| AI text responses | Available in SolOS | Permissioned streaming text and structured-text output through a backend-controlled model and allowance. |
 | System application data | Available for system apps | Durable app-owned files live under `/System/ApplicationData/<app-name>`; public hosted apps do not yet receive unrestricted path access. |
 | SDK v1 ES module and declarations | Available | Served at `/sdk/v1/lfos.js` and `/sdk/v1/lfos.d.ts`. |
 | Appearance API | Available | Live color scheme, accent, reduced-motion, and touch-optimization values through `get()` and `subscribe()`. |

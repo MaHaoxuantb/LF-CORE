@@ -3948,7 +3948,7 @@ async function renderSettings(activeTab = 'ai') {
   const effort = el('select', { 'aria-label': 'Thinking effort' }, ...THINKING_EFFORTS.map(value => el('option', { value, text: value[0].toUpperCase() + value.slice(1) })));
   effort.value = saved.thinkingEffort;
   const solosFields = el('div', {}, el('label', { text: 'THINKING EFFORT' }), effort,
-    el('p', { class: 'ai-muted', text: 'SolOS Intelligence uses your shared AI allowance and a model managed by SolOS. No API key is needed. LFOS asks for cloud-processing approval on first use.' }));
+    el('p', { class: 'ai-muted', text: 'SolOS Intelligence uses your AI allowance and a model managed by SolOS. No API key is needed. LFOS asks for cloud-processing approval on first use.' }));
   const endpointFields = el('fieldset', { class: 'ai-settings-fields' });
   const endpoint = el('input', { type: 'url', value: saved.endpoint, 'aria-label': 'API endpoint', placeholder: 'https://api.openai.com/v1' });
   const models = el('textarea', { 'aria-label': 'Models, one per line', placeholder: 'One model ID per line' }); models.value = saved.models.join('\n');
@@ -4284,7 +4284,7 @@ function applyAgentChangeSet(proposal) {
 function renderAgentProposalCard(proposal, item) {
   const status = agentProposalStatus(item, proposal);
   const runLabel = proposal.runStatus === 'ready' ? 'Ready for review' : proposal.runStatus === 'limit_reached' ? 'Stopped at step limit' : 'Incomplete run';
-  const card = el('section', { class: 'agent-proposal' },
+  const card = el('section', { class: 'agent-proposal', 'data-agent-task': task.id },
     el('div', { class: 'agent-proposal-heading' }, el('strong', { text: 'Agent workspace proposal' }), el('span', { text: status === 'accepted' ? 'Applied' : status === 'undone' ? 'Undone' : status === 'discarded' ? 'Discarded' : runLabel })),
     proposal.message ? el('p', { class: 'agent-proposal-summary', text: proposal.message }) : null);
   const created = proposal.operations.filter((operation) => operation.tool === 'create_node');
@@ -4353,16 +4353,22 @@ function currentAgentFocus() {
 async function executeAgentRequest(item, chat, question) {
   if (!question || aiPanel.busy) return;
   if (!lfos.agentAvailable) { aiPanel.error = 'Agent mode requires LFOS with SolOS Intelligence and agent permission.'; renderAiPanel(); return; }
+    const active = [...hostAgentTasks.values()].find(task => task.conversationId === chat.id && task.projectId === item.id && !['completed', 'cancelled'].includes(task.status));
   const scope = aiPanel;
   scope.busy = true; scope.error = ''; scope.draft = '';
-  chat.messages.push({ id: crypto.randomUUID(), role: 'user', content: question, createdAt: new Date().toISOString() });
+  if (!active) chat.messages.push({ id: crypto.randomUUID(), role: 'user', content: question, createdAt: new Date().toISOString() });
   if (chat.title === 'New chat') chat.title = question.slice(0, 56);
   renderAiPanel();
   try {
+    if (active) {
+      if (!['running', 'waiting'].includes(active.status)) throw new Error('Resume this task before sending instructions, or stop it to start new work.');
+      receiveHostAgentTask(await lfos.lfos.agent.tasks.provideInput(active.id, question));
+      return;
+    }
     await registerProjectProvider();
     const task = await lfos.lfos.agent.tasks.start({ request: question, conversationId: chat.id, sessionId: projectSession(item).id, context: JSON.stringify({ focus: currentAgentFocus().focus, history: chat.messages.slice(-12).map(({ role, content }) => ({ role, content: content.slice(0, 1000) })) }).slice(0, 16000), effort: loadModelSettings().thinkingEffort });
     receiveHostAgentTask(task);
-  } catch (error) { scope.error = error.message; }
+  } catch (error) { scope.error = error.message; scope.draft = question; }
   finally { scope.busy = false; pendingChangedIds.add(item.id); stateRevision++; persist(false, item.id, false); if (scope === aiPanel) renderAiPanel(); }
 }
 
@@ -4482,6 +4488,14 @@ function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer =
       resizeInput();
     } else form.requestSubmit();
   });
+  const liveTask = agentMode && [...hostAgentTasks.values()].find(task => task.conversationId === chat.id && task.projectId === item.id && task.status === 'running');
+  if (liveTask) {
+    input.placeholder = 'Add instructions while the agent works…';
+    form.append(button('Stop agent', async () => {
+      try { receiveHostAgentTask(await lfos.lfos.agent.tasks.cancel(liveTask.id)); }
+      catch (error) { aiPanel.error = error.message; renderAiPanel(); }
+    }, 'chat-stop'));
+  }
   const stopping = !agentMode && aiPanel.busy;
   const send = button(stopping ? 'Stop' : 'Send', () => {
     if (stopping) aiPanel.chatController?.abort();
@@ -4918,28 +4932,77 @@ function receiveHostAgentTask(task) {
     pendingChangedIds.add(attachedProject.id); stateRevision++;
     void persist(false, attachedProject.id, false);
   }
+  if (attachedProject && task.conversationId) {
+    const chats = state.chats[attachedProject.id] ||= [];
+    if (!chats.some(chat => chat.id === task.conversationId)) chats.push({ id: task.conversationId, title: task.request.slice(0, 56), assistantMode: 'agent', createdAt: task.createdAt || task.updatedAt, updatedAt: task.updatedAt, context: { mode: 'article', nodeIds: [], passage: null }, messages: [] });
+  }
   for (const [workspaceId, chats] of Object.entries(state.chats)) {
     if (task.projectId && task.projectId !== workspaceId) continue;
     const chat = chats.find(entry => entry.id === task.conversationId);
     if (!chat) continue;
     let message = chat.messages.find(entry => entry.agentTaskId === task.id);
-    if (!message) { message = { id: crypto.randomUUID(), role: 'assistant', model: 'SolOS Intelligence', provider: 'solos', agentTaskId: task.id, createdAt: task.updatedAt, content: '' }; chat.messages.push(message); }
+    if (!message) {
+      if (chat.messages.at(-1)?.role !== 'user' || chat.messages.at(-1)?.content !== task.request) chat.messages.push({ id: crypto.randomUUID(), role: 'user', content: task.request, createdAt: task.createdAt || task.updatedAt });
+      message = { id: crypto.randomUUID(), role: 'assistant', model: 'SolOS Intelligence', provider: 'solos', agentTaskId: task.id, createdAt: task.updatedAt, content: '' }; chat.messages.push(message); }
     message.content = task.status === 'completed' ? task.summary : task.question || task.error || [...task.events].reverse().find(event => event.type === 'progress')?.message || task.status;
-    message.agentTask = { id: task.id, status: task.status, summary: task.summary, plan: task.plan, evidence: task.evidence, error: task.error, question: task.question, events: task.events.slice(-20) };
+    message.agentTask = { id: task.id, status: task.status, summary: task.summary, plan: task.plan, planStatus: task.planStatus, evidence: task.evidence, error: task.error, question: task.question, events: task.events.slice(-20) };
     chat.updatedAt = task.updatedAt;
     pendingChangedIds.add(workspaceId); stateRevision++;
     void persist(false, workspaceId, false);
-    if (aiPanel?.chatId === chat.id) renderAiPanel({ focusComposer: false });
+    if (aiPanel?.chatId === chat.id) updateHostAgentTaskView(task);
     break;
   }
 }
+function updateHostAgentTaskView(task) {
+  const transcript = document.querySelector('.ai-panel .ai-chat-messages');
+  const card = transcript && [...transcript.querySelectorAll('[data-agent-task]')].find(node => node.dataset.agentTask === task.id);
+  if (!card) { renderAiPanel({ focusComposer: false }); return; }
+  const atBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 80;
+  const scrollTop = transcript.scrollTop;
+  const open = new Set([...card.querySelectorAll('details[open][data-activity]')].map(node => node.dataset.activity));
+  const next = renderHostAgentTask(task);
+  for (const node of next.querySelectorAll('details[data-activity]')) node.open = open.has(node.dataset.activity);
+  // Keep an in-progress clarification reply intact across host updates.
+  const input = card.querySelector('input'), nextInput = next.querySelector('input');
+  const focused = input && document.activeElement === input;
+  const selection = focused ? [input.selectionStart, input.selectionEnd] : null;
+  if (input && nextInput) nextInput.replaceWith(input);
+  card.replaceWith(next);
+  if (focused) { input.focus({ preventScroll: true }); input.setSelectionRange(...selection); }
+  const bubble = next.parentElement;
+  const output = bubble.querySelector('.ai-output');
+  if (output) { output.innerHTML = renderMarkdown(task.status === 'completed' ? task.summary : task.question || task.error || ''); }
+  transcript.scrollTop = atBottom ? transcript.scrollHeight : scrollTop;
+}
 function renderHostAgentTask(task) {
   if (!task) return el('p', { text: 'Reconnect LFOS to inspect this task.' });
-  const card = el('section', { class: 'agent-proposal' }, el('strong', { text: `LFOS Agent · ${task.status}` }));
-  if (task.plan?.length) card.append(el('ol', {}, ...task.plan.map(step => el('li', { text: step }))));
-  if (task.events?.length) {
-    const details = el('details', {}, el('summary', { text: 'Activity and changes' }));
-    details.append(el('ol', {}, ...task.events.slice(-20).map(event => el('li', { text: event.message })))); card.append(details);
+  const card = el('section', { class: 'agent-proposal', 'data-agent-task': task.id }, el('strong', { text: `LFOS Agent · ${task.status}` }));
+  if (task.plan?.length) card.append(el('ol', {}, ...task.plan.map((step, index) => el('li', { text: `${task.planStatus?.[index] === 'completed' ? '✓' : task.planStatus?.[index] === 'in_progress' ? '◉' : '○'} ${step}` }))));
+  for (const [index, event] of (task.events || []).entries()) {
+    if (event.type === 'tool-start') {
+      const result = task.events.find(entry => ['result', 'error'].includes(entry.type) && entry.data?.operationId === event.data?.operationId);
+      const status = result?.type === 'error' ? 'Failed' : result ? 'Done' : task.status === 'running' ? 'Running' : 'Interrupted';
+      const details = el('details', { 'data-activity': String(index) }, el('summary', { text: `${status} · ${event.message}` }));
+      details.append(el('pre', { text: JSON.stringify(event.data?.arguments, null, 2) }));
+      if (result) details.append(el('pre', { text: result.type === 'error' ? result.message : JSON.stringify(Object.fromEntries(Object.entries(result.data || {}).filter(([key]) => !['changes', 'moreChanges'].includes(key))), null, 2) }));
+      card.append(details);
+    } else if (['progress', 'user', 'verification', 'error'].includes(event.type) && !event.data?.operationId) card.append(el('p', { text: event.message }));
+  }
+  const project = state.workspaces.find(item => item.id === task.projectId) || work();
+  const changes = (project?.agentHistory || []).filter(entry => entry.runId === task.id);
+  if (changes.length) {
+    const history = el('details', { 'data-activity': 'changes' }, el('summary', { text: `Project changes · ${changes.length} operations` }));
+    for (const transaction of changes) for (const change of transaction.changes || []) {
+      const title = change.after?.title || change.before?.title || change.id;
+      const details = el('details', { 'data-activity': `${transaction.operationIds[0]}:${change.id}` }, el('summary', { text: `${!change.before ? 'Created' : !change.after ? 'Deleted' : 'Edited'} · ${title}` }));
+      const before = change.before?.document?.markdown ?? change.before?.markdown;
+      const after = change.after?.document?.markdown ?? change.after?.markdown;
+      if (typeof before === 'string' || typeof after === 'string') details.append(renderProposalDiff(before || '', after || '').view);
+      else details.append(el('pre', { text: JSON.stringify({ before: change.before, after: change.after }, null, 2) }));
+      if (change.id.startsWith('nodes:') && change.after && project.id === currentId) details.append(button('Show on canvas', () => { selectedId = change.after.id; renderWorkspace(); }));
+      history.append(details);
+    }
+    card.append(history);
   }
   for (const event of task.events || []) if (event.type === 'result' && event.data?.sourceId && event.data?.fileName) {
     card.append(button(`Download ${event.data.fileName}`, async () => {

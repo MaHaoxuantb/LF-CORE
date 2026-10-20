@@ -103,3 +103,13 @@ project ID and session. Reusing an old session ID in another installed app does
 not inherit its tasks or pending operation receipts. Malformed operation-status
 responses preserve the pending operation and pause work; they never count as
 proof that a write was absent.
+
+## Conversation and review
+
+Agent messages sent while a task runs steer that task at its next safe dispatch boundary. A running write finishes and retains its receipt; unused calls from an older decision are skipped. Pause/Resume/Stop remain available, and follow-up requests after completion use the same conversation context.
+
+The transcript shows plan status, progress, tool arguments and results, and a project change review. Durable history stores changed records before and after each transaction. Markdown changes have diffs; graph/source changes show record changes with canvas navigation for existing nodes. LFOS clients receive bounded previews and an explicit truncation notice. Older count-only history remains preserved but cannot reconstruct past diffs.
+
+`verify_changes` checks transaction results against the actual current records, including later edits from the same task. Intervening conflicting edits produce mismatches. Completion requires these checks and model-reported evidence; this is not a guarantee of semantic correctness.
+
+Task events update the task card without replacing the composer. Expanded details and transcript scroll position are retained. Full LFOS/SolOS and actual Safari acceptance testing is still required before declaring that environment supported.

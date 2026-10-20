@@ -7,6 +7,7 @@ const id = { type: 'string', maxLength: 200 };
 const integer = { type: 'integer', minimum: 0 };
 const schema = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const definitions = {
+  verify_changes: ['Verify committed operations against current project records; return mismatches and verified operation IDs', 'read', { operationIds: { type: 'array', items: id, minItems: 1, maxItems: 100 } }, ['operationIds']],
   get_project_index: ['Read the project index', 'read', { cursor: integer, sourceCursor: integer, limit: { type: 'integer', minimum: 1, maximum: 100 } }, []],
   search_project: ['Search project documents and research records', 'read', { query: string, cursor: integer, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['query']],
   read_document: ['Read a Markdown document', 'read', { targetId: id, startLine: { type: 'integer', minimum: 1 }, endLine: { type: 'integer', minimum: 1 } }, ['targetId']],
@@ -93,7 +94,19 @@ export class ProjectAgentService {
     service.aliases = new Map(this.taskAliases.get(passageKey) || []);
     const args = { ...call.arguments };
     let result;
-    if (tool === 'get_project_index') {
+    if (tool === 'verify_changes') {
+      const requested = new Set(args.operationIds);
+      const history = (workspace.agentHistory || []).filter(entry => entry.runId === call.taskId && entry.operationIds.some(id => requested.has(id)));
+      const expected = new Map();
+      for (const transaction of history) for (const change of transaction.changes || []) expected.set(change.id, change.after);
+      // Later changes in the same task supersede earlier versions of a record.
+      for (const transaction of workspace.agentHistory || []) if (transaction.runId === call.taskId) for (const change of transaction.changes || []) if (expected.has(change.id)) expected.set(change.id, change.after);
+      const actual = projectRecords(workspace);
+      const mismatches = [...expected].filter(([id, value]) => JSON.stringify(actual.get(id) ?? null) !== JSON.stringify(value)).map(([id]) => id);
+      const found = new Set(history.flatMap(entry => entry.operationIds));
+      for (const id of requested) if (!found.has(id)) mismatches.push(`Unknown operation: ${id}`);
+      result = { verifiedOperations: mismatches.length ? [] : [...requested], mismatches, checkedRecords: [...expected.keys()] };
+    } else if (tool === 'get_project_index') {
       const cursor = args.cursor || 0, sourceCursor = args.sourceCursor || 0, limit = Math.min(args.limit || 50, 100);
       result = {
         workspace: { id: workspace.id, title: workspace.title },
@@ -210,7 +223,7 @@ export class ProjectAgentService {
     const next = service.draft;
     next.projectRevision = revision + 1; next.updatedAt = new Date().toISOString();
     if (next.article.markdown !== workspace.article.markdown) next.article.revision = (workspace.article.revision || 0) + 1;
-    result = { ...result, revision: next.projectRevision };
+    result = { ...result, revision: next.projectRevision, verificationRequired: true };
     const origin = { kind: 'agent', runId: call.taskId, operationIds: [call.operationId], acceptedAt: next.updatedAt };
     if (result.sourceId) { const source = next.sources.find(entry => entry.id === result.sourceId); if (source) (source.origins ||= []).push(origin); }
     if (result.recordId) for (const records of Object.values(next.research || {})) { const record = records.find(entry => entry.id === result.recordId); if (record) (record.origins ||= []).push(origin); }
@@ -219,12 +232,35 @@ export class ProjectAgentService {
       if (target) (target.origins ||= []).push(origin);
     }
     for (const node of next.nodes) for (const reference of node.sourceRefs || []) if (reference.agentRunId === null) reference.agentRunId = call.taskId;
-    (next.agentHistory ||= []).push({ ...origin, tool, before: mutationSummary(workspace), after: mutationSummary(next) });
+    const changes = projectChanges(workspace, next);
+    (next.agentHistory ||= []).push({ ...origin, tool, before: mutationSummary(workspace), after: mutationSummary(next), changes });
+    result.changes = changes.slice(0, 10).map(change => {
+      const text = record => record == null ? '' : record.document?.markdown ?? record.markdown ?? JSON.stringify(record, null, 2);
+      const before = text(change.before), after = text(change.after);
+      return { id: change.id, title: change.after?.title || change.before?.title || change.id, before: before.slice(0, 1500), after: after.slice(0, 1500), truncated: before.length > 1500 || after.length > 1500 };
+    });
+    result.moreChanges = changes.length > 10;
+
     (next.agentReceipts ||= {})[call.operationId] = { request: requestFingerprint, result };
     await this.commit(workspace, next, call);
     this.taskAliases.set(passageKey, service.aliases);
     return result;
   }
+}
+function projectRecords(project) {
+  return new Map([
+    ['article', project.article], ['project', { title: project.title }],
+    ...['nodes', 'edges', 'sources'].flatMap(kind => project[kind].map(record => [`${kind}:${record.id}`, record])),
+    ...Object.entries(project.research || {}).flatMap(([kind, records]) => records.map(record => [`research:${kind}:${record.id}`, record])),
+  ]);
+}
+export function projectChanges(before, after) {
+  const previous = projectRecords(before), next = projectRecords(after);
+  return [...new Set([...previous.keys(), ...next.keys()])].flatMap(id => {
+    const old = previous.get(id), value = next.get(id);
+    if (JSON.stringify(old) === JSON.stringify(value)) return [];
+    return [{ id, before: old ? structuredClone(old) : null, after: value ? structuredClone(value) : null }];
+  });
 }
 function mutationSummary(workspace) { return { revision: workspace.projectRevision || 0, title: workspace.title, nodes: workspace.nodes.length, edges: workspace.edges.length, sources: workspace.sources.length }; }
 export function validateProject(workspace) {

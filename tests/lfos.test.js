@@ -205,7 +205,7 @@ test('SolOS streams map roles, forward each thinking effort, and await completio
 
 test('SolOS rejects failed completion even after partial output and cancels stream', async () => {
   let cancels = 0;
-  const failure = Object.assign(new Error('Shared allowance exhausted'), { code: 'ai_allowance_exhausted' });
+  const failure = Object.assign(new Error('Allowance exhausted'), { code: 'ai_allowance_exhausted' });
   const integration = intelligenceIntegration({ create: async () => ({
     completed: Promise.reject(failure), cancel: () => cancels++,
     async *[Symbol.asyncIterator]() { yield { type: 'output_text.delta', delta: 'Partial' }; }

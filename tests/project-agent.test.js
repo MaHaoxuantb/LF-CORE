@@ -178,3 +178,28 @@ test('attachment reads reject missing bytes and invalid ranges, preserving valid
   assert.equal(result.totalBytes, 3);
   assert.equal(result.data, btoa('BC'));
 });
+
+test('durable changes retain exact records and verification detects intervening edits', async () => {
+  const f = fixture();
+  const before = f.workspace.article.markdown;
+  const result = await f.call('edit_markdown', { targetId: 'article', before: 'Original', after: 'Revised' }, { operationId: 'edit-review' });
+  assert.equal(result.verificationRequired, true);
+  const change = f.workspace.agentHistory.at(-1).changes.find(change => change.id === 'article');
+  assert.equal(change.before.markdown, before);
+  assert.equal(change.after.markdown, '# Article\n\nRevised paragraph.');
+  const verified = await f.call('verify_changes', { operationIds: ['edit-review'] });
+  assert.deepEqual(verified.verifiedOperations, ['edit-review']);
+  f.workspace.article.markdown = '# User changed this';
+  const mismatch = await f.call('verify_changes', { operationIds: ['edit-review'] });
+  assert.deepEqual(mismatch.verifiedOperations, []);
+  assert.deepEqual(mismatch.mismatches, ['article']);
+});
+
+test('verification checks the final state of sequential edits to the same record', async () => {
+  const f = fixture();
+  await f.call('replace_markdown', { targetId: 'article', markdown: '# First' }, { operationId: 'first' });
+  await f.call('replace_markdown', { targetId: 'article', markdown: '# Second' }, { operationId: 'second' });
+  const result = await f.call('verify_changes', { operationIds: ['first', 'second'] });
+  assert.deepEqual(result.verifiedOperations, ['first', 'second']);
+  assert.deepEqual((await f.call('verify_changes', { operationIds: ['missing'] })).verifiedOperations, []);
+});
