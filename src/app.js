@@ -4284,7 +4284,7 @@ function applyAgentChangeSet(proposal) {
 function renderAgentProposalCard(proposal, item) {
   const status = agentProposalStatus(item, proposal);
   const runLabel = proposal.runStatus === 'ready' ? 'Ready for review' : proposal.runStatus === 'limit_reached' ? 'Stopped at step limit' : 'Incomplete run';
-  const card = el('section', { class: 'agent-proposal', 'data-agent-task': task.id },
+  const card = el('section', { class: 'agent-proposal' },
     el('div', { class: 'agent-proposal-heading' }, el('strong', { text: 'Agent workspace proposal' }), el('span', { text: status === 'accepted' ? 'Applied' : status === 'undone' ? 'Undone' : status === 'discarded' ? 'Discarded' : runLabel })),
     proposal.message ? el('p', { class: 'agent-proposal-summary', text: proposal.message }) : null);
   const created = proposal.operations.filter((operation) => operation.tool === 'create_node');
@@ -4353,7 +4353,7 @@ function currentAgentFocus() {
 async function executeAgentRequest(item, chat, question) {
   if (!question || aiPanel.busy) return;
   if (!lfos.agentAvailable) { aiPanel.error = 'Agent mode requires LFOS with SolOS Intelligence and agent permission.'; renderAiPanel(); return; }
-    const active = [...hostAgentTasks.values()].find(task => task.conversationId === chat.id && task.projectId === item.id && !['completed', 'cancelled'].includes(task.status));
+  const active = [...hostAgentTasks.values()].find(task => task.conversationId === chat.id && task.projectId === item.id && !['completed', 'cancelled'].includes(task.status));
   const scope = aiPanel;
   scope.busy = true; scope.error = ''; scope.draft = '';
   if (!active) chat.messages.push({ id: crypto.randomUUID(), role: 'user', content: question, createdAt: new Date().toISOString() });
@@ -4491,10 +4491,7 @@ function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer =
   const liveTask = agentMode && [...hostAgentTasks.values()].find(task => task.conversationId === chat.id && task.projectId === item.id && task.status === 'running');
   if (liveTask) {
     input.placeholder = 'Add instructions while the agent works…';
-    form.append(button('Stop agent', async () => {
-      try { receiveHostAgentTask(await lfos.lfos.agent.tasks.cancel(liveTask.id)); }
-      catch (error) { aiPanel.error = error.message; renderAiPanel(); }
-    }, 'chat-stop'));
+    form.append(agentStopButton(liveTask));
   }
   const stopping = !agentMode && aiPanel.busy;
   const send = button(stopping ? 'Stop' : 'Send', () => {
@@ -4953,7 +4950,27 @@ function receiveHostAgentTask(task) {
     break;
   }
 }
+function agentStopButton(task) {
+  const control = button('Stop agent', async () => {
+    try { receiveHostAgentTask(await lfos.lfos.agent.tasks.cancel(task.id)); }
+    catch (error) { aiPanel.error = error.message; renderAiPanel(); }
+  }, 'chat-stop');
+  control.dataset.agentStop = task.id;
+  return control;
+}
+function syncHostAgentComposer(task) {
+  if (currentChat()?.id !== task.conversationId) return;
+  const form = document.querySelector('.ai-panel .ai-chat-composer');
+  if (!form) return;
+  const stop = form.querySelector('[data-agent-stop]');
+  if (stop && stop.dataset.agentStop !== task.id) return;
+  if (stop && task.status !== 'running') stop.remove();
+  if (!stop && task.status === 'running') form.append(agentStopButton(task));
+  const input = form.querySelector('textarea');
+  if (input) input.placeholder = task.status === 'running' ? 'Add instructions while the agent works…' : 'Describe the workspace you want the agent to build…';
+}
 function updateHostAgentTaskView(task) {
+  syncHostAgentComposer(task);
   const transcript = document.querySelector('.ai-panel .ai-chat-messages');
   const card = transcript && [...transcript.querySelectorAll('[data-agent-task]')].find(node => node.dataset.agentTask === task.id);
   if (!card) { renderAiPanel({ focusComposer: false }); return; }

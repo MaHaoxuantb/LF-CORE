@@ -113,3 +113,18 @@ The transcript shows plan status, progress, tool arguments and results, and a pr
 `verify_changes` checks transaction results against the actual current records, including later edits from the same task. Intervening conflicting edits produce mismatches. Completion requires these checks and model-reported evidence; this is not a guarantee of semantic correctness.
 
 Task events update the task card without replacing the composer. Expanded details and transcript scroll position are retained. Full LFOS/SolOS and actual Safari acceptance testing is still required before declaring that environment supported.
+
+
+The verification tool accepts 1–100 operation IDs. Capability descriptors use
+only the LFOS-supported schema vocabulary; do not advertise `minItems`.
+Verification and durable review include removed highlights, per-node layout,
+and export artifact metadata. File bytes and semantic quality require separate
+checks. Recovered write receipts preserve the same bounded change previews.
+
+
+Ordinary conversation that needs no tools (for example, a greeting) completes
+without a tool read or evidence. Once a task attempts tools, it must observe and
+verify the results before completion; pending write verification and unknown
+outcomes still block completion. Final answers appear only after acceptance,
+not as progress messages on each rejected completion attempt. Repeated
+verification status is coalesced instead of flooding the transcript.

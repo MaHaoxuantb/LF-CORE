@@ -7,7 +7,7 @@ const id = { type: 'string', maxLength: 200 };
 const integer = { type: 'integer', minimum: 0 };
 const schema = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const definitions = {
-  verify_changes: ['Verify committed operations against current project records; return mismatches and verified operation IDs', 'read', { operationIds: { type: 'array', items: id, minItems: 1, maxItems: 100 } }, ['operationIds']],
+  verify_changes: ['Verify committed operations against current project records; return mismatches and verified operation IDs', 'read', { operationIds: { type: 'array', items: id, maxItems: 100 } }, ['operationIds']],
   get_project_index: ['Read the project index', 'read', { cursor: integer, sourceCursor: integer, limit: { type: 'integer', minimum: 1, maximum: 100 } }, []],
   search_project: ['Search project documents and research records', 'read', { query: string, cursor: integer, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['query']],
   read_document: ['Read a Markdown document', 'read', { targetId: id, startLine: { type: 'integer', minimum: 1 }, endLine: { type: 'integer', minimum: 1 } }, ['targetId']],
@@ -95,6 +95,7 @@ export class ProjectAgentService {
     const args = { ...call.arguments };
     let result;
     if (tool === 'verify_changes') {
+      if (!Array.isArray(args.operationIds) || !args.operationIds.length || args.operationIds.length > 100 || args.operationIds.some(id => typeof id !== 'string' || !id || id.length > 200)) throw error('INVALID_ARGUMENT', 'Verify between 1 and 100 operation IDs.');
       const requested = new Set(args.operationIds);
       const history = (workspace.agentHistory || []).filter(entry => entry.runId === call.taskId && entry.operationIds.some(id => requested.has(id)));
       const expected = new Map();
@@ -250,7 +251,8 @@ export class ProjectAgentService {
 function projectRecords(project) {
   return new Map([
     ['article', project.article], ['project', { title: project.title }],
-    ...['nodes', 'edges', 'sources'].flatMap(kind => project[kind].map(record => [`${kind}:${record.id}`, record])),
+    ...['nodes', 'edges', 'sources', 'highlights', 'agentArtifacts'].flatMap(kind => (project[kind] || []).map(record => [`${kind}:${record.id}`, record])),
+    ...['positions', 'sizes'].flatMap(kind => Object.entries(project.layout?.[kind] || {}).map(([id, value]) => [`layout:${kind}:${id}`, value])),
     ...Object.entries(project.research || {}).flatMap(([kind, records]) => records.map(record => [`research:${kind}:${record.id}`, record])),
   ]);
 }

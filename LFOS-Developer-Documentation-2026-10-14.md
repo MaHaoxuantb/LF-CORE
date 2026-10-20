@@ -2039,3 +2039,34 @@ Store-catalog apps and website-compatible apps are separate sources. Catalog rev
 4. Declare only permissions and integrations the app actually needs; test each permission-denied path.
 5. Increase `version` whenever any normalized field changes, including listing text, assets, launch configuration, or capability declarations.
 6. Test the URL using LFOS Store's Add App wizard and verify both successful discovery and a useful manual-fallback path when CORS or validation fails.
+
+
+---
+
+# Agent tasks and project providers (updated 2026-10-21)
+
+The current Agent contract is documented at
+https://os-docs.linecoflow.com/docs/capabilities/agent and in
+`docs/AGENT_MODE.md`. This bundled snapshot predates that API; use the current
+page and LFOS `/sdk/v1/agent-types.d.ts` for complete types.
+
+Declare `ai:generate`, `agent:use`, and (for project adapters) `agent:provide`.
+After `lfos.ready()`, require advertised `agent.tasks` and `agent.provider` before
+using them. `lfos.agent` exposes discover/registerProvider/subscribe/
+subscribeSessions and tasks.start/list/get/pause/cancel/resume/provideInput.
+Only the canonical `lfos.agent/v1` MessagePort envelope is supported.
+
+Use the same conversation ID for follow-up tasks. `provideInput` answers waiting
+tasks and steers running tasks; paused/interrupted tasks require Resume first.
+Display completed summaries, progress, plan statuses, tool arguments/results,
+and bounded change previews. Preserve composer drafts during asynchronous work.
+
+Providers serialize mutations, check expectedRevision, and durably commit project
+state, Undo/provenance, and operation receipts in one transaction. Lost replies
+require operationStatus reconciliation; a timeout never proves absence.
+A write returning verificationRequired must expose a verifying read. LF CORE's
+com.linecoflow.lfcore.verify_changes accepts 1–100 operation IDs and returns
+revision, verifiedOperations, mismatches, and checkedRecords. Generic reads cannot
+clear those pending requirements. Never advertise unsupported schema keywords,
+including minItems. The model supplies planStatus alongside plan and evidence
+before completion; record verification does not prove semantic correctness.

@@ -203,3 +203,26 @@ test('verification checks the final state of sequential edits to the same record
   assert.deepEqual(result.verifiedOperations, ['first', 'second']);
   assert.deepEqual((await f.call('verify_changes', { operationIds: ['missing'] })).verifiedOperations, []);
 });
+
+test('verification rejects empty operations and covers removed highlights and layout', async () => {
+  const f = fixture();
+  await assert.rejects(f.call('verify_changes', { operationIds: [] }), { code: 'INVALID_ARGUMENT' });
+  const node = await f.call('create_node', { markdown: '# Node' });
+  f.workspace.highlights = [{ id: 'highlight', targetId: node.nodeId }];
+  f.workspace.layout = { positions: { [node.nodeId]: { x: 10, y: 20 } }, sizes: {} };
+  await f.call('delete_node', { nodeId: node.nodeId }, { operationId: 'delete' });
+  const verified = await f.call('verify_changes', { operationIds: ['delete'] });
+  assert.deepEqual(verified.verifiedOperations, ['delete']);
+  assert.ok(verified.checkedRecords.includes('highlights:highlight'));
+  assert.ok(verified.checkedRecords.includes(`layout:positions:${node.nodeId}`));
+  f.workspace.highlights.push({ id: 'highlight', targetId: node.nodeId });
+  assert.deepEqual((await f.call('verify_changes', { operationIds: ['delete'] })).verifiedOperations, []);
+});
+
+test('export artifacts participate in durable change verification', async () => {
+  const f = fixture({ exportProject: async () => ({ sourceId: 'artifact', fileName: 'Project.lfcore', bytes: 12, mimeType: 'application/json' }) });
+  await f.call('export_project', {}, { operationId: 'export' });
+  assert.deepEqual((await f.call('verify_changes', { operationIds: ['export'] })).verifiedOperations, ['export']);
+  f.workspace.agentArtifacts = [];
+  assert.deepEqual((await f.call('verify_changes', { operationIds: ['export'] })).mismatches, ['agentArtifacts:artifact']);
+});
