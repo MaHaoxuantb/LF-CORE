@@ -47,3 +47,59 @@ SDK channel tests. Before release, exercise both interfaces on connected SolOS
 and actual Safari, including live edits, hidden-window indexing, Undo,
 permission revocation, LFOS restart, and resume without duplicate edits. Those
 production/browser acceptance checks are not implied by passing unit tests.
+
+
+## Provider recovery contract
+
+Every project result reports the observed revision. Mutations store their result
+receipt atomically with project state; status queries wait for queued mutations
+before reporting an operation absent. A lost reply must not trigger a duplicate
+write. A committed receipt advances the host revision before its next decision.
+Verification requires a read of this project's latest observed revision.
+
+Source deletion removes dependent source cards, highlights, graph connections,
+anchors, layout entries and source references. Precise Markdown edits accept
+node aliases issued earlier in the same task, as well as stable node IDs.
+Waiting tasks require `tasks.provideInput`; Resume cannot bypass their question.
+
+The canonical developer contract is the LFOS documentation's **Agent** capability
+page and LunOS `docs/lfos-agent-framework.md`. The dated developer-document export
+in this repository is a historical snapshot and does not describe new Agent APIs.
+
+From the LunOS checkout, run the combined provider/SDK regression check:
+
+```sh
+LFCORE_REPO=/path/to/LF-CORE node --experimental-strip-types --test scripts/validate-agent-integration.mjs
+```
+
+This uses the production host module, real SDK channel and project service with
+a deterministic model and emulated IndexedDB. It checks a persisted edit, lost
+reply recovery, and receipt lookup after recreating the provider. Connected
+SolOS, iframe origin checks, actual Safari and real browser storage still require
+the release acceptance checks above.
+
+
+## Permission, registration and attachment failures
+
+The host checks the originating app's current Intelligence authority before each
+model call and tool dispatch. A reply arriving after revocation cannot authorize
+another project edit. Pause/Stop wins over an in-flight Resume reconnect, and a
+failed reconnect does not consume a pending clarification answer.
+
+The SDK serializes provider registrations and restores accepted handlers after
+explicit rejection. A registration timeout disables handlers because acceptance
+is uncertain; register the complete provider again. Removing a project from the
+registration pauses its active task. Provider disconnects notify other clients.
+
+Attachment reads distinguish a valid zero-byte file from missing stored bytes.
+Missing bytes report `NOT_FOUND`; invalid ranges report `INVALID_ARGUMENT`.
+Reads accept offsets from zero and lengths from 1 through 24,000 bytes. Restore
+or reimport the original attachment when bytes are unavailable; the agent must
+not describe an unavailable attachment as an empty file.
+
+
+Task visibility and provider dispatch are bound to the original installed app,
+project ID and session. Reusing an old session ID in another installed app does
+not inherit its tasks or pending operation receipts. Malformed operation-status
+responses preserve the pending operation and pause work; they never count as
+proof that a write was absent.

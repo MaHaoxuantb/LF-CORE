@@ -55,6 +55,8 @@ export class ProjectAgentService {
   }
   forgetTask(taskId) { for (const key of this.taskSources.keys()) if (key.startsWith(`${taskId}:`)) { this.taskSources.delete(key); this.taskAliases.delete(key); } }
   async operationStatus({ sessionId, operationId }) {
+    // A lost reply must not turn an in-flight commit into an absent receipt.
+    await this.queue;
     const receipt = this.workspace(sessionId).agentReceipts?.[operationId];
     return receipt ? { status: 'committed', result: receipt.result } : { status: 'absent' };
   }
@@ -89,7 +91,7 @@ export class ProjectAgentService {
     const passageKey = `${call.taskId}:${workspace.id}`;
     service.passages = new Map(this.taskSources.get(passageKey) || []);
     service.aliases = new Map(this.taskAliases.get(passageKey) || []);
-    const args = call.arguments || {};
+    const args = { ...call.arguments };
     let result;
     if (tool === 'get_project_index') {
       const cursor = args.cursor || 0, sourceCursor = args.sourceCursor || 0, limit = Math.min(args.limit || 50, 100);
@@ -116,6 +118,7 @@ export class ProjectAgentService {
       const before = node.parentId; node.parentId = parentId ?? null;
       service._record(tool, args, before, node.parentId, { targetId: node.id }); result = { nodeId, parentId: node.parentId };
     } else if (tool === 'edit_markdown') {
+      args.targetId = service.aliases.get(args.targetId) || args.targetId;
       const target = args.targetId === 'article' ? service.draft.article : service.draft.nodes.find(node => node.id === args.targetId)?.document;
       if (!target || typeof args.before !== 'string' || !args.before || typeof args.after !== 'string' || target.markdown.split(args.before).length !== 2) throw error('CONFLICT', 'The passage must match exactly once. Read the document again.');
       result = await service._execute('replace_markdown', { targetId: args.targetId, markdown: target.markdown.replace(args.before, () => args.after) });
@@ -159,7 +162,11 @@ export class ProjectAgentService {
       service.draft.sources = service.draft.sources.filter(source => source.id !== args.sourceId);
       service.draft.nodes = service.draft.nodes.filter(node => !removedNodes.has(node.id));
       for (const node of service.draft.nodes) { node.sourceRefs = (node.sourceRefs || []).filter(ref => ref.sourceId !== args.sourceId); if (removedNodes.has(node.parentId)) node.parentId = null; }
-      service.draft.edges = service.draft.edges.filter(edge => !removedNodes.has(edge.fromId) && !removedNodes.has(edge.toId));
+      const removedHighlights = new Set((service.draft.highlights || []).filter(highlight => removedNodes.has(highlight.targetId)).map(highlight => `h:${highlight.id}`));
+      service.draft.highlights = (service.draft.highlights || []).filter(highlight => !removedNodes.has(highlight.targetId));
+      for (const node of service.draft.nodes) if (removedNodes.has(node.anchor?.targetId)) node.anchor = null;
+      for (const nodeId of removedNodes) { delete service.draft.layout?.positions?.[nodeId]; delete service.draft.layout?.sizes?.[nodeId]; }
+      service.draft.edges = service.draft.edges.filter(edge => !removedNodes.has(edge.fromId) && !removedNodes.has(edge.toId) && !removedHighlights.has(edge.fromId) && !removedHighlights.has(edge.toId));
       for (const records of Object.values(normalizeResearch(service.draft))) for (const record of records) if (record.sourceIds) record.sourceIds = record.sourceIds.filter(sourceId => sourceId !== args.sourceId);
       // Keep bytes in the existing attachment store so Undo can restore the source.
       result = { deletedId: args.sourceId };
@@ -232,6 +239,21 @@ export function validateProject(workspace) {
       parents.add(cursor); cursor = workspace.nodes.find(item => item.id === cursor)?.parentId;
     }
   }
-  // Existing highlight endpoints are valid and retained.
-  for (const edge of workspace.edges) if (![edge.fromId, edge.toId].every(endpoint => ids.has(endpoint) || endpoint.startsWith('h:'))) throw error('INVALID_ARGUMENT', 'An edge references a missing node.');
+  const highlights = new Set((workspace.highlights || []).map(highlight => `h:${highlight.id}`));
+  for (const edge of workspace.edges) if (![edge.fromId, edge.toId].every(endpoint => ids.has(endpoint) || highlights.has(endpoint))) throw error('INVALID_ARGUMENT', 'An edge references a missing node.');
+}
+
+
+export async function readAgentAttachment(workspace, { sourceId, offset = 0, length = 24_000 }, { getPdf, getMedia }) {
+  if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(length) || length < 1 || length > 24_000) throw error('INVALID_ARGUMENT', 'Attachment ranges require a non-negative offset and length from 1 to 24000.');
+  const source = [...workspace.sources, ...(workspace.agentArtifacts || [])].find(entry => entry.id === sourceId);
+  if (!source || !['pdf', 'image', 'video', 'file'].includes(source.type)) throw error('NOT_FOUND', 'Attachment not found.');
+  const stored = await (source.type === 'pdf' ? getPdf(sourceId) : getMedia(sourceId));
+  if (stored == null) throw error('NOT_FOUND', 'Attachment bytes are unavailable. Restore or import the original file.');
+  let bytes;
+  if (stored instanceof Blob) bytes = new Uint8Array(await stored.arrayBuffer());
+  else if (stored instanceof ArrayBuffer) bytes = new Uint8Array(stored);
+  else if (ArrayBuffer.isView(stored)) bytes = new Uint8Array(stored.buffer, stored.byteOffset, stored.byteLength);
+  else throw error('STORAGE', 'Attachment bytes could not be read.');
+  return { sourceId, title: source.title, offset, totalBytes: bytes.length, encoding: 'base64', data: btoa(String.fromCharCode(...bytes.subarray(offset, offset + length))) };
 }

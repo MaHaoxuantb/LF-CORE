@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createWorkspace } from '../src/storage.js';
-import { ProjectAgentService, projectCapabilities, projectSession } from '../src/project-agent.js';
+import { ProjectAgentService, projectCapabilities, projectSession, readAgentAttachment } from '../src/project-agent.js';
 import { serializeProject, parseProject } from '../src/project.js';
 
 function fixture(options = {}) {
@@ -118,4 +118,63 @@ test('attachment import and project export register readable source artifacts', 
   await f.call('export_project');
   assert.deepEqual(f.workspace.sources.map(source => source.id), ['file']);
   assert.equal(f.workspace.agentArtifacts[0].id, 'export');
+});
+
+
+test('operation status waits for in-flight commits before reporting absence', async () => {
+  let release, started;
+  const committing = new Promise(resolve => { started = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  let workspace = createWorkspace('Project', '# Article');
+  const service = new ProjectAgentService({ getWorkspace: () => workspace, commit: async (_before, next) => { started(); await gate; workspace = next; } });
+  const write = service.invoke({ capability: 'com.linecoflow.lfcore.create_node', arguments: { markdown: '# New' }, sessionId: projectSession(workspace).id, taskId: 'task', operationId: 'pending', expectedRevision: 0 });
+  await committing;
+  let settled = false;
+  const receipt = service.operationStatus({ sessionId: projectSession(workspace).id, operationId: 'pending' }).then(result => { settled = true; return result; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+  release(); await write;
+  assert.equal((await receipt).status, 'committed');
+});
+
+test('source deletion removes dependent highlights, edges, anchors and layout', async () => {
+  const f = fixture();
+  const source = await f.call('import_source', { title: 'Evidence', text: 'Text' });
+  const card = await f.call('create_source_node', { sourceId: source.sourceId });
+  const other = await f.call('create_node', { markdown: '# Other' });
+  f.workspace.highlights = [{ id: 'highlight', targetId: card.nodeId }];
+  f.workspace.nodes.find(node => node.id === other.nodeId).anchor = { targetId: card.nodeId };
+  f.workspace.edges.push({ id: 'edge', fromId: 'h:highlight', toId: other.nodeId });
+  f.workspace.layout = { positions: { [card.nodeId]: { x: 0, y: 0 } }, sizes: { [card.nodeId]: { width: 100 } } };
+  await f.call('delete_source', { sourceId: source.sourceId });
+  assert.deepEqual(f.workspace.highlights, []);
+  assert.deepEqual(f.workspace.edges, []);
+  assert.equal(f.workspace.nodes[0].anchor, null);
+  assert.equal(f.workspace.layout.positions[card.nodeId], undefined);
+});
+
+test('precise edits resolve task aliases without changing caller arguments', async () => {
+  const f = fixture();
+  const node = await f.call('create_node', { clientId: 'note', markdown: '# Before' });
+  const args = { targetId: 'note', before: 'Before', after: 'After' };
+  await f.call('edit_markdown', args);
+  assert.equal(args.targetId, 'note');
+  assert.equal(f.workspace.nodes.find(entry => entry.id === node.nodeId).document.markdown, '# After');
+});
+
+
+test('attachment reads reject missing bytes and invalid ranges, preserving valid empty files', async () => {
+  const workspace = createWorkspace('Project');
+  workspace.sources.push({ id: 'file', title: 'File', type: 'file' });
+  const args = { sourceId: 'file' };
+  const store = value => ({ getMedia: async () => value });
+  await assert.rejects(readAgentAttachment(workspace, args, store(null)), { code: 'NOT_FOUND' });
+  for (const range of [{ offset: -1 }, { length: 0 }, { length: 24001 }, { offset: 0.5 }]) {
+    await assert.rejects(readAgentAttachment(workspace, { ...args, ...range }, store(new ArrayBuffer(0))), { code: 'INVALID_ARGUMENT' });
+  }
+  assert.equal((await readAgentAttachment(workspace, args, store(new ArrayBuffer(0)))).totalBytes, 0);
+  const bytes = new Uint8Array([9, 65, 66, 67, 9]);
+  const result = await readAgentAttachment(workspace, { ...args, offset: 1, length: 2 }, store(bytes.subarray(1, 4)));
+  assert.equal(result.totalBytes, 3);
+  assert.equal(result.data, btoa('BC'));
 });

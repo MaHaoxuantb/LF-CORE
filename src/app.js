@@ -10,7 +10,7 @@ import { loadModelSettings, saveModelSettings, saveModelSecret, saveDeveloperMod
 import { chatModel } from './ai.js';
 import { canChangeAssistantMode, contextSnapshot, diffMarkdownLines, MAX_CONTEXT_CHARS, proposalStatus } from './chat.js';
 import { applyAgentProposal } from './agent-service.js';
-import { ProjectAgentService, projectSession, projectCapabilities } from './project-agent.js';
+import { ProjectAgentService, projectSession, projectCapabilities, readAgentAttachment } from './project-agent.js';
 import { ensurePdfSourceIndex, readWorkspaceSource } from './source-index.js';
 import { normalizeGraphFocusPreferences, relatedNodeIds } from './graph-focus.js';
 import { siblingPredecessor } from './siblings.js';
@@ -4997,13 +4997,7 @@ const projectAgentService = new ProjectAgentService({
     const bytes = Uint8Array.from(atob(dataBase64), character => character.charCodeAt(0));
     return mediaSource(new File([bytes], fileName, { type: mimeType }));
   },
-  async readAttachment(workspace, { sourceId, offset = 0, length = 24_000 }) {
-    const source = [...workspace.sources, ...(workspace.agentArtifacts || [])].find(entry => entry.id === sourceId);
-    if (!source || !['pdf', 'image', 'video', 'file'].includes(source.type)) throw new Error('Attachment not found.');
-    const stored = await (source.type === 'pdf' ? getPdf(sourceId) : getMedia(sourceId));
-    const bytes = stored instanceof Blob ? new Uint8Array(await stored.arrayBuffer()) : new Uint8Array(stored);
-    return { sourceId, title: source.title, offset, totalBytes: bytes.length, encoding: 'base64', data: btoa(String.fromCharCode(...bytes.slice(offset, offset + Math.min(length, 24_000)))) };
-  },
+  readAttachment: (workspace, args) => readAgentAttachment(workspace, args, { getPdf, getMedia }),
   async exportProject(workspace, call) {
     const artifact = await backgroundPersistence.package(workspace, state.chats[workspace.id] || []);
     // Store an export as project data; the UI offers a download without relying on popup activation.
