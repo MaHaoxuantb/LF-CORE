@@ -76,8 +76,7 @@ export class LFOSIntegration {
     const stream = await this.lfos.ai.responses.create({
       input: messages.map(({ role, content }) => ({ role: role === 'system' ? 'developer' : role, content })),
       reasoning: { effort },
-      text: { format: { type: 'text' } },
-      maxOutputTokens: 16384
+      text: { format: { type: 'text' } }
     });
     // Observe rejection immediately, including cancellation before iteration starts.
     const completed = stream.completed.then(value => ({ value }), error => ({ error }));

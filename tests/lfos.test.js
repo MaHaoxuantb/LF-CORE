@@ -196,7 +196,7 @@ test('SolOS streams map roles, forward each thinking effort, and await completio
     assert.deepEqual(request.input.map(message => message.role), ['developer', 'user', 'assistant']);
     assert.equal(messages[0].role, 'system');
     assert.equal(request.reasoning.effort, effort);
-    assert.equal(request.maxOutputTokens, 16384);
+    assert.equal('maxOutputTokens' in request, false);
     assert.equal('model' in request, false);
     assert.deepEqual(updates, [['Hel', 'Hel'], ['lo', 'Hello']]);
     assert.equal(cancels, 0);
