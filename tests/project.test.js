@@ -56,3 +56,14 @@ test('project filenames are portable and clearly identified', () => {
   assert.equal(projectFileName('  Études / waves?  '), 'Etudes-waves.lfcore');
   assert.equal(projectFileName('***'), 'Untitled-project.lfcore');
 });
+
+test('portable project copies never inherit LFOS document bindings', () => {
+  const workspace = createWorkspace('Portable');
+  Object.assign(workspace, { lfosDocumentId: 'vault:file', lfosFileHash: 'hash', lfosSavedProjectRevision: 4 });
+  const serialized = serializeProject(workspace);
+  const exported = JSON.parse(serialized).project.workspace;
+  assert.equal(exported.lfosDocumentId, undefined);
+  const injected = JSON.parse(serialized);
+  injected.project.workspace.lfosDocumentId = 'untrusted-file';
+  assert.equal(parseProject(JSON.stringify(injected)).workspace.lfosDocumentId, undefined);
+});

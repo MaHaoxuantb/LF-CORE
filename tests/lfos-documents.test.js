@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LFOSDocuments } from '../src/lfos-documents.js';
+import { LFOSDocuments, preserveDocumentBinding } from '../src/lfos-documents.js';
 
 function fixture() {
   let content = 'original';
@@ -131,4 +131,24 @@ test('cancelling Save As after a conflict keeps background autosave paused', asy
   assert.equal(f.store.entries.get('project').error, conflict);
   f.integration.saveProject = async () => assert.fail('must not retry a conflicted destination');
   await f.store.save('project', { automatic: true });
+});
+
+test('failed local binding persistence keeps the linked document dirty and pauses autosave', async () => {
+  const f = fixture(); f.edit('edited');
+  f.store.onSaved = async () => { throw new Error('local binding could not be saved'); };
+  await assert.rejects(f.store.save('project'), /local binding/);
+  assert.equal(f.store.isDirty('project'), true);
+  await f.store.save('project', { automatic: true });
+  assert.equal(f.writes.length, 1);
+});
+
+test('undo preserves the current Save As destination and cannot resurrect detached bindings', () => {
+  const current = { lfosDocumentId: 'new', lfosFileHash: 'current-hash', lfosSavedProjectRevision: 5 };
+  const restored = { article: { markdown: 'earlier edit' }, lfosDocumentId: 'old', lfosFileHash: 'old-hash' };
+  preserveDocumentBinding(current, restored);
+  assert.equal(restored.lfosDocumentId, 'new'); assert.equal(restored.lfosSavedProjectRevision, 5);
+  assert.equal(restored.article.markdown, 'earlier edit');
+  preserveDocumentBinding({}, restored);
+  assert.equal(Object.hasOwn(restored, 'lfosDocumentId'), false);
+  assert.equal(Object.hasOwn(restored, 'lfosFileHash'), false);
 });

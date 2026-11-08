@@ -158,6 +158,23 @@ test('keyboard resize keeps focus on the mounted grip and records history', () =
   assert.equal(f.context.state.history.project.length, 1);
 });
 
+for (const resize of [false, true]) {
+  test(`${resize ? 'resize' : 'drag'} ignores movement and release from a second finger`, () => {
+    const f = fixture(), before = structuredClone(f.item.layout);
+    if (resize) f.context.startNodeResize(f.pointer, { id: 'a' }, f.cards.a, f.cards.a);
+    else f.context.startNodeDrag(f.pointer, { id: 'a' }, f.cards.a);
+    f.listeners.get('pointermove')({ pointerId: 2, clientX: 100, clientY: 100 });
+    f.listeners.get('pointerup')({ pointerId: 2, type: 'pointerup' });
+    assert.deepEqual(structuredClone(f.item.layout), before);
+    assert.ok(f.listeners.has('pointermove'));
+    f.listeners.get('pointermove')({ pointerId: 1, clientX: 80, clientY: 40 });
+    f.listeners.get('blur')();
+    assert.deepEqual(structuredClone(f.item.layout), before);
+    assert.equal(f.saves(), 0);
+    assert.equal(f.listeners.size, 0);
+  });
+}
+
 test('opening, switching, and closing panels only replaces panel DOM', () => {
   const f = fixture(), mounted = new Set(), buttons = new Map();
   const panel = (name) => ({ name, remove() { mounted.delete(this); } });

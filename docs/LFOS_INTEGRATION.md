@@ -82,3 +82,17 @@ provides the scheduling signal. Include the computation worker in offline assets
 
 `tests/compute.test.js` runs the actual import worker on a synthetic project,
 checks exact attachment bytes, malformed input and a successful retry.
+
+## Multiple windows
+
+The LFOS host and SDK must provide `files.getIdentity` and `lifecycle.focus`.
+Update the host and LF CORE together, then reload existing app windows. These
+methods add document deduplication and owner focus to the existing version-1
+protocol; opaque file handles and revision-checked writes remain authoritative.
+LF CORE fails visibly before opening/saving linked projects on a host without
+identity support. Different local projects can still be edited independently.
+
+Use the installed app's Dock context menu to open a new LFOS window. A second
+window can edit another project; attempting the same project requests its owner.
+Agent sessions are published by project owners only. After closing an owner,
+reopen the project to reconnect its agent session. See [multiple windows](MULTIPLE_WINDOWS.md).

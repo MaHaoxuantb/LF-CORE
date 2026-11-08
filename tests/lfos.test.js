@@ -235,3 +235,25 @@ test('SolOS cancellation during creation and streaming cancels and rejects', asy
   const integration = intelligenceIntegration({ create: async () => assert.fail('already canceled') });
   await assert.rejects(integration.completeText([], 'low', { signal: controller.signal }), /canceled/);
 });
+
+test('document identity and owner focus use advertised host capabilities', async () => {
+  const calls = [], handle = { id: 'opaque' };
+  const sdk = {
+    ready: async () => ({ name: 'LFOS', protocolVersion: 1, capabilities: ['files.getIdentity', 'lifecycle.focus'] }),
+    files: { getIdentity: async value => { calls.push(value); return 'activation:document'; } },
+    lifecycle: { focus: async () => { calls.push('focus'); } }
+  };
+  const integration = new LFOSIntegration({ windowRef: framedWindow(), loadSdk: async () => ({ lfos: sdk }) });
+  assert.equal(await integration.documentIdentity(handle), 'activation:document');
+  await integration.focusWindow(); assert.deepEqual(calls, [handle, 'focus']);
+  sdk.files.getIdentity = async () => null;
+  await assert.rejects(integration.documentIdentity(handle), /invalid document identity/);
+});
+
+test('missing host identity and focus support is surfaced without bypassing the shell', async () => {
+  const sdk = { ready: async () => ({ name: 'LFOS', protocolVersion: 1, capabilities: [] }) };
+  const windowRef = framedWindow(); windowRef.focus = () => assert.fail('must not bypass the LFOS shell');
+  const integration = new LFOSIntegration({ windowRef, loadSdk: async () => ({ lfos: sdk }) });
+  await assert.rejects(integration.documentIdentity({ id: 'opaque' }), /Update LFOS/);
+  await assert.rejects(integration.focusWindow(), /Update LFOS/);
+});

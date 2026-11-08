@@ -1,9 +1,9 @@
 import { PersistenceJobs } from './persistence-jobs.js';
-import { writeDatabaseState } from './state-store.js';
+import { commitDatabaseProjects } from './state-store.js';
 import { getPdf, getMedia } from './source-store.js';
 
 const jobs = new PersistenceJobs({
-  writeState: writeDatabaseState,
+  writeState: commitDatabaseProjects,
   readMedia: (source) => source.type === 'pdf' ? getPdf(source.id) : getMedia(source.id)
 });
 let queue = Promise.resolve();

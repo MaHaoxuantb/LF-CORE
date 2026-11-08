@@ -64,9 +64,10 @@ export class PersistenceClient {
         if (!this.sentSnapshots.has(key)) snapshots.push({ key, value });
       });
     }
-    const result = this.request({ type: 'save', order: state.workspaces.map((item) => item.id), projects, snapshots });
+    const result = this.request({ type: 'save', ids: [...ids], expected: Object.fromEntries([...ids].map(id => [id, state.databaseRevisions?.[id] || 0])), order: state.workspaces.map((item) => item.id), projects, snapshots });
     const retained = new Set(['history', 'redo'].flatMap((kind) => Object.values(state[kind]).flat().map(reference)));
     return result.then((value) => {
+      if (value?.revisions) Object.assign(state.databaseRevisions ||= {}, value.revisions);
       const known = new Set(this.sentSnapshots);
       for (const { key } of snapshots) known.add(key);
       this.sentSnapshots = new Set([...known].filter((key) => retained.has(key)));

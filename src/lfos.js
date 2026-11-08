@@ -104,6 +104,21 @@ export class LFOSIntegration {
     }
   }
 
+  async focusWindow() {
+    await this.connect();
+    if (this.has('lifecycle.focus')) return this.lfos.lifecycle.focus();
+    if (this.connected) throw new Error('Update LFOS to focus an owning project window.');
+    this.windowRef?.focus?.();
+  }
+
+  async documentIdentity(handle) {
+    await this.connect();
+    if (!this.has('files.getIdentity')) throw new Error('Update LFOS to open linked documents safely in multiple windows.');
+    const identity = await this.lfos.files.getIdentity(handle);
+    if (typeof identity !== 'string' || !identity) throw new Error('LFOS returned an invalid document identity.');
+    return identity;
+  }
+
   async openProject() {
     await this.connect();
     if (!this.has('files.open') || !this.has('files.read')) return null;

@@ -21,6 +21,7 @@ export class PersistenceJobs {
   async run(job) {
     if (job.type === 'initialize') {
       this.state = job.state;
+      this.revisions = { ...job.state.databaseRevisions };
       for (const kind of ['history', 'redo']) {
         for (const [id, entries] of Object.entries(this.state[kind])) entries.forEach((entry, index) => this.snapshots.set(`${kind}:${id}:${index}`, entry));
       }
@@ -42,17 +43,20 @@ export class PersistenceJobs {
       this.state.redo[patch.workspace.id] = patch.redo;
     }
     const projects = new Map(this.state.workspaces.map((item) => [item.id, item]));
-    this.state.workspaces = job.order.map((id) => {
-      if (!projects.has(id)) throw new Error('A project snapshot is missing.');
-      return projects.get(id);
-    });
+    // The library UI may know projects created in another window after this
+    // worker initialized. Their records are not part of this worker's mirror;
+    // the database commit preserves them independently.
+    this.state.workspaces = job.order.filter(id => projects.has(id)).map(id => projects.get(id));
     for (const kind of ['history', 'redo', 'chats']) {
       for (const id of Object.keys(this.state[kind])) if (!projects.has(id) || !job.order.includes(id)) delete this.state[kind][id];
     }
     // Bound memory to undo snapshots still referenced by the current library.
     const retained = new Set(Object.values(this.state.history).flat().concat(Object.values(this.state.redo).flat()));
     for (const [key, value] of this.snapshots) if (!retained.has(value)) this.snapshots.delete(key);
-    await this.writeState(this.state);
-    return null;
+    const ids = job.ids || job.projects.map(p => p.workspace.id);
+    const expected = Object.fromEntries(ids.map(id => [id, Math.max(job.expected?.[id] || 0, this.revisions[id] || 0)]));
+    const revisions = await this.writeState(this.state, { ids, expected });
+    if (revisions) Object.assign(this.revisions, revisions);
+    return { revisions };
   }
 }

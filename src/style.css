@@ -1372,3 +1372,45 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .math-formula:has(> .katex-display) { display: block; }
 .math-formula.anchor-mark { cursor: crosshair; }
 .math-formula:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Keep the camera within the visible browser area as tablet chrome changes. */
+.workspace-shell, .canvas-shell { height: 100dvh; }
+.touch-canvas-controls { display: none; }
+
+@media (any-pointer: coarse) {
+  .touch-canvas-controls { display: flex; }
+  .canvas-viewport { overscroll-behavior: contain; }
+  .canvas-viewport, .topic-card, .resize-grip, .link-grip { -webkit-touch-callout: none; }
+  .paper .markdown-preview, .node-content { -webkit-touch-callout: default; }
+  .topic-card { -webkit-user-select: none; }
+  .node-content { -webkit-user-select: text; }
+  .canvas-control-cluster {
+    left: max(12px, env(safe-area-inset-left));
+    right: max(12px, env(safe-area-inset-right));
+    bottom: max(12px, env(safe-area-inset-bottom));
+    flex-wrap: wrap;
+    width: fit-content;
+    max-width: calc(100% - 24px);
+  }
+  .zoom-controls button, .geometry-controls .geometry-toggle { min-width: 44px; height: 44px; }
+  .geometry-controls { height: auto; }
+  .zoom-controls .zoom-value { min-width: 56px; }
+  .workspace-chrome { flex-wrap: wrap; inset: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) auto max(10px, env(safe-area-inset-left)); }
+  .workspace-chrome .header-left-group { max-width: 100%; flex: 1 1 auto; }
+  .workspace-chrome .header-navigation, .workspace-chrome .header-left, .workspace-chrome .header-right { height: auto; min-height: 52px; }
+  .workspace-chrome .header-icon { width: 44px; height: 44px; flex: none; }
+  .workspace-chrome .source-toggle, .workspace-chrome .workspace-title { min-height: 44px; }
+  .workspace-chrome .header-right { margin-left: auto; }
+  .workspace-chrome .document-menu-control { flex: 1 1 auto; }
+  .workspace-chrome .workspace-title { max-width: 100%; }
+  .resize-grip { width: 44px; height: 44px; right: 0; bottom: 0; }
+  .link-grip { width: 44px; height: 44px; right: -23px; }
+  .connection-handle { width: 44px; height: 44px; }
+  .topic-card.selected .edge-label-remove, .edge-label-chip.active .edge-label-remove { opacity: 1; }
+  .context-option, .document-menu-option, .node-action, .selection-toolbar button, .edge-label-chip.active button,
+  .paper-ai-action, .collapse-button, .editing-toolbar button { min-height: 44px; }
+  .node-actions { min-width: 0; width: max-content; max-width: min(520px, 85vw); }
+  .node-actions-row { flex-wrap: wrap; }
+  .context-menu { max-height: calc(100dvh - 24px - env(safe-area-inset-bottom)); overscroll-behavior: contain; }
+  .workspace-shell input, .workspace-shell textarea, .workspace-shell select { font-size: 16px; }
+}

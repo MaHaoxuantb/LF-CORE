@@ -1,10 +1,11 @@
 // Serialize writes so autosave, explicit save, and Save As cannot race handles.
 export class LFOSDocuments {
-  constructor({ integration, revision, snapshot, onChange = () => {} }) {
+  constructor({ integration, revision, snapshot, onChange = () => {}, onSaved = async () => {} }) {
     this.integration = integration;
     this.revision = revision;
     this.snapshot = snapshot;
     this.onChange = onChange;
+    this.onSaved = onSaved;
     this.entries = new Map();
     this.queue = Promise.resolve();
   }
@@ -57,13 +58,22 @@ export class LFOSDocuments {
         }
         const previous = entry?.handle;
         if (entry) entry.handle = result.handle;
-        if (!entry || this.entries.get(id) === entry) {
+        if (entry && this.entries.get(id) === entry) entry.revision = snapshot.revision;
+        if (!entry) {
           this.entries.set(id, { handle: result.handle, revision: snapshot.revision, error: null, saving: false });
         }
         if (previous && previous.id !== result.handle.id) await this.integration.release(previous);
+        try { await this.onSaved(id, result.handle, snapshot); }
+        catch (error) {
+          const current = this.entries.get(id);
+          if (current) current.revision = Math.min(current.revision, snapshot.revision - 1);
+          throw error;
+        }
         return result;
       } catch (error) {
         if (entry) entry.error = error;
+        const current = this.entries.get(id);
+        if (current) current.error = error;
         throw error;
       } finally {
         if (entry) entry.saving = false;
@@ -71,4 +81,13 @@ export class LFOSDocuments {
       }
     });
   }
+}
+
+// Save destinations are library metadata, never part of undoable document edits.
+export function preserveDocumentBinding(current, restored) {
+  for (const key of ['lfosDocumentId', 'lfosFileHash', 'lfosSavedProjectRevision']) {
+    if (Object.hasOwn(current, key)) restored[key] = current[key];
+    else delete restored[key];
+  }
+  return restored;
 }

@@ -1,6 +1,6 @@
 import { makeAnchor, resolveAnchor, selectionOffsets, passageText, passageOffset, highlightAtSelection } from './anchors.js';
 import { createWorkspace, emptyState, loadSaveMode, saveSaveMode, snapshotWorkspace } from './storage.js';
-import { loadDatabaseState, requestPersistentStorage, restoreDatabaseViews, writeDatabaseView } from './state-store.js';
+import { loadDatabaseState, readDatabaseState, requestPersistentStorage } from './state-store.js';
 import { renderMarkdown, headingTokens, wrapMarkdownHighlight, unwrapMarkdownHighlight, markdownHTMLText } from './markdown.js';
 import { isSourceNode, nodeLabel, sourceNode } from './node-content.js';
 import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
@@ -19,11 +19,13 @@ import { prefixMarkdownLines, wrapMarkdownSelection } from './markdown-edit.js';
 import { attachSourceToQuestion, compareIdeas, createResearchProposal, createResearchQuestion, discoverSources, normalizeResearch, recordCloseout, verifiedSourceFromResult } from './research.js';
 import { resolveMoveGeometry, resolveResizeGeometry, selectionBounds } from './node-geometry.js';
 import { createLFOSIntegration, LFCORE_MIME_TYPE } from './lfos.js';
-import { LFOSDocuments } from './lfos-documents.js';
+import { LFOSDocuments, preserveDocumentBinding } from './lfos-documents.js';
 import { attachLFOSHeader } from './lfos-header.js';
 import { PersistenceClient } from './persistence-client.js';
 import { ViewPersistence } from './view-persistence.js';
+import { WindowCoordinator } from './window-coordinator.js';
 import { canvasTransform, fittedCanvasView, hasCanvasView } from './canvas-view.js';
+import { attachCanvasTouch } from './canvas-touch.js';
 import {backgroundCompute} from './compute-client.js';
 import packageInfo from '../package.json';
 import 'katex/dist/katex.min.css';
@@ -37,11 +39,28 @@ const PRODUCT_NAME = packageInfo.productName || 'LF CORE';
 const PRODUCT_VERSION = packageInfo.version || '0.0.0';
 const lfos = createLFOSIntegration();
 const lfosConnection = lfos.connect();
+let projectOpenQueue = Promise.resolve();
+let libraryRefreshSequence = 0;
 const lfosDocumentStore = new LFOSDocuments({
   integration: lfos,
   revision: lfosDocumentRevision,
   snapshot: projectSnapshot,
-  onChange: () => { syncLFOSUnsavedChanges(); updateSaveControls(); }
+  onChange: () => { syncLFOSUnsavedChanges(); updateSaveControls(); },
+  onSaved: async (id, handle, snapshot) => {
+    const identity = await lfos.documentIdentity(handle);
+    const hash = await fileHash(snapshot.contents);
+    if (!state.workspaces.some(w => w.id === id)) return;
+    if (!await coordinator.acquire(`document:${identity}`)) throw new Error('This destination is owned by another window. Use Save As.');
+    const workspace = state.workspaces.find(w => w.id === id);
+    if (!workspace) { releaseDocumentIfUnused(identity); return; }
+    const previous = workspace.lfosDocumentId;
+    workspace.lfosDocumentId = identity;
+    workspace.lfosFileHash = hash;
+    workspace.lfosSavedProjectRevision = snapshot.projectRevision;
+    stateRevision++; pendingChangedIds.add(id);
+    if (!await persist(true, id, false)) throw new Error('The LFOS file was saved, but its local binding could not be saved.');
+    if (previous && previous !== identity) releaseDocumentIfUnused(previous);
+  }
 });
 const lfosDocuments = lfosDocumentStore.entries;
 let lfosAutosaveTimer = null;
@@ -80,26 +99,26 @@ const examplePassages = {
   'How fast do plates move?': 'If a plate moves'
 };
 
-let releaseLibraryLease;
-let libraryOwner = !navigator.locks;
-if (navigator.locks) await new Promise((resolve, reject) => {
-  navigator.locks.request('lfcore-library-writer', { ifAvailable: true }, async lock => {
-    libraryOwner = !!lock; resolve();
-    if (lock) await new Promise(release => { releaseLibraryLease = release; });
-  }).catch(reject);
+let windowViews;
+try { windowViews = new Map(JSON.parse(sessionStorage.getItem('lfcore-window-views') || '[]')); }
+catch { windowViews = new Map(); }
+const coordinator = new WindowCoordinator({
+  onChange: () => void refreshLibrary().catch(error => announce(`Could not refresh projects: ${error.message}`)),
+  onFocus: key => {
+    const id = key.startsWith('project:') ? key.slice(8) : state.workspaces.find(w => `document:${w.lfosDocumentId}` === key)?.id;
+    if (id && currentId !== id) void openWorkspace(id);
+    void lfos.focusWindow().catch(error => announce(`Could not focus the project window: ${error.message}`));
+  }
 });
-if (!libraryOwner) {
-  app.textContent = 'This LF CORE library is already open in another window. Continue there, or close it and reload this window.';
-  throw new Error('Another LF CORE instance owns this library.');
-}
-window.addEventListener('pagehide', () => releaseLibraryLease?.(), { once: true });
+// Let the browser dispose Web Locks on unload; releasing at pagehide can race
+// with a save that is still completing in a worker.
+window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
 let committingProject = false;
 let providerRegistrationTimer;
 const hostAgentTasks = new Map();
 let state, loadError = null, saveError = null;
 try {
   state = await loadDatabaseState();
-  await restoreDatabaseViews(state).catch((error) => console.warn('[LF CORE] Could not restore canvas positions.', error));
   requestPersistentStorage();
 }
 catch (error) {
@@ -170,7 +189,7 @@ const backgroundPersistence = new PersistenceClient(state);
 const documentRevisions = new Map();
 const pendingChangedIds = new Set();
 let stateRevision = 0, lastSavedRevision = 0, dirty = false;
-const viewPersistence = new ViewPersistence({ write: writeDatabaseView, onError: (error) => {
+const viewPersistence = new ViewPersistence({ write: async (id, value) => { windowViews.set(id, { ...value }); sessionStorage.setItem('lfcore-window-views', JSON.stringify([...windowViews])); }, onError: (error) => {
   console.warn('[LF CORE] Could not save the canvas position.', error);
   announce('Could not save the canvas position.');
 } });
@@ -208,11 +227,15 @@ function lfosDocumentIsDirty(workspaceId, entry = lfosDocuments.get(workspaceId)
 
 function syncLFOSUnsavedChanges() {
   const hasUnsavedDocument = [...lfosDocuments].some(([workspaceId, entry]) => lfosDocumentIsDirty(workspaceId, entry));
-  void lfos.setUnsavedChanges(hasUnsavedDocument).catch((error) => console.warn('[LF CORE] Could not update LFOS window lifecycle state.', error));
+  void lfos.setUnsavedChanges(dirty || hasUnsavedDocument).catch((error) => console.warn('[LF CORE] Could not update LFOS window lifecycle state.', error));
 }
 
 function rememberLFOSDocument(workspaceId, handle) {
   lfosDocumentStore.remember(workspaceId, handle);
+}
+
+function releaseDocumentIfUnused(identity) {
+  if (!state.workspaces.some(w => w.lfosDocumentId === identity && coordinator.owns(`project:${w.id}`))) coordinator.release(`document:${identity}`);
 }
 
 function forgetLFOSDocument(workspaceId) {
@@ -324,6 +347,7 @@ function updateSaveControls() {
 function reportSaveFailure(error) {
   saveError = error instanceof Error ? error.message : String(error);
   dirty = true;
+  syncLFOSUnsavedChanges();
   const signature = `${error?.name || typeof error}:${saveError}`;
   if (signature !== reportedSaveFailure) {
     reportedSaveFailure = signature;
@@ -342,8 +366,10 @@ async function runStateSaveLoop() {
       for (const id of pendingChangedIds) job.ids.add(id);
       pendingChangedIds.clear();
       await backgroundPersistence.save(state, job.ids);
+      coordinator.changed();
       lastSavedRevision = revision;
       dirty = stateRevision !== lastSavedRevision;
+      syncLFOSUnsavedChanges();
       saveError = null;
       reportedSaveFailure = null;
       if (!pendingStateSave && !dirty) {
@@ -519,7 +545,8 @@ async function projectSnapshot(workspaceId) {
   const current = state.workspaces.find((item) => item.id === workspaceId);
   if (!current) throw new Error('The project is no longer available.');
   const revision = lfosDocumentRevision(workspaceId);
-  return { ...await backgroundPersistence.package(current, state.chats[workspaceId] || []), revision };
+  const projectRevision = current.projectRevision || 0;
+  return { ...await backgroundPersistence.package(current, state.chats[workspaceId] || []), revision, projectRevision };
 }
 
 async function downloadProject({ saveAs = false } = {}) {
@@ -531,6 +558,7 @@ async function downloadProject({ saveAs = false } = {}) {
     await lfosConnection;
     const lfosDocument = lfosDocuments.get(item.id);
     if (lfosDocument || (lfos.has('files.write') && lfos.has('files.save'))) {
+      if (!lfos.has('files.getIdentity')) throw new Error('Update LFOS before saving linked projects in multiple windows.');
       const result = await lfosDocumentStore.save(item.id, { saveAs, allowPicker: true });
       if (!result || result.cancelled) return;
       scheduleLFOSAutosave();
@@ -639,6 +667,7 @@ async function undo() {
   if (!previous) return announce('Nothing to undo.');
   previous.agentReceipts = structuredClone(item.agentReceipts || {});
   previous.projectRevision = item.projectRevision || 0;
+  preserveDocumentBinding(item, previous);
   (state.redo[item.id] ||= []).push(snapshotWorkspace(item));
   state.workspaces[state.workspaces.findIndex((entry) => entry.id === item.id)] = previous;
   if (selectedId && !previous.nodes.some((node) => node.id === selectedId)) selectedId = null;
@@ -657,6 +686,7 @@ async function redo() {
   if (!next) return announce('Nothing to redo.');
   next.agentReceipts = structuredClone(item.agentReceipts || {});
   next.projectRevision = item.projectRevision || 0;
+  preserveDocumentBinding(item, next);
   (state.history[item.id] ||= []).push(snapshotWorkspace(item));
   state.workspaces[state.workspaces.findIndex((entry) => entry.id === item.id)] = next;
   if (selectedId && !next.nodes.some((node) => node.id === selectedId)) selectedId = null;
@@ -812,26 +842,88 @@ async function agentSourceIndexStatus(source) {
   return status;
 }
 
-function startWorkspace(title, source = null, generate = false) {
+async function startWorkspace(title, source = null, generate = false) {
   const item = createWorkspace(title, `# ${title.trim() || 'Untitled workspace'}\n\n## Working notes\n\n`);
   if (source) {
     item.sources.push(source);
     addMediaSourceNode(item, source);
   }
+  if (!await claimProject(item.id)) return;
   state.workspaces.unshift(item); state.history[item.id] = [];
-  persist(false, item.id); openWorkspace(item.id);
+  persist(false, item.id); await openWorkspace(item.id);
   if (source) openSource(source.id);
   if (generate) openAiPanel({ targetId: 'article', draft: `Write an introductory article about ${title.trim() || 'this topic'} with a clear outline, examples, and open questions. Replace the current working notes.` });
 }
 
-async function uploadProject(file, { lfosHandle = null, successMessage = 'Project opened.' } = {}) {
+async function fileHash(bytes) {
+  const hash = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function uploadProject(file, options) {
+  const operation = projectOpenQueue.then(() => uploadProjectFile(file, options));
+  projectOpenQueue = operation.catch(() => {});
+  return operation;
+}
+
+async function uploadProjectFile(file, { lfosHandle = null, successMessage = 'Project opened.' } = {}) {
   if (!file) { if (lfosHandle) await lfos.release(lfosHandle); return; }
+  let documentId = null, incomingHash = null;
+  if (lfosHandle) {
+    try {
+      documentId = await lfos.documentIdentity(lfosHandle);
+      if (!await coordinator.acquire(`document:${documentId}`)) {
+        await lfos.release(lfosHandle);
+        announce('This LFOS document is already open in another window. Its window was requested.'); return;
+      }
+      file = (await lfos.readProject(lfosHandle)).file;
+      incomingHash = await fileHash(await file.arrayBuffer());
+      await refreshLibrary();
+      const existing = state.workspaces.find(w => w.lfosDocumentId === documentId);
+      if (existing) {
+        if (lfosDocuments.has(existing.id)) {
+          await lfos.release(lfosHandle); await openWorkspace(existing.id); return;
+        }
+        if (!await claimProject(existing.id)) { await lfos.release(lfosHandle); releaseDocumentIfUnused(documentId); return; }
+        // Refresh after acquiring ownership; a previous writer may have just saved.
+        const latest = await readDatabaseState();
+        const saved = latest.workspaces.find(w => w.id === existing.id);
+        if (saved) {
+          state.workspaces = state.workspaces.filter(w => w.id !== existing.id); state.workspaces.push(saved);
+          for (const kind of ['history', 'redo', 'chats', 'databaseRevisions']) (state[kind] ||= {})[saved.id] = latest[kind][saved.id];
+        }
+        const current = saved || existing;
+        if (current.lfosFileHash === incomingHash) {
+          rememberLFOSDocument(current.id, lfosHandle);
+          if ((current.projectRevision || 0) !== (current.lfosSavedProjectRevision || 0)) {
+            lfosDocuments.get(current.id).revision--;
+            syncLFOSUnsavedChanges(); scheduleLFOSAutosave();
+          }
+          await openWorkspace(current.id); return;
+        }
+        // The external file changed. Preserve the local project independently,
+        // rather than granting a fresh write revision to stale local contents.
+        delete current.lfosDocumentId; delete current.lfosFileHash; delete current.lfosSavedProjectRevision;
+        current.title += ' (local copy)';
+        if (!await persist(true, current.id)) throw new Error('Could not preserve the local copy.');
+        announce('The LFOS file changed. Its previous local copy was kept separately.');
+      }
+    } catch (error) { await lfos.release(lfosHandle); if (documentId) releaseDocumentIfUnused(documentId); throw error; }
+  }
   let imported;
   try {
     if (!file.name.toLowerCase().endsWith(PROJECT_EXTENSION)) throw new Error(`Choose a ${PROJECT_EXTENSION} project file.`);
     imported = await backgroundCompute({type: 'import', file});
+    if (!await claimProject(imported.workspace.id)) throw new Error('Could not own the imported project.');
+    if (documentId) {
+      imported.workspace.lfosDocumentId = documentId;
+      imported.workspace.lfosFileHash = incomingHash;
+      imported.workspace.lfosSavedProjectRevision = 1;
+    }
   } catch (error) {
     if (lfosHandle) await lfos.release(lfosHandle);
+    if (documentId) releaseDocumentIfUnused(documentId);
+    if (imported) coordinator.release(`project:${imported.workspace.id}`);
     throw error;
   }
   const storedPdfIds = [];
@@ -851,6 +943,8 @@ async function uploadProject(file, { lfosHandle = null, successMessage = 'Projec
     delete state.history[imported.workspace.id]; delete state.redo[imported.workspace.id]; delete state.chats[imported.workspace.id];
     await Promise.allSettled(storedPdfIds.flatMap(({ id, type }) => type === 'pdf' ? [deletePdf(id), deleteSourceTextIndex(id)] : [deleteMedia(id)]));
     if (lfosHandle) await lfos.release(lfosHandle);
+    if (documentId) releaseDocumentIfUnused(documentId);
+    if (imported) coordinator.release(`project:${imported.workspace.id}`);
     throw error;
   }
   openWorkspace(imported.workspace.id);
@@ -883,13 +977,13 @@ function openNewProjectGuide() {
     if (error) return announce(error);
     control.disabled = true;
     try {
-      if (entryMode === 'topic') startWorkspace(title.value.trim(), null, aiFeaturesEnabled);
+      if (entryMode === 'topic') await startWorkspace(title.value.trim(), null, aiFeaturesEnabled);
       else if (entryMode === 'paste') {
         const name = title.value.trim() || pasted.value.trim().split('\n')[0].slice(0, 80) || 'Pasted source';
-        startWorkspace(name, pastedSource(name, pasted.value));
+        await startWorkspace(name, pastedSource(name, pasted.value));
       } else {
         const source = await pdfSource(pdf.files[0]);
-        startWorkspace(title.value.trim() || source.title, source);
+        await startWorkspace(title.value.trim() || source.title, source);
       }
       close();
     } catch (error) { announce(`Could not create project: ${error.message}`); }
@@ -980,8 +1074,9 @@ function renderHome() {
     tile.firstElementChild.append(el('span', { class: 'tile-glyph', text: '◈' }), el('span', {}, el('strong', { text: item.title }), el('small', { text: `${item.nodes.length} connected node${item.nodes.length === 1 ? '' : 's'}` })), el('span', { class: 'tile-arrow', text: '↗' }));
     cards.append(tile);
   }
-  const exampleButton = button('Explore the Plate tectonics example', () => {
+  const exampleButton = button('Explore the Plate tectonics example', async () => {
     const item = createWorkspace('Plate tectonics', example);
+    if (!await claimProject(item.id)) return;
     state.workspaces.unshift(item); state.history[item.id] = [];
     const topics = [
       { title: 'What moves the plates?', body: 'Investigate the forces behind slow plate motion.' },
@@ -991,7 +1086,7 @@ function renderHome() {
     ];
     for (const topic of topics) item.nodes.push({ id: crypto.randomUUID(), document: { type: 'markdown', markdown: `# ${topic.title}\n\n${topic.body}` }, parentId: null, anchor: null, collapsed: false, provenance: 'learner' });
     attachExampleAnchors(item);
-    ensurePositions(item); persist(false, item.id); openWorkspace(item.id);
+    ensurePositions(item); persist(false, item.id); await openWorkspace(item.id);
   }, 'example-link');
   if (loadError) exampleButton.disabled = true;
   const header = el('header', { class: 'home-header' },
@@ -1022,9 +1117,21 @@ async function openInitialLFOSProject() {
 }
 
 async function deleteWorkspace(id) {
-  const item = state.workspaces.find((entry) => entry.id === id);
+  let item = state.workspaces.find((entry) => entry.id === id);
   if (!item || !await confirmAction({ title: 'Delete project?', message: `“${item.title}” and all its connected nodes will be permanently deleted. This cannot be undone.`, confirmLabel: 'Delete project', danger: true })) return;
+  const alreadyOwned = coordinator.owns(`project:${id}`);
+  if (!await claimProject(id)) return;
+  if (!alreadyOwned) {
+    try {
+      const latest = await readDatabaseState();
+      item = latest.workspaces.find(w => w.id === id);
+      if (!item) { coordinator.release(`project:${id}`); await refreshLibrary(); return; }
+      state.databaseRevisions[id] = latest.databaseRevisions[id];
+    } catch (error) { coordinator.release(`project:${id}`); announce(error.message); return; }
+  }
+  try { await pauseProjectTasks(id); } catch (error) { announce(error.message); return; }
   forgetLFOSDocument(id);
+  if (item.lfosDocumentId) void lfosDocumentStore.queue.then(() => releaseDocumentIfUnused(item.lfosDocumentId));
   for (const source of item.sources || []) if (['pdf', 'image', 'video', 'file'].includes(source.type)) pendingMediaDeletes.set(source.id, source.type);
   for (const node of item.nodes || []) pdfNodePages.delete(node.id);
   state.workspaces = state.workspaces.filter((entry) => entry.id !== id);
@@ -1032,7 +1139,48 @@ async function deleteWorkspace(id) {
   persist(false, id); renderHome();
 }
 
-function openWorkspace(id) {
+async function refreshLibrary() {
+  if (!state) return;
+  const request = ++libraryRefreshSequence;
+  const latest = await readDatabaseState();
+  if (request !== libraryRefreshSequence) return;
+  // Owned projects may contain unsaved edits; only import unowned records.
+  const owned = state.workspaces.filter(w => coordinator.owns(`project:${w.id}`));
+  state.workspaces = [...owned, ...latest.workspaces.filter(w => !coordinator.owns(`project:${w.id}`))];
+  for (const kind of ['history', 'redo', 'chats', 'databaseRevisions']) {
+    state[kind] ||= {};
+    for (const id of Object.keys(state[kind])) if (!coordinator.owns(`project:${id}`)) delete state[kind][id];
+    for (const [id, value] of Object.entries(latest[kind] || {})) if (!coordinator.owns(`project:${id}`)) state[kind][id] = value;
+  }
+  if (app.querySelector('.home')) renderHome();
+}
+async function claimProject(id) {
+  try {
+    const claimed = await coordinator.acquire(`project:${id}`);
+    if (!claimed) announce('This project is open in another window. Its window was requested.');
+    return claimed;
+  } catch (error) { announce(error.message); return false; }
+}
+let openingProject = 0;
+async function openWorkspace(id) {
+  const request = ++openingProject;
+  if (!coordinator.owns(`project:${id}`)) {
+    // Refresh under the lease, so an owner's final committed edits are visible.
+    if (!await claimProject(id)) return;
+    try {
+      const latest = await readDatabaseState();
+      const workspace = latest.workspaces.find(w => w.id === id);
+      if (!workspace) { coordinator.release(`project:${id}`); await refreshLibrary(); return; }
+      state.workspaces = state.workspaces.filter(w => w.id !== id); state.workspaces.push(workspace);
+      for (const kind of ['history', 'redo', 'chats', 'databaseRevisions']) (state[kind] ||= {})[id] = latest[kind][id];
+    } catch (error) { coordinator.release(`project:${id}`); announce(error.message); return; }
+  }
+  const project = state.workspaces.find(w => w.id === id);
+  if (project?.lfosDocumentId && !coordinator.owns(`document:${project.lfosDocumentId}`)) {
+    if (!await coordinator.acquire(`document:${project.lfosDocumentId}`)) { coordinator.release(`project:${id}`); announce('This LFOS document is already open in another window.'); return; }
+  }
+  if (request !== openingProject) return;
+  scheduleProjectRegistration();
   currentId = id; disposeAiPanel(); selectedId = null; selectedIds.clear(); editingMarkdown = false; editingTarget = null; editingBeforeView = null; selectedPassage = null; editGroup = null; openSourceId = null;
   graphFocus = null; graphFocusNodeIds = null; spaceKeySession = null;
   const item = work(); if (!item) return renderHome();
@@ -1046,7 +1194,7 @@ function openWorkspace(id) {
     persist();
   }
   ensurePositions(item);
-  const saved = item.view || {};
+  const saved = windowViews.get(item.id) || {};
   // First mount must have the same valid camera/layer setup as later rerenders.
   // Reset the previous document's bounds before building this scene's paths.
   rootBounds = { ...ROOT, width: item.layout.articleSize.width, height: item.layout.articleSize.minHeight };
@@ -1077,8 +1225,7 @@ function attachExampleAnchors(item) {
 function saveView() {
   if (graphFocus || editingTarget) return;
   const item = work(); if (!item) return;
-  item.view = { ...view, outlineOpen };
-  viewPersistence.schedule(item.id, item.view);
+  viewPersistence.schedule(item.id, { ...view, outlineOpen });
 }
 
 function scheduleViewRender() {
@@ -1587,7 +1734,18 @@ function renderCanvas(item) {
   const geometry = el('div', { class: 'geometry-controls', role: 'toolbar', 'aria-label': 'Node placement controls' },
     geometryToggle('snapping', 'Snap'),
     geometryToggle('alignment', 'Align'));
-  const controls = el('div', { class: 'canvas-control-cluster' }, zoom, geometry);
+  const touchSelect = button('Select', () => {
+    const active = viewport.dataset.touchSelect !== 'true';
+    viewport.dataset.touchSelect = String(active);
+    touchSelect.setAttribute('aria-pressed', String(active));
+  }, 'geometry-toggle', { 'aria-label': 'Select multiple nodes by touch', 'aria-pressed': 'false', title: 'Drag empty canvas to select nodes. Turn off to pan; use two fingers to pan and zoom in either mode.' });
+  const touchControls = el('div', { class: 'geometry-controls touch-canvas-controls', role: 'toolbar', 'aria-label': 'Touch canvas controls' },
+    touchSelect,
+    button('＋', () => {
+      const rect = viewport.getBoundingClientRect();
+      openContextMenu(viewport, rect.left + rect.width / 2, rect.top + rect.height / 2);
+    }, 'geometry-toggle', { 'aria-label': 'Canvas actions', title: 'Add a node or fit the view' }));
+  const controls = el('div', { class: 'canvas-control-cluster' }, zoom, geometry, touchControls);
   const shell = el('div', { class: `canvas-shell ${graphFocus ? 'graph-focus-active graph-focus-readonly' : ''} ${editingTarget ? 'editing-mode-active' : ''}`.trim() }, viewport, controls);
   if (outlineOpen) shell.append(renderOutline(item));
   if (!graphIsReadOnly() && !selectedId && selectedIds.size > 1) {
@@ -1623,6 +1781,15 @@ function renderGraphFocusToolbar(item) {
 
 function attachPanAndZoom(viewport) {
   let suppressCanvasClick = false;
+  attachCanvasTouch(viewport, {
+    getView: () => view,
+    updateView: (next) => { Object.assign(view, next); scheduleViewRender(); },
+    saveView,
+    setActive: (active) => { gestureActive = active; gestureUntil = performance.now() + 300; if (active) closeContextMenu(); },
+    clearSelection: () => { selectedId = null; selectedIds.clear(); selectedPassage = null; activeConnection = null; syncCanvasSelection(); },
+    openMenu: (x, y) => openContextMenu(viewport, x, y),
+    selectionMode: () => viewport.dataset.touchSelect === 'true'
+  });
   viewport.addEventListener('pointerdown', (event) => {
     if (event.button === 0 && !event.target.closest('.paper, .topic-card, .edge-label-chip, .connector-hit, .connection-handle')) {
       event.preventDefault();
@@ -1637,6 +1804,7 @@ function attachPanAndZoom(viewport) {
         return rect.left < box.right && rect.right > box.left && rect.top < box.bottom && rect.bottom > box.top;
       });
       const move = (next) => {
+        if (next.pointerId != null && next.pointerId !== event.pointerId) return;
         if (!start.moved && Math.hypot(next.clientX - start.x, next.clientY - start.y) < 5) return;
         if (!start.moved) { start.moved = true; viewport.append(rectangle); viewport.classList.add('selecting'); }
         const box = bounds(next.clientX, next.clientY);
@@ -1645,9 +1813,12 @@ function attachPanAndZoom(viewport) {
         viewport.querySelectorAll('.topic-card').forEach((card) => card.classList.toggle('marquee-target', included.has(card)));
       };
       const finish = (next) => {
+        if (next.pointerId != null && next.pointerId !== event.pointerId) return;
         viewport.removeEventListener('pointermove', move);
         viewport.removeEventListener('pointerup', finish);
         viewport.removeEventListener('pointercancel', cancel);
+        viewport.removeEventListener('lostpointercapture', cancel);
+        window.removeEventListener('blur', cancel);
         if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
         viewport.classList.remove('selecting');
         if (start.moved && next.type === 'pointerup') {
@@ -1666,10 +1837,12 @@ function attachPanAndZoom(viewport) {
           viewport.querySelectorAll('.marquee-target').forEach((card) => card.classList.remove('marquee-target'));
         }
       };
-      const cancel = () => finish({ type: 'pointercancel' });
+      const cancel = (next) => finish({ type: 'pointercancel', pointerId: next?.pointerId });
       viewport.addEventListener('pointermove', move);
       viewport.addEventListener('pointerup', finish);
       viewport.addEventListener('pointercancel', cancel);
+      viewport.addEventListener('lostpointercapture', cancel);
+      window.addEventListener('blur', cancel);
       return;
     }
     if (event.button !== 2 || event.target.closest('input, textarea, select, [contenteditable]')) return;
@@ -1679,6 +1852,7 @@ function attachPanAndZoom(viewport) {
     gestureActive = true;
     viewport.setPointerCapture(event.pointerId);
     const move = (next) => {
+      if (next.pointerId != null && next.pointerId !== event.pointerId) return;
       if (!start.moved && Math.hypot(next.clientX - start.x, next.clientY - start.y) < 5) return;
       start.moved = true;
       viewport.classList.add('panning');
@@ -1687,6 +1861,7 @@ function attachPanAndZoom(viewport) {
       scheduleViewRender();
     };
     const finish = (next) => {
+      if (next.pointerId != null && next.pointerId !== event.pointerId) return;
       viewport.removeEventListener('pointermove', move);
       viewport.removeEventListener('pointerup', finish);
       viewport.removeEventListener('pointercancel', cancel);
@@ -2000,6 +2175,7 @@ function renderConnectionHandles(scene, item) {
       let nextSide = side;
       let moved = false;
       let replacementId = null;
+      let finished = false;
       const move = (next) => {
         if (next.pointerId != null && next.pointerId !== event.pointerId) return;
     if (!moved && Math.hypot(next.clientX - event.clientX, next.clientY - event.clientY) < 5) return;
@@ -2022,12 +2198,21 @@ function renderConnectionHandles(scene, item) {
         previewConnection(item, id, end, nextSide, replacementId);
       };
       const finish = (next) => {
+        if (finished || (next.pointerId != null && next.pointerId !== event.pointerId)) return;
+        finished = true;
         handle.removeEventListener('pointermove', move);
         handle.removeEventListener('pointerup', finish);
         handle.removeEventListener('pointercancel', finish);
+        handle.removeEventListener('lostpointercapture', cancel);
+        window.removeEventListener('blur', cancel);
         handle.classList.remove('dragging');
         document.querySelectorAll('.topic-card.edge-target').forEach((card) => card.classList.remove('edge-target'));
-        if (next.type === 'pointercancel') { renderWorkspace(); return; }
+        if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+        if (next.type !== 'pointerup') {
+          handle.style.left = `${position.x}px`; handle.style.top = `${position.y}px`;
+          updateConnectors();
+          return;
+        }
         if (!moved || (!replacementId && nextSide === side)) { renderWorkspace(); return; }
         change((entry) => {
             const edge = entry.edges.find((entry) => entry.id === id);
@@ -2048,9 +2233,12 @@ function renderConnectionHandles(scene, item) {
             edge[end === 'from' ? 'fromSide' : 'toSide'] = nextSide;
         });
       };
+      const cancel = () => finish({ type: 'pointercancel' });
       handle.addEventListener('pointermove', move);
       handle.addEventListener('pointerup', finish);
       handle.addEventListener('pointercancel', finish);
+      handle.addEventListener('lostpointercapture', cancel);
+      window.addEventListener('blur', cancel);
     });
     handle.addEventListener('keydown', (event) => {
       const nextSide = { ArrowLeft: 'left', ArrowUp: 'top', ArrowRight: 'right', ArrowDown: 'bottom', Home: 'auto' }[event.key];
@@ -2319,15 +2507,19 @@ function enableMediaViewport(viewer, stage, node, redraw) {
     stage.setPointerCapture?.(event.pointerId);
     stage.classList.add('media-panning');
     const move = (next) => {
+      if (next.pointerId != null && next.pointerId !== event.pointerId) return;
       stage.scrollLeft = start.left - (next.clientX - start.x);
       stage.scrollTop = start.top - (next.clientY - start.y);
     };
-    const finish = () => {
+    const finish = (next) => {
+      if (next?.pointerId != null && next.pointerId !== event.pointerId) return;
       stage.removeEventListener('pointermove', move); stage.removeEventListener('pointerup', finish); stage.removeEventListener('pointercancel', finish);
+      stage.removeEventListener('lostpointercapture', finish); window.removeEventListener('blur', finish);
       stage.classList.remove('media-panning');
       if (stage.hasPointerCapture?.(event.pointerId)) stage.releasePointerCapture(event.pointerId);
     };
     stage.addEventListener('pointermove', move); stage.addEventListener('pointerup', finish); stage.addEventListener('pointercancel', finish);
+    stage.addEventListener('lostpointercapture', finish); window.addEventListener('blur', finish);
   });
   stage.title = 'Select this node to pan. Hold Ctrl or Command and scroll to zoom.';
 }
@@ -2553,6 +2745,7 @@ function startEdgeDrag(event, node, grip, preserveClick = false, prepareSource =
   grip.setPointerCapture?.(event.pointerId);
   let target = null, destination = null, moved = false, sides = {};
   const move = (next) => {
+    if (next.pointerId != null && next.pointerId !== event.pointerId) return;
     if (!moved && Math.hypot(next.clientX - event.clientX, next.clientY - event.clientY) < 5) return;
     if (!moved) { prepareSource?.(); window.getSelection()?.removeAllRanges(); moved = true; }
     const rect = scene.getBoundingClientRect();
@@ -2678,6 +2871,7 @@ function startNodeResize(event, node, card, grip) {
   const targets = nodeGeometryTargets(item, [node.id]);
   grip.setPointerCapture(event.pointerId);
   const move = (next) => {
+    if (next.pointerId != null && next.pointerId !== event.pointerId) return;
     const proposedWidth = clamp(Math.round(original.width + (next.clientX - x) / view.zoom), NODE_SIZE_LIMITS.minWidth, NODE_SIZE_LIMITS.maxWidth);
     const proposedHeight = clamp(Math.round(original.height + (next.clientY - y) / view.zoom), NODE_SIZE_LIMITS.minHeight, maximumNodeHeight(card, proposedWidth));
     const resolved = resolveResizeGeometry({
@@ -2700,26 +2894,28 @@ function startNodeResize(event, node, card, grip) {
   };
   let ended = false;
   const up = (next) => {
-    if (ended) return;
+    if (ended || (next?.pointerId != null && next.pointerId !== event.pointerId)) return;
     ended = true;
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
-    window.removeEventListener('mouseup', up);
     window.removeEventListener('pointercancel', up);
-    grip.removeEventListener('lostpointercapture', up);
+    window.removeEventListener('blur', cancel);
+    grip.removeEventListener('lostpointercapture', cancel);
+    if (grip.hasPointerCapture?.(event.pointerId)) grip.releasePointerCapture(event.pointerId);
     showAlignmentGuides();
     const final = item.layout.sizes[node.id] || { width: original.width, height: original.height };
     item.layout.sizes[node.id] = { width: original.width, height: original.height };
-    if (next?.type !== 'pointercancel' && (final.width !== original.width || final.height !== original.height)) {
+    if (next?.type === 'pointerup' && (final.width !== original.width || final.height !== original.height)) {
       change((entry) => { entry.layout.sizes[node.id] = final; }, { rerender: false });
     }
     syncNodeGeometry(item, [node.id]);
   };
+  const cancel = () => up({ type: 'pointercancel' });
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
-  window.addEventListener('mouseup', up);
   window.addEventListener('pointercancel', up);
-  grip.addEventListener('lostpointercapture', up);
+  window.addEventListener('blur', cancel);
+  grip.addEventListener('lostpointercapture', cancel);
 }
 
 function resizeNodeWithKeys(event, node) {
@@ -2764,7 +2960,8 @@ function startNodeDrag(event, node, card) {
   const originX = event.clientX, originY = event.clientY;
   let moved = false, ended = false;
   const move = (next) => {
-    if (!moved && Math.hypot(next.clientX - originX, next.clientY - originY) < 5) return;
+    if (next.pointerId != null && next.pointerId !== event.pointerId) return;
+    if (!moved && Math.hypot(next.clientX - originX, next.clientY - originY) < (event.pointerType === 'touch' ? 8 : 5)) return;
     if (!moved) {
       moved = true;
       card._nodeDragged = true;
@@ -2791,7 +2988,7 @@ function startNodeDrag(event, node, card) {
     updateConnectors();
   };
   const up = (next) => {
-    if (ended) return;
+    if (ended || (next?.pointerId != null && next.pointerId !== event.pointerId)) return;
     ended = true;
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
@@ -2799,11 +2996,12 @@ function startNodeDrag(event, node, card) {
     card.removeEventListener('lostpointercapture', cancel);
     window.removeEventListener('blur', cancel);
     if (card.hasPointerCapture?.(event.pointerId)) card.releasePointerCapture(event.pointerId);
+    if (next?.type !== 'pointerup') card._nodeDragged = false;
     if (!moved) return;
     showAlignmentGuides();
     const final = Object.fromEntries(moving.map((id) => [id, { ...item.layout.positions[id] }]));
     for (const id of moving) item.layout.positions[id] = original[id];
-    if (next?.type !== 'pointercancel' && moving.some((id) => final[id].x !== original[id].x || final[id].y !== original[id].y)) {
+    if (next?.type === 'pointerup' && moving.some((id) => final[id].x !== original[id].x || final[id].y !== original[id].y)) {
       change((entry) => { for (const id of moving) entry.layout.positions[id] = final[id]; }, { rerender: false });
     }
     syncNodeGeometry(item, moving);
@@ -3530,26 +3728,36 @@ function startPaperResize(event, paper, grip) {
   const startX = event.clientX, startY = event.clientY;
   grip.setPointerCapture(event.pointerId);
   const move = (next) => {
+    if (next.pointerId != null && next.pointerId !== event.pointerId) return;
     const width = clamp(Math.round(size.width + (next.clientX - startX) / view.zoom), 320, 1100);
     const minHeight = clamp(Math.round(size.minHeight + (next.clientY - startY) / view.zoom), 250, 2400);
     paper.style.width = `${width}px`; paper.style.minHeight = `${minHeight}px`;
     measurePaper();
   };
   let ended = false;
-  const up = () => {
-    if (ended) return;
+  const up = (next) => {
+    if (ended || (next?.pointerId != null && next.pointerId !== event.pointerId)) return;
     ended = true;
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
-    window.removeEventListener('mouseup', up);
-    grip.removeEventListener('lostpointercapture', up);
+    window.removeEventListener('pointercancel', up);
+    window.removeEventListener('blur', cancel);
+    grip.removeEventListener('lostpointercapture', cancel);
+    if (grip.hasPointerCapture?.(event.pointerId)) grip.releasePointerCapture(event.pointerId);
     const final = { width: Number.parseInt(paper.style.width, 10), minHeight: Number.parseInt(paper.style.minHeight, 10) };
-    if (final.width !== size.width || final.minHeight !== size.minHeight) change((entry) => { entry.layout.articleSize = final; }, { rerender: false });
+    paper.style.width = `${size.width}px`; paper.style.minHeight = `${size.minHeight}px`;
+    if (next?.type === 'pointerup' && (final.width !== size.width || final.minHeight !== size.minHeight)) {
+      change((entry) => { entry.layout.articleSize = final; }, { rerender: false });
+      paper.style.width = `${final.width}px`; paper.style.minHeight = `${final.minHeight}px`;
+    }
+    measurePaper();
   };
+  const cancel = () => up({ type: 'pointercancel' });
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
-  window.addEventListener('mouseup', up);
-  grip.addEventListener('lostpointercapture', up);
+  window.addEventListener('pointercancel', up);
+  window.addEventListener('blur', cancel);
+  grip.addEventListener('lostpointercapture', cancel);
 }
 
 function resizeEditor(editor) {
@@ -4921,6 +5129,7 @@ function scheduleProjectRegistration() {
   if (lfos.agentAvailable) providerRegistrationTimer = setTimeout(() => registerProjectProvider().catch(error => { if (aiPanel?.assistantMode === 'agent') { aiPanel.error = error.message; renderAiPanel(); } }), 150);
 }
 function receiveHostAgentTask(task) {
+  if (task.projectId && !coordinator.owns(`project:${task.projectId}`)) return;
   hostAgentTasks.set(task.id, task);
   if (['completed', 'cancelled'].includes(task.status)) projectAgentService.forgetTask(task.id);
   const attachedProject = state.workspaces.find(entry => entry.id === task.projectId);
@@ -5054,7 +5263,7 @@ async function pauseProjectTasks(projectId) {
   await Promise.all(tasks.map(task => lfos.lfos.agent.tasks.pause(task.id)));
 }
 const projectAgentService = new ProjectAgentService({
-  getWorkspace: sessionId => state.workspaces.find(entry => projectSession(entry).id === sessionId),
+  getWorkspace: sessionId => state.workspaces.find(entry => coordinator.owns(`project:${entry.id}`) && projectSession(entry).id === sessionId),
   async commit(before, next) {
     if (committingProject) throw Object.assign(new Error('Another project change is being saved.'), { code: 'BUSY' });
     committingProject = true; app.inert = true;
@@ -5089,7 +5298,8 @@ const projectAgentService = new ProjectAgentService({
 });
 async function registerProjectProvider() {
   if (!lfos.agentAvailable || !navigator.locks || loadError) throw new Error('Agent project access is unavailable in this browser or storage session.');
-  await lfos.lfos.agent.registerProvider({ sessions: state.workspaces.map(projectSession), capabilities: state.workspaces.flatMap(projectCapabilities), invoke: (call, context) => projectAgentService.invoke(call, context), operationStatus: call => projectAgentService.operationStatus(call) });
+  const owned = state.workspaces.filter(project => coordinator.owns(`project:${project.id}`));
+  await lfos.lfos.agent.registerProvider({ sessions: owned.map(projectSession), capabilities: owned.flatMap(projectCapabilities), invoke: (call, context) => projectAgentService.invoke(call, context), operationStatus: call => projectAgentService.operationStatus(call) });
 }
 async function initializeProjectAgent() {
   await lfosConnection;
