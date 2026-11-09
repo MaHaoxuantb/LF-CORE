@@ -1734,13 +1734,7 @@ function renderCanvas(item) {
   const geometry = el('div', { class: 'geometry-controls', role: 'toolbar', 'aria-label': 'Node placement controls' },
     geometryToggle('snapping', 'Snap'),
     geometryToggle('alignment', 'Align'));
-  const touchSelect = button('Select', () => {
-    const active = viewport.dataset.touchSelect !== 'true';
-    viewport.dataset.touchSelect = String(active);
-    touchSelect.setAttribute('aria-pressed', String(active));
-  }, 'geometry-toggle', { 'aria-label': 'Select multiple nodes by touch', 'aria-pressed': 'false', title: 'Drag empty canvas to select nodes. Turn off to pan; use two fingers to pan and zoom in either mode.' });
   const touchControls = el('div', { class: 'geometry-controls touch-canvas-controls', role: 'toolbar', 'aria-label': 'Touch canvas controls' },
-    touchSelect,
     button('＋', () => {
       const rect = viewport.getBoundingClientRect();
       openContextMenu(viewport, rect.left + rect.width / 2, rect.top + rect.height / 2);
@@ -1785,10 +1779,7 @@ function attachPanAndZoom(viewport) {
     getView: () => view,
     updateView: (next) => { Object.assign(view, next); scheduleViewRender(); },
     saveView,
-    setActive: (active) => { gestureActive = active; gestureUntil = performance.now() + 300; if (active) closeContextMenu(); },
-    clearSelection: () => { selectedId = null; selectedIds.clear(); selectedPassage = null; activeConnection = null; syncCanvasSelection(); },
-    openMenu: (x, y) => openContextMenu(viewport, x, y),
-    selectionMode: () => viewport.dataset.touchSelect === 'true'
+    setActive: (active) => { gestureActive = active; gestureUntil = performance.now() + 300; if (active) closeContextMenu(); }
   });
   viewport.addEventListener('pointerdown', (event) => {
     if (event.button === 0 && !event.target.closest('.paper, .topic-card, .edge-label-chip, .connector-hit, .connection-handle')) {

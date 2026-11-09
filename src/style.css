@@ -1392,14 +1392,8 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
     width: fit-content;
     max-width: calc(100% - 24px);
   }
-  .zoom-controls button, .geometry-controls .geometry-toggle { min-width: 44px; height: 44px; }
-  .geometry-controls { height: auto; }
-  .zoom-controls .zoom-value { min-width: 56px; }
   .workspace-chrome { flex-wrap: wrap; inset: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) auto max(10px, env(safe-area-inset-left)); }
   .workspace-chrome .header-left-group { max-width: 100%; flex: 1 1 auto; }
-  .workspace-chrome .header-navigation, .workspace-chrome .header-left, .workspace-chrome .header-right { height: auto; min-height: 52px; }
-  .workspace-chrome .header-icon { width: 44px; height: 44px; flex: none; }
-  .workspace-chrome .source-toggle, .workspace-chrome .workspace-title { min-height: 44px; }
   .workspace-chrome .header-right { margin-left: auto; }
   .workspace-chrome .document-menu-control { flex: 1 1 auto; }
   .workspace-chrome .workspace-title { max-width: 100%; }

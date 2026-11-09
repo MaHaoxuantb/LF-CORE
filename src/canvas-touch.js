@@ -1,15 +1,13 @@
-// Touch navigation owns the camera only on empty space or after a second
-// finger lands. A single touch on a card keeps its normal drag/edit behavior.
-export function attachCanvasTouch(viewport, { getView, updateView, saveView, setActive, clearSelection, openMenu, selectionMode }) {
+// Two fingers own the camera. One finger keeps selection, drag and edit behavior.
+export function attachCanvasTouch(viewport, { getView, updateView, saveView, setActive }) {
   const host = viewport.ownerDocument.defaultView;
   const pointers = new Map();
-  let gesture = null, contentScroll = null, suppressClick = false, handingOff = false, holdTimer = null;
+  let gesture = null, contentScroll = null, suppressClick = false, handingOff = false;
   const point = (event) => ({ x: event.clientX, y: event.clientY, target: event.target });
   const center = () => {
     const [a, b = a] = [...pointers.values()];
     return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, distance: Math.hypot(b.x - a.x, b.y - a.y) };
   };
-  const clearHold = () => { host.clearTimeout(holdTimer); holdTimer = null; };
   const capture = (id) => viewport.setPointerCapture(id);
   const release = (id) => { if (viewport.hasPointerCapture(id)) viewport.releasePointerCapture(id); };
   const baseline = () => { gesture = { ...gesture, camera: { ...getView() }, origin: center() }; };
@@ -23,7 +21,6 @@ export function attachCanvasTouch(viewport, { getView, updateView, saveView, set
     handingOff = false;
   };
   const stop = () => {
-    clearHold();
     const ids = [...pointers.keys()];
     pointers.clear();
     const changed = gesture?.changed && !gesture.scrolling;
@@ -61,9 +58,9 @@ export function attachCanvasTouch(viewport, { getView, updateView, saveView, set
       contentScroll.element.scrollTop = contentScroll.top - (event.clientY - contentScroll.y) / contentScroll.zoom;
       return;
     }
+    if (pointers.size < 2) return;
     const current = center(), { origin, camera } = gesture;
     if (!gesture.changed && Math.hypot(current.x - origin.x, current.y - origin.y) < 8 && Math.abs(current.distance - origin.distance) < 8) return;
-    clearHold();
     gesture.changed = true;
     suppressClick = true;
     event.preventDefault();
@@ -85,13 +82,9 @@ export function attachCanvasTouch(viewport, { getView, updateView, saveView, set
     if (owned && event.type === 'pointercancel') { suppressClick = true; stop(); return; }
     pointers.delete(event.pointerId);
     if (owned) {
-      clearHold();
       release(event.pointerId);
       if (pointers.size) baseline();
-      else {
-        if (!gesture.changed && !suppressClick) clearSelection();
-        stop();
-      }
+      else stop();
       event.preventDefault();
       event.stopImmediatePropagation();
     } else if (!pointers.size) stop();
@@ -101,7 +94,6 @@ export function attachCanvasTouch(viewport, { getView, updateView, saveView, set
     if (event.pointerType !== 'touch') return;
     const control = event.target.closest('button, input, textarea, select, a, [contenteditable], audio, video');
     if (!pointers.size && control && !control.matches('.resize-grip, .link-grip, .connection-handle')) return;
-    const blank = !event.target.closest('.paper, .topic-card, .edge-label-chip, .connector-hit, .connection-handle');
     pointers.set(event.pointerId, point(event));
     if (pointers.size === 1) {
       host.addEventListener('pointermove', move, { capture: true, passive: false });
@@ -113,18 +105,9 @@ export function attachCanvasTouch(viewport, { getView, updateView, saveView, set
       if (content && (content.scrollHeight > content.clientHeight || content.scrollWidth > content.clientWidth)) {
         contentScroll = { element: content, x: event.clientX, y: event.clientY, left: content.scrollLeft, top: content.scrollTop, zoom: getView().zoom };
       }
-      if (!blank || selectionMode()) return;
-      gesture = { changed: false };
-      baseline();
-      closeAndCapture(event);
-      holdTimer = host.setTimeout(() => {
-        holdTimer = null;
-        if (!gesture || gesture.changed || pointers.size !== 1) return;
-        suppressClick = true;
-        openMenu(event.clientX, event.clientY);
-      }, 550);
+      // Let the existing one-finger marquee and card handlers receive the touch.
+      return;
     } else {
-      clearHold();
       cancelInteraction();
       contentScroll = null;
       gesture = { changed: gesture?.changed || false };
@@ -144,7 +127,7 @@ export function attachCanvasTouch(viewport, { getView, updateView, saveView, set
   viewport.addEventListener('click', (event) => {
     if (suppressClick) { event.preventDefault(); event.stopImmediatePropagation(); }
   }, true);
-  // Safari's native callout must not cover the custom empty-canvas hold menu.
+  // Keep native context menus from interrupting active touch navigation.
   viewport.addEventListener('contextmenu', (event) => {
     if (gesture) event.preventDefault();
   }, true);

@@ -48,23 +48,21 @@ function fixture() {
     active: () => active, menus: () => menus, selection: (next) => { selection = next; } };
 }
 
-test('one finger pans in screen pixels, ignores jitter and unrelated pointers, and saves once', () => {
+test('one finger leaves selection events available and never pans the camera', () => {
   const f = fixture();
-  assert.equal(f.fire('pointerdown', 1, 100, 100).stopped, true);
-  f.fire('pointermove', 1, 103, 102);
+  for (const [type, x, y] of [['pointerdown', 100, 100], ['pointermove', 150, 130], ['pointerup', 150, 130]]) {
+    const event = f.fire(type, 1, x, y);
+    assert.equal(event.stopped, undefined);
+    assert.equal(event.prevented, undefined);
+  }
   assert.deepEqual(f.view(), { x: 20, y: 30, zoom: 1 });
-  f.fire('pointermove', 9, 900, 900);
-  f.fire('pointermove', 1, 150, 130);
-  assert.deepEqual(f.view(), { x: 70, y: 60, zoom: 1 });
-  f.fire('pointerup', 1, 150, 130);
-  assert.equal(f.saves(), 1);
+  assert.equal(f.saves(), 0);
   assert.equal(f.active(), false);
   assert.equal(f.captures.size, 0);
-  assert.equal(f.fire('click', 1, 150, 130).prevented, true);
-  assert.equal(f.cleared(), 0);
+  assert.equal(f.fire('click', 1, 150, 130).prevented, undefined);
 });
 
-test('pinching preserves the world point under the moving midpoint and continues with one finger', () => {
+test('pinching preserves the world point under the moving midpoint and stops moving when only one finger remains', () => {
   const f = fixture();
   f.fire('pointerdown', 1, 100, 100);
   f.fire('pointerdown', 2, 200, 100);
@@ -76,8 +74,7 @@ test('pinching preserves the world point under the moving midpoint and continues
   f.fire('pointerup', 2, 250, 120);
   const before = { ...f.view() };
   f.fire('pointermove', 1, 70, 150);
-  assert.equal(f.view().x, before.x + 20);
-  assert.equal(f.view().y, before.y + 30);
+  assert.deepEqual(f.view(), before);
   f.fire('pointerup', 1, 70, 150);
   assert.equal(f.saves(), 1);
 });
@@ -96,9 +93,8 @@ test('second finger cancels a card interaction before taking camera ownership', 
   assert.equal(f.saves(), 1);
 });
 
-test('selection mode keeps one-finger marquee available and still allows two-finger navigation', () => {
+test('one-finger marquee hands off to two-finger navigation', () => {
   const f = fixture();
-  f.selection(true);
   assert.equal(f.fire('pointerdown', 1, 100, 100).stopped, undefined);
   assert.equal(f.active(), false);
   assert.equal(f.fire('pointerdown', 2, 200, 100).stopped, true);
@@ -107,23 +103,6 @@ test('selection mode keeps one-finger marquee available and still allows two-fin
   f.host.dispatchEvent({ type: 'blur' });
   assert.equal(f.active(), false);
   assert.equal(f.captures.size, 0);
-});
-
-test('tap clears selection, hold opens the menu, and movement cancels the hold timer', () => {
-  const f = fixture();
-  f.fire('pointerdown', 1, 100, 100);
-  f.fire('pointerup', 1, 100, 100);
-  assert.equal(f.cleared(), 1);
-  assert.equal(f.saves(), 0);
-  f.fire('pointerdown', 2, 100, 100);
-  [...f.timers.values()][0]();
-  f.fire('pointerup', 2, 100, 100);
-  assert.equal(f.menus(), 1);
-  assert.equal(f.cleared(), 1);
-  f.fire('pointerdown', 3, 100, 100);
-  f.fire('pointermove', 3, 130, 100);
-  assert.equal(f.timers.size, 0);
-  f.fire('pointerup', 3, 130, 100);
 });
 
 test('inputs, mouse, and pen retain their normal event handling', () => {
@@ -154,6 +133,7 @@ test('swiping overflowing content scrolls the note without changing or saving th
 test('losing camera capture ends navigation and releases all gesture listeners', () => {
   const f = fixture();
   f.fire('pointerdown', 1, 100, 100);
+  f.fire('pointerdown', 2, 200, 100);
   f.fire('pointermove', 1, 140, 120);
   f.captures.delete(1);
   f.viewport.dispatchEvent({ type: 'lostpointercapture', pointerId: 1, target: f.viewport });
