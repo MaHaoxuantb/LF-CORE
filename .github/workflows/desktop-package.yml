@@ -1,0 +1,31 @@
+name: Desktop packaging compatibility
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package with Node ${{ matrix.node }}
+    runs-on: macos-15
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['24', 'node']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run desktop:package -- --arch=arm64
+      - name: Verify packaged app exists
+        run: test -f "out/LF CORE-darwin-arm64/LF CORE.app/Contents/Resources/app.asar"
