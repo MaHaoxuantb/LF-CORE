@@ -687,8 +687,11 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .connectors path.cross-line.one-way { stroke: var(--accent); stroke-width: 1.8; stroke-opacity: .72; stroke-dasharray: none; }
 :root[data-dark='true'] .connectors { --solid-connector-color: color-mix(in srgb, var(--accent) 70%, white); }
 :root[data-dark='true'] .connectors path.cross-line { stroke: var(--solid-connector-color); stroke-opacity: .78; }
-.connection-handle { position: absolute; z-index: 7; width: 22px; height: 22px; padding: 0; border: 2px solid #fff; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 3px 9px #0005; transform: translate(-50%, -50%); cursor: grab; touch-action: none; }
-.connection-handle:hover, .connection-handle:focus-visible, .connection-handle.dragging { outline: none; box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 30%, transparent), 0 3px 9px #0005; }
+/* Keep the hit target generous; only the centered dot is visible. */
+.connection-handle { position: absolute; z-index: 7; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; background: transparent; box-shadow: none; transform: translate(-50%, -50%); cursor: grab; touch-action: none; }
+.connection-handle::before { content: ''; position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; box-sizing: border-box; border: 1px solid #fff; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 1px 4px #0003; transform: translate(-50%, -50%); pointer-events: none; }
+.connection-handle:hover, .connection-handle:focus-visible, .connection-handle.dragging { outline: none; background: transparent; box-shadow: none; }
+.connection-handle:hover::before, .connection-handle:focus-visible::before, .connection-handle.dragging::before { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent), 0 1px 4px #0003; }
 .connection-handle.dragging { cursor: grabbing; }
 
 /* Phase 2 entry points and local source reader. */

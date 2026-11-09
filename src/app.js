@@ -2886,6 +2886,8 @@ function startNodeResize(event, node, card, grip) {
   let ended = false;
   const up = (next) => {
     if (ended || (next?.pointerId != null && next.pointerId !== event.pointerId)) return;
+    // Release can carry a newer position than the last delivered move.
+    if (next?.type === 'pointerup' && Number.isFinite(next.clientX) && Number.isFinite(next.clientY)) move(next);
     ended = true;
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
@@ -2901,7 +2903,13 @@ function startNodeResize(event, node, card, grip) {
     }
     syncNodeGeometry(item, [node.id]);
   };
-  const cancel = () => up({ type: 'pointercancel' });
+  const cancel = (next) => {
+    if (next?.pointerId != null && next.pointerId !== event.pointerId) return;
+    // Capture-loss notifications may arrive after a new pointer takes over,
+    // or after this pointer has already recaptured the same grip.
+    if (next?.type === 'lostpointercapture' && grip.hasPointerCapture?.(event.pointerId)) return;
+    up({ type: 'pointercancel', pointerId: next?.pointerId });
+  };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
   window.addEventListener('pointercancel', up);
@@ -3728,6 +3736,8 @@ function startPaperResize(event, paper, grip) {
   let ended = false;
   const up = (next) => {
     if (ended || (next?.pointerId != null && next.pointerId !== event.pointerId)) return;
+    // Release can carry a newer position than the last delivered move.
+    if (next?.type === 'pointerup' && Number.isFinite(next.clientX) && Number.isFinite(next.clientY)) move(next);
     ended = true;
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
@@ -3743,7 +3753,13 @@ function startPaperResize(event, paper, grip) {
     }
     measurePaper();
   };
-  const cancel = () => up({ type: 'pointercancel' });
+  const cancel = (next) => {
+    if (next?.pointerId != null && next.pointerId !== event.pointerId) return;
+    // Capture-loss notifications may arrive after a new pointer takes over,
+    // or after this pointer has already recaptured the same grip.
+    if (next?.type === 'lostpointercapture' && grip.hasPointerCapture?.(event.pointerId)) return;
+    up({ type: 'pointercancel', pointerId: next?.pointerId });
+  };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
   window.addEventListener('pointercancel', up);

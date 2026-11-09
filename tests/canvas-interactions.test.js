@@ -10,7 +10,17 @@ const source = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
 // booting storage, workers, PDF.js, and the rest of the application.
 function fixture() {
   const item = { id: 'project', layout: { positions: { a: { x: 0, y: 0 }, b: { x: 400, y: 100 } }, sizes: { a: { width: 240, height: 120 }, b: { width: 240, height: 120 } } } };
-  const element = () => ({ style: {}, attributes: {}, classList: { toggle() {} }, setAttribute(name, value) { this.attributes[name] = value; }, setPointerCapture() {}, hasPointerCapture: () => false, addEventListener() {}, removeEventListener() {} });
+  const element = () => {
+    const captures = new Set(), events = new Map();
+    return { style: {}, attributes: {}, captures, classList: { toggle() {} },
+      setAttribute(name, value) { this.attributes[name] = value; },
+      setPointerCapture(id) { captures.add(id); }, hasPointerCapture: (id) => captures.has(id),
+      releasePointerCapture(id) { captures.delete(id); },
+      addEventListener(type, listener) { events.set(type, listener); },
+      removeEventListener(type) { events.delete(type); },
+      emit(type, properties) { events.get(type)?.({ type, ...properties }); }
+    };
+  };
   const cards = { a: element(), b: element() }, controls = { Undo: element(), Redo: element(), 'Toggle snap': element(), 'Toggle align': element() };
   const listeners = new Map();
   let saves = 0, connections = 0;
@@ -37,7 +47,7 @@ function fixture() {
       removeEventListener: (name) => listeners.delete(name)
     }
   });
-  for (const name of ['setGeometryPreference', 'change', 'syncNodeGeometry', 'startNodeDrag', 'startNodeResize', 'resizeNodeWithKeys', 'refreshWorkspacePanels', 'toggleOutline', 'openSource', 'disposeAiPanel', 'toggleAiPanel', 'toggleResearchPanel']) {
+  for (const name of ['setGeometryPreference', 'change', 'syncNodeGeometry', 'startNodeDrag', 'startNodeResize', 'startPaperResize', 'resizeNodeWithKeys', 'refreshWorkspacePanels', 'toggleOutline', 'openSource', 'disposeAiPanel', 'toggleAiPanel', 'toggleResearchPanel']) {
     const match = source.match(new RegExp(`^function ${name}\\([^]*?^}`, 'm'));
     assert.ok(match, `${name} exists`);
     vm.runInContext(match[0], context);
@@ -234,3 +244,56 @@ test('outline toggling preserves the canvas and updates its existing header cont
   assert.equal(control.attributes['aria-label'], 'Open outline');
   assert.equal(saved, 2);
 });
+
+// Touch and trackpad/mouse must remain interchangeable on the same grip.
+for (const paper of [false, true]) {
+  function resizeFixture() {
+    const f = fixture();
+    f.context.geometryPreferences = { snapping: false, alignment: false };
+    f.item.layout.articleSize = { width: 490, minHeight: 550 };
+    f.cards.a.style.width = '490px'; f.cards.a.style.minHeight = '550px';
+    f.context.measurePaper = () => {};
+    f.start = (pointer) => paper
+      ? f.context.startPaperResize(pointer, f.cards.a, f.cards.a)
+      : f.context.startNodeResize(pointer, { id: 'a' }, f.cards.a, f.cards.a);
+    f.size = () => structuredClone(paper ? f.item.layout.articleSize : f.item.layout.sizes.a);
+    return f;
+  }
+  const name = paper ? 'article' : 'node';
+  test(`${name} resize survives touch → mouse → touch and stale capture-loss events`, () => {
+    const f = resizeFixture();
+    let previousId = 99;
+    for (const [id, pointerType] of [[11, 'touch'], [1, 'mouse'], [12, 'touch']]) {
+      const before = f.size();
+      f.start({ ...f.pointer, pointerId: id, pointerType });
+      f.cards.a.emit('lostpointercapture', { pointerId: previousId });
+      assert.ok(f.listeners.has('pointermove'), 'previous pointer must not cancel this resize');
+      f.cards.a.emit('lostpointercapture', { pointerId: id });
+      assert.ok(f.listeners.has('pointermove'), 'delayed loss must not cancel a recaptured pointer');
+      f.listeners.get('pointermove')({ pointerId: id, clientX: 40, clientY: 20 });
+      f.listeners.get('pointerup')({ type: 'pointerup', pointerId: id, clientX: 40, clientY: 20 });
+      assert.equal(f.size().width, before.width + 40);
+      assert.equal(f.listeners.size, 0);
+      assert.equal(f.cards.a.captures.size, 0);
+      previousId = id;
+    }
+    assert.equal(f.saves(), 3);
+  });
+  test(`${name} resize uses the final release position even without a last pointermove`, () => {
+    const f = resizeFixture(), before = f.size();
+    f.start({ ...f.pointer, pointerType: 'mouse' });
+    f.listeners.get('pointerup')({ type: 'pointerup', pointerId: 1, clientX: 40, clientY: 20 });
+    assert.equal(f.size().width, before.width + 40);
+    assert.equal(f.saves(), 1);
+  });
+  test(`${name} resize rolls back on actual capture loss`, () => {
+    const f = resizeFixture(), before = f.size();
+    f.start(f.pointer);
+    f.listeners.get('pointermove')({ pointerId: 1, clientX: 40, clientY: 20 });
+    f.cards.a.captures.delete(1);
+    f.cards.a.emit('lostpointercapture', { pointerId: 1 });
+    assert.deepEqual(f.size(), before);
+    assert.equal(f.saves(), 0);
+    assert.equal(f.listeners.size, 0);
+  });
+}
