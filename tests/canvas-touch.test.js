@@ -155,9 +155,28 @@ test('losing camera capture ends navigation and releases all gesture listeners',
   const f = fixture();
   f.fire('pointerdown', 1, 100, 100);
   f.fire('pointermove', 1, 140, 120);
+  f.captures.delete(1);
   f.viewport.dispatchEvent({ type: 'lostpointercapture', pointerId: 1, target: f.viewport });
   assert.equal(f.active(), false);
   assert.equal(f.saves(), 1);
   assert.equal(f.captures.size, 0);
   for (const type of ['pointermove', 'pointerup', 'pointercancel', 'blur']) assert.equal(f.host.listeners.get(type)?.size || 0, 0);
+});
+
+test('a delayed capture loss after recapture does not interrupt two-finger navigation', () => {
+  const f = fixture();
+  f.fire('pointerdown', 1, 100, 100);
+  f.fire('pointerdown', 2, 200, 100);
+  f.viewport.dispatchEvent({ type: 'lostpointercapture', pointerId: 1, target: f.viewport });
+  assert.equal(f.active(), true);
+  f.fire('pointermove', 1, 130, 140);
+  f.fire('pointermove', 2, 230, 140);
+  assert.deepEqual(f.view(), { x: 50, y: 70, zoom: 1 });
+  f.fire('pointermove', 1, 80, 140);
+  f.fire('pointermove', 2, 280, 140);
+  assert.equal(f.view().zoom, 1.8);
+  f.fire('pointerup', 1, 80, 140);
+  f.fire('pointerup', 2, 280, 140);
+  assert.equal(f.saves(), 1);
+  assert.equal(f.captures.size, 0);
 });

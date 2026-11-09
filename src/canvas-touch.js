@@ -40,7 +40,7 @@ export function attachCanvasTouch(viewport, { getView, updateView, saveView, set
     if (changed) saveView();
   };
   const cancel = () => { if (gesture) suppressClick = true; stop(); };
-  const lost = (event) => { if (event.target === viewport && !handingOff && gesture && pointers.has(event.pointerId)) cancel(); };
+  const lost = (event) => { if (event.target === viewport && !handingOff && gesture && pointers.has(event.pointerId) && !viewport.hasPointerCapture(event.pointerId)) cancel(); };
   const move = (event) => {
     if (!pointers.has(event.pointerId)) return;
     const previous = pointers.get(event.pointerId);

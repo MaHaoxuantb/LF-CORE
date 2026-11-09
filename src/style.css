@@ -1414,3 +1414,10 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
   .context-menu { max-height: calc(100dvh - 24px - env(safe-area-inset-bottom)); overscroll-behavior: contain; }
   .workspace-shell input, .workspace-shell textarea, .workspace-shell select { font-size: 16px; }
 }
+
+/* Scroll containers stop touch-action ancestor lookup. Keep canvas gestures
+   available when a finger starts inside a note or rendered document. */
+.canvas-viewport .node-content,
+.canvas-viewport .markdown-preview,
+.canvas-viewport .markdown-preview pre,
+.canvas-viewport .markdown-preview .katex-display { touch-action: none; }
