@@ -1,3 +1,5 @@
+import { removeRelationship, updateRelationship } from './relationships.js';
+import { captureRegion, selectRegion, exportPng } from './screenshot.js';
 import { makeAnchor, resolveAnchor, selectionOffsets, passageText, passageOffset, highlightAtSelection } from './anchors.js';
 import { createWorkspace, emptyState, loadSaveMode, saveSaveMode, snapshotWorkspace } from './storage.js';
 import { loadDatabaseState, readDatabaseState, requestPersistentStorage } from './state-store.js';
@@ -18,7 +20,7 @@ import { projectFileName, PROJECT_EXTENSION } from './project.js';
 import { prefixMarkdownLines, wrapMarkdownSelection } from './markdown-edit.js';
 import { attachSourceToQuestion, compareIdeas, createResearchProposal, createResearchQuestion, discoverSources, normalizeResearch, recordCloseout, verifiedSourceFromResult } from './research.js';
 import { resolveMoveGeometry, resolveResizeGeometry, selectionBounds } from './node-geometry.js';
-import { createLFOSIntegration, LFCORE_MIME_TYPE } from './lfos.js';
+import { createLFOSIntegration, LFOS_SDK_URL, LFCORE_MIME_TYPE } from './lfos.js';
 import { LFOSDocuments, preserveDocumentBinding } from './lfos-documents.js';
 import { attachLFOSHeader } from './lfos-header.js';
 import { PersistenceClient } from './persistence-client.js';
@@ -594,6 +596,7 @@ function toggleDocumentMenu(wrapper) {
   const projectAction = lfosDocument ? 'Save project' : lfos.has('files.save') ? 'Save project to LFOS' : 'Download project';
   menu.append(button(projectAction, () => downloadProject(), 'document-menu-option', { role: 'menuitem' }));
   if (lfosDocument && lfos.has('files.save')) menu.append(button('Save project as…', () => downloadProject({ saveAs: true }), 'document-menu-option', { role: 'menuitem' }));
+  menu.append(button('Export screenshot…', () => void exportUserScreenshot().catch(error => announce(error.message)), 'document-menu-option', { role: 'menuitem' }));
   menu.append(documentMenuSubmenu('Saving', ['auto', 'manual'], saveMode, (value) => setSaveMode(value), (value) => value === 'auto' ? 'Auto save' : 'Manual save'));
   menu.append(el('div', { class: 'document-menu-separator', role: 'separator' }));
   appendAppearanceOptions(menu);
@@ -1234,6 +1237,7 @@ function scheduleViewRender() {
 }
 
 function applyView() {
+  scheduleAgentContext();
   const scene = document.querySelector('.scene');
   const viewport = document.querySelector('.canvas-viewport');
   if (!scene || !viewport) return;
@@ -1514,7 +1518,7 @@ function zoomTo(next, clientX, clientY) {
   scheduleViewRender(); saveView();
 }
 
-function ensureUnifiedNodeEdges(item) {
+function ensureUnifiedNodeEdges(item, { save = true } = {}) {
   let changed = false;
   item.highlights ||= [];
   for (const highlight of item.highlights) if (markAnchorInMarkdown(item, highlight)) changed = true;
@@ -1548,7 +1552,8 @@ function ensureUnifiedNodeEdges(item) {
       changed = true;
     }
   }
-  if (changed) persist();
+  if (changed && save) persist();
+  return changed;
 }
 
 const isHighlightId = (id) => typeof id === 'string' && id.startsWith('h:');
@@ -1655,6 +1660,8 @@ function renderWorkspace() {
   if (selectedPassage) renderPassageToolbar();
   if (aiPanel) renderAiPanel();
   if (researchPanel) renderResearchPanel();
+  scheduleAgentContext();
+  queueMicrotask(revealMountedAgentPanel);
 }
 
 // Panel state does not change the graph. Keep the mounted scene (and its
@@ -2206,22 +2213,7 @@ function renderConnectionHandles(scene, item) {
         }
         if (!moved || (!replacementId && nextSide === side)) { renderWorkspace(); return; }
         change((entry) => {
-            const edge = entry.edges.find((entry) => entry.id === id);
-            if (replacementId) {
-              const oldToId = edge.toId;
-              const oldFromId = edge.fromId;
-              edge[end === 'from' ? 'fromId' : 'toId'] = replacementId;
-              const oldChild = entry.nodes.find((node) => node.id === oldToId);
-              if (oldChild?.anchor?.id && oldFromId === `h:${oldChild.anchor.id}`) oldChild.anchor = null;
-              const newChild = entry.nodes.find((node) => node.id === edge.toId);
-              if (newChild && isHighlightId(edge.fromId) && !newChild.anchor) newChild.anchor = { ...highlightFor(entry, edge.fromId) };
-              if (edge.structural) {
-                if (oldChild?.parentId === oldFromId) oldChild.parentId = null;
-                if (newChild && !isHighlightId(edge.fromId)) newChild.parentId = edge.fromId;
-                else edge.structural = false;
-              }
-            }
-            edge[end === 'from' ? 'fromSide' : 'toSide'] = nextSide;
+            updateRelationship(entry, id, { ...(replacementId ? { [end === 'from' ? 'fromId' : 'toId']: replacementId } : {}), [end === 'from' ? 'fromSide' : 'toSide']: nextSide });
         });
       };
       const cancel = () => finish({ type: 'pointercancel' });
@@ -2303,16 +2295,7 @@ function renderEdgeLabel(item, edge) {
       const next = { forward: 'both', both: 'reverse', reverse: 'forward' }[edgeDirection(edge)];
       change((entry) => { entry.edges.find((link) => link.id === edge.id).direction = next; });
     }, 'edge-type-button', { 'aria-label': `Connection type: ${edgeDirection(edge)}. Click to change`, title: 'Change connection type' });
-    const remove = button('×', () => change((entry) => {
-      const removed = entry.edges.find((link) => link.id === edge.id);
-      if (removed?.structural) {
-        const child = entry.nodes.find((node) => node.id === removed.toId);
-        if (child) { child.parentId = null; if (child.anchor?.targetId === removed.fromId) child.anchor = null; }
-      }
-      const child = entry.nodes.find((node) => node.id === removed?.toId);
-      if (child?.anchor?.id && removed?.fromId === `h:${child.anchor.id}`) child.anchor = null;
-      entry.edges = entry.edges.filter((link) => link.id !== edge.id);
-    }), 'edge-label-remove', { 'aria-label': 'Remove relationship' });
+    const remove = button('×', () => change((entry) => { removeRelationship(entry, edge.id);    }), 'edge-label-remove', { 'aria-label': 'Remove relationship' });
     chip.append(type, name, remove);
   } else chip.append(name);
   return chip;
@@ -2436,6 +2419,7 @@ function pdfNodeViewer(node, source, card) {
     pdfNodePages.set(node.id, pageNumber);
     updateControls(pageNumber);
     const version = ++renderVersion;
+    stage.dataset.capturePending = 'true';
     stage.replaceChildren(el('div', { class: 'pdf-node-loading', text: 'Rendering page…' }));
     try {
       let document = pdfDocuments.get(source.id);
@@ -2464,7 +2448,7 @@ function pdfNodeViewer(node, source, card) {
       stage.replaceChildren(el('div', { class: 'pdf-node-error' },
         el('span', { text: error.message }),
         button('Open Library', () => openSource(source.id), 'pdf-node-open-source')));
-    }
+    } finally { if (version === renderVersion) delete stage.dataset.capturePending; }
   };
 
   viewer.append(el('div', { class: 'pdf-node-controls' }, previous, pageLabel, next), stage);
@@ -2529,6 +2513,7 @@ function imageNodeViewer(node, source, card) {
   card._ensureMediaPreview = async () => {
     if (viewer.dataset.started) return;
     viewer.dataset.started = 'true';
+    stage.dataset.capturePending = 'true';
     stage.replaceChildren(el('div', { class: 'pdf-node-loading', text: 'Loading image…' }));
     const url = await mediaUrl(source);
     if (!url || !card.isConnected) {
@@ -3591,6 +3576,7 @@ function renderSourceContent(body, source) {
 
 async function drawPdfPage(source, number, scroll, actions) {
   if (!scroll.isConnected) return;
+  scroll.dataset.capturePending = 'true';
   try {
     let document = pdfDocuments.get(source.id);
     if (!document) {
@@ -3623,7 +3609,7 @@ async function drawPdfPage(source, number, scroll, actions) {
     if (!textRoot.textContent.trim()) actions.append(el('span', { class: 'source-hint', text: 'No selectable text was found on this page. Scanned PDFs need OCR, which is not available yet.' }));
   } catch (error) {
     if (scroll.isConnected) scroll.replaceChildren(el('div', { class: 'source-error', text: `Could not read this PDF: ${error.message}` }));
-  }
+  } finally { delete scroll.dataset.capturePending; }
 }
 
 function showMissingPdf(source, scroll) {
@@ -4272,7 +4258,7 @@ function openAiPanel(seed = null) {
   const chat = [...chatList()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
   chat.assistantMode ||= 'chat';
   aiPanel?.chatController?.abort();
-  aiPanel = { chatId: chat.id, tab: 'chat', draft: '', busy: false, error: '', previewId: null, width: aiPanel?.width, assistantMode: chat.assistantMode };
+  aiPanel = { chatId: chat.id, tab: 'chat', draft: chat.composerDraft || '', busy: false, error: '', previewId: null, width: aiPanel?.width, assistantMode: chat.assistantMode };
   refreshWorkspacePanels();
 }
 
@@ -4545,7 +4531,7 @@ function currentAgentFocus() {
   const chat = currentChat();
   const nodeIds = selectedId ? [selectedId] : selectedIds.size ? [...selectedIds] : chat?.context?.nodeIds || [];
   const item = work();
-  const validNodeIds = nodeIds.filter((id) => item?.nodes.some((node) => node.id === id && !isSourceNode(node)));
+  const validNodeIds = nodeIds.filter((id) => item?.nodes.some((node) => node.id === id));
   let passage = null, selectionAnchor = null;
   if (selectedPassage) {
     const text = sourcePlainText(item, selectedPassage.targetId);
@@ -4565,33 +4551,16 @@ function currentAgentFocus() {
   return { focus: { nodeIds: validNodeIds, passage }, selectionAnchor };
 }
 
-async function executeAgentRequest(item, chat, question) {
-  if (!question || aiPanel.busy) return;
-  if (!lfos.agentAvailable) { aiPanel.error = 'Agent mode requires LFOS with SolOS Intelligence and agent permission.'; renderAiPanel(); return; }
-  const active = [...hostAgentTasks.values()].find(task => task.conversationId === chat.id && task.projectId === item.id && !['completed', 'cancelled'].includes(task.status));
-  const scope = aiPanel;
-  scope.busy = true; scope.error = ''; scope.draft = '';
-  if (!active) chat.messages.push({ id: crypto.randomUUID(), role: 'user', content: question, createdAt: new Date().toISOString() });
-  if (chat.title === 'New chat') chat.title = question.slice(0, 56);
-  renderAiPanel();
+async function rerunAgentProposal(proposal) {
+  const chat = currentChat(), item = work(); if (!chat || !item || aiPanel.busy) return;
   try {
-    if (active) {
-      if (!['running', 'waiting'].includes(active.status)) throw new Error('Resume this task before sending instructions, or stop it to start new work.');
-      receiveHostAgentTask(await lfos.lfos.agent.tasks.provideInput(active.id, question));
-      return;
-    }
     await registerProjectProvider();
-    const task = await lfos.lfos.agent.tasks.start({ request: question, conversationId: chat.id, sessionId: projectSession(item).id, context: JSON.stringify({ focus: currentAgentFocus().focus, history: chat.messages.slice(-12).map(({ role, content }) => ({ role, content: content.slice(0, 1000) })) }).slice(0, 16000), effort: loadModelSettings().thinkingEffort });
-    receiveHostAgentTask(task);
-  } catch (error) { scope.error = error.message; scope.draft = question; }
-  finally { scope.busy = false; pendingChangedIds.add(item.id); stateRevision++; persist(false, item.id, false); if (scope === aiPanel) renderAiPanel(); }
-}
-
-function rerunAgentProposal(proposal) {
-  const chat = currentChat(), item = work();
-  if (!chat || !item || aiPanel.busy) return;
-  proposal.status = 'discarded'; persist();
-  executeAgentRequest(item, chat, proposal.request || 'Recreate this workspace change.', { focusOverride: { focus: proposal.focus || { nodeIds: [], passage: null }, selectionAnchor: null } });
+    const workspace = await currentAgentWorkspace(item);
+    const panel = await lfos.lfos.agent.panels.open({ workspace, conversationId: chat.id });
+    await lfos.lfos.agent.panels.update(panel.id, { draft: proposal.request || 'Continue this project work.' });
+    proposal.status = 'discarded'; chat.assistantMode = 'agent';
+    agentElements.delete(`${item.id}:${chat.id}`); persist(); renderAiPanel();
+  } catch (error) { aiPanel.error = error.message; renderAiPanel(); }
 }
 
 function renderChatTranscript(panel, item, chat) {
@@ -4613,7 +4582,7 @@ function renderChatTranscript(panel, item, chat) {
       }
       for (const proposal of message.proposals || []) bubble.append(renderProposalCard(proposal, item));
       if (message.agentProposal) bubble.append(renderAgentProposalCard(message.agentProposal, item));
-      if (message.agentTaskId) bubble.append(renderHostAgentTask(hostAgentTasks.get(message.agentTaskId) || message.agentTask));
+      if (message.agentTaskId) bubble.append(renderHistoricalAgentTask(message.agentTask));
       bubble.append(el('small', { class: 'chat-message-context', text: `${message.model} · ${new Date(message.createdAt).toLocaleString()}` }));
     }
     transcript.append(bubble);
@@ -4662,16 +4631,15 @@ function aiRequestMetadata(settings) {
 }
 
 function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer = true) {
-  const agentMode = chat.assistantMode === 'agent';
   const settings = loadModelSettings();
-  const unavailable = agentMode ? (lfos.agentAvailable ? '' : 'Agent mode requires LFOS with SolOS Intelligence and agent permission.') : aiConfigurationIssue(settings);
+  const unavailable = aiConfigurationIssue(settings);
   if (unavailable) panel.append(el('div', { class: 'chat-config-notice' },
     el('span', { text: unavailable }),
-    agentMode ? null : button('Open Settings', renderSettings, 'chat-text-button')));
-  if (!agentMode && snapshot.size > MAX_CONTEXT_CHARS) panel.append(el('p', { class: 'ai-error chat-error', text: 'Context is too large. Choose a smaller scope before sending.' }));
+    button('Open Settings', renderSettings, 'chat-text-button')));
+  if (snapshot.size > MAX_CONTEXT_CHARS) panel.append(el('p', { class: 'ai-error chat-error', text: 'Context is too large. Choose a smaller scope before sending.' }));
   if (aiPanel.error) panel.append(el('p', { class: 'ai-error chat-error', role: 'alert', text: aiPanel.error }));
   const form = el('form', { class: 'ai-chat-composer' });
-  const pending = agentMode ? [] : pendingChatProposals(chat, item);
+  const pending = pendingChatProposals(chat, item);
   if (pending.length) {
     const counts = pending.reduce((total, proposal) => {
       const lines = diffMarkdownLines(proposal.before, proposal.after);
@@ -4690,7 +4658,7 @@ function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer =
         if (applyChatProposals(pending)) announce(`${label} applied. Undo reverses the whole batch.`);
       }, 'chat-apply-all')));
   }
-  const input = el('textarea', { class: 'ai-question', 'aria-label': 'Your message', title: 'Enter to send · Option + Enter for a new line', placeholder: agentMode ? 'Describe the workspace you want the agent to build…' : 'Ask or describe a change…', rows: '1' });
+  const input = el('textarea', { class: 'ai-question', 'aria-label': 'Your message', title: 'Enter to send · Option + Enter for a new line', placeholder: 'Ask or describe a change…', rows: '1' });
   input.value = aiPanel.draft || '';
   const resizeInput = () => { input.style.height = 'auto'; input.style.height = `${Math.min(100, input.scrollHeight)}px`; };
   input.addEventListener('input', () => { aiPanel.draft = input.value; resizeInput(); });
@@ -4703,12 +4671,7 @@ function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer =
       resizeInput();
     } else form.requestSubmit();
   });
-  const liveTask = agentMode && [...hostAgentTasks.values()].find(task => task.conversationId === chat.id && task.projectId === item.id && task.status === 'running');
-  if (liveTask) {
-    input.placeholder = 'Add instructions while the agent works…';
-    form.append(agentStopButton(liveTask));
-  }
-  const stopping = !agentMode && aiPanel.busy;
+  const stopping = aiPanel.busy;
   const send = button(stopping ? 'Stop' : 'Send', () => {
     if (stopping) aiPanel.chatController?.abort();
   }, `panel-action${stopping ? ' chat-stop' : ''}`, {
@@ -4716,15 +4679,11 @@ function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer =
     title: stopping ? 'Stop generating' : 'Send message'
   });
   send.type = stopping ? 'button' : 'submit';
-  send.disabled = !stopping && (!!unavailable || aiPanel.busy || (!agentMode && snapshot.size > MAX_CONTEXT_CHARS));
+  send.disabled = !stopping && (!!unavailable || aiPanel.busy || (snapshot.size > MAX_CONTEXT_CHARS));
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const question = input.value.trim();
     if (!question || aiPanel.busy) return;
-    if (chat.assistantMode === 'agent') {
-      await executeAgentRequest(item, chat, question);
-      return;
-    }
     const selected = contextSnapshot(work(), effectiveChatContext(chat));
     if (selected.size > MAX_CONTEXT_CHARS) { aiPanel.error = 'Context is too large. Deselect items before sending.'; renderAiPanel(); return; }
     const config = loadModelSettings();
@@ -4770,9 +4729,8 @@ function renderChatComposer(panel, item, chat, snapshot, picker, focusComposer =
       if (scope === aiPanel && currentId === workspaceId) renderAiPanel();
     }
   });
-  if (agentMode) form.append(el('div', { class: 'agent-authority-note' }, el('strong', { text: 'Full project access' }), el('span', { text: 'The LFOS agent works across this project and available apps. Project changes apply as it works; Undo is available.' })));
   form.append(input);
-  if (!agentMode) form.append(picker);
+  form.append(picker);
   form.append(send);
   panel.append(form);
   requestAnimationFrame(() => { if (input.isConnected) resizeInput(); });
@@ -5050,8 +5008,13 @@ function renderAiPanel({ focusComposer = true } = {}) {
     panel.append(list);
   } else {
     const { snapshot, picker } = chat.assistantMode === 'agent' ? { snapshot: { size: 0 }, picker: null } : renderContextPicker(item, chat);
-    renderChatTranscript(panel, item, chat);
-    renderChatComposer(panel, item, chat, snapshot, picker, focusComposer);
+    if (chat.assistantMode === 'agent') {
+      const mount = el('div', { class: 'universal-agent-mount' }); panel.append(mount);
+      void mountAgentPanel(mount, item, chat).catch(error => { if (mount.isConnected) mount.replaceChildren(el('p', { role: 'alert', text: error.message })); });
+    } else {
+      renderChatTranscript(panel, item, chat);
+      renderChatComposer(panel, item, chat, snapshot, picker, focusComposer);
+    }
   }
   document.querySelector('.workspace-shell')?.append(panel);
 }
@@ -5162,106 +5125,12 @@ function receiveHostAgentTask(task) {
     chat.updatedAt = task.updatedAt;
     pendingChangedIds.add(workspaceId); stateRevision++;
     void persist(false, workspaceId, false);
-    if (aiPanel?.chatId === chat.id) updateHostAgentTaskView(task);
     break;
   }
 }
-function agentStopButton(task) {
-  const control = button('Stop agent', async () => {
-    try { receiveHostAgentTask(await lfos.lfos.agent.tasks.cancel(task.id)); }
-    catch (error) { aiPanel.error = error.message; renderAiPanel(); }
-  }, 'chat-stop');
-  control.dataset.agentStop = task.id;
-  return control;
-}
-function syncHostAgentComposer(task) {
-  if (currentChat()?.id !== task.conversationId) return;
-  const form = document.querySelector('.ai-panel .ai-chat-composer');
-  if (!form) return;
-  const stop = form.querySelector('[data-agent-stop]');
-  if (stop && stop.dataset.agentStop !== task.id) return;
-  if (stop && task.status !== 'running') stop.remove();
-  if (!stop && task.status === 'running') form.append(agentStopButton(task));
-  const input = form.querySelector('textarea');
-  if (input) input.placeholder = task.status === 'running' ? 'Add instructions while the agent works…' : 'Describe the workspace you want the agent to build…';
-}
-function updateHostAgentTaskView(task) {
-  syncHostAgentComposer(task);
-  const transcript = document.querySelector('.ai-panel .ai-chat-messages');
-  const card = transcript && [...transcript.querySelectorAll('[data-agent-task]')].find(node => node.dataset.agentTask === task.id);
-  if (!card) { renderAiPanel({ focusComposer: false }); return; }
-  const atBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 80;
-  const scrollTop = transcript.scrollTop;
-  const open = new Set([...card.querySelectorAll('details[open][data-activity]')].map(node => node.dataset.activity));
-  const next = renderHostAgentTask(task);
-  for (const node of next.querySelectorAll('details[data-activity]')) node.open = open.has(node.dataset.activity);
-  // Keep an in-progress clarification reply intact across host updates.
-  const input = card.querySelector('input'), nextInput = next.querySelector('input');
-  const focused = input && document.activeElement === input;
-  const selection = focused ? [input.selectionStart, input.selectionEnd] : null;
-  if (input && nextInput) nextInput.replaceWith(input);
-  card.replaceWith(next);
-  if (focused) { input.focus({ preventScroll: true }); input.setSelectionRange(...selection); }
-  const bubble = next.parentElement;
-  const output = bubble.querySelector('.ai-output');
-  if (output) { output.innerHTML = renderMarkdown(task.status === 'completed' ? task.summary : task.question || task.error || ''); }
-  transcript.scrollTop = atBottom ? transcript.scrollHeight : scrollTop;
-}
-function renderHostAgentTask(task) {
-  if (!task) return el('p', { text: 'Reconnect LFOS to inspect this task.' });
-  const card = el('section', { class: 'agent-proposal', 'data-agent-task': task.id }, el('strong', { text: `LFOS Agent · ${task.status}` }));
-  if (task.plan?.length) card.append(el('ol', {}, ...task.plan.map((step, index) => el('li', { text: `${task.planStatus?.[index] === 'completed' ? '✓' : task.planStatus?.[index] === 'in_progress' ? '◉' : '○'} ${step}` }))));
-  for (const [index, event] of (task.events || []).entries()) {
-    if (event.type === 'tool-start') {
-      const result = task.events.find(entry => ['result', 'error'].includes(entry.type) && entry.data?.operationId === event.data?.operationId);
-      const status = result?.type === 'error' ? 'Failed' : result ? 'Done' : task.status === 'running' ? 'Running' : 'Interrupted';
-      const details = el('details', { 'data-activity': String(index) }, el('summary', { text: `${status} · ${event.message}` }));
-      details.append(el('pre', { text: JSON.stringify(event.data?.arguments, null, 2) }));
-      if (result) details.append(el('pre', { text: result.type === 'error' ? result.message : JSON.stringify(Object.fromEntries(Object.entries(result.data || {}).filter(([key]) => !['changes', 'moreChanges'].includes(key))), null, 2) }));
-      card.append(details);
-    } else if (['progress', 'user', 'verification', 'error'].includes(event.type) && !event.data?.operationId) card.append(el('p', { text: event.message }));
-  }
-  const project = state.workspaces.find(item => item.id === task.projectId) || work();
-  const changes = (project?.agentHistory || []).filter(entry => entry.runId === task.id);
-  if (changes.length) {
-    const history = el('details', { 'data-activity': 'changes' }, el('summary', { text: `Project changes · ${changes.length} operations` }));
-    for (const transaction of changes) for (const change of transaction.changes || []) {
-      const title = change.after?.title || change.before?.title || change.id;
-      const details = el('details', { 'data-activity': `${transaction.operationIds[0]}:${change.id}` }, el('summary', { text: `${!change.before ? 'Created' : !change.after ? 'Deleted' : 'Edited'} · ${title}` }));
-      const before = change.before?.document?.markdown ?? change.before?.markdown;
-      const after = change.after?.document?.markdown ?? change.after?.markdown;
-      if (typeof before === 'string' || typeof after === 'string') details.append(renderProposalDiff(before || '', after || '').view);
-      else details.append(el('pre', { text: JSON.stringify({ before: change.before, after: change.after }, null, 2) }));
-      if (change.id.startsWith('nodes:') && change.after && project.id === currentId) details.append(button('Show on canvas', () => { selectedId = change.after.id; renderWorkspace(); }));
-      history.append(details);
-    }
-    card.append(history);
-  }
-  for (const event of task.events || []) if (event.type === 'result' && event.data?.sourceId && event.data?.fileName) {
-    card.append(button(`Download ${event.data.fileName}`, async () => {
-      try {
-        const bytes = await getMedia(event.data.sourceId); if (!bytes) throw new Error('Export attachment is unavailable.');
-        const url = URL.createObjectURL(new Blob([bytes], { type: event.data.mimeType }));
-        const link = el('a', { href: url, download: event.data.fileName }); link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-      } catch (error) { announce(error.message); }
-    }));
-  }
-  if (task.evidence?.length) card.append(el('p', { text: task.evidence.join(' · ') }));
-  const action = (label, method) => button(label, async () => {
-    try { receiveHostAgentTask(await lfos.lfos.agent.tasks[method](task.id)); }
-    catch (error) { if (aiPanel) { aiPanel.error = error.message; renderAiPanel(); } }
-  }, 'chat-text-button');
-  if (lfos.agentAvailable) {
-    if (task.status === 'running') card.append(action('Pause', 'pause'), action('Stop', 'cancel'));
-    if (['paused', 'interrupted', 'failed'].includes(task.status)) card.append(action('Resume', 'resume'), action('Stop', 'cancel'));
-    if (task.status === 'waiting') {
-      const input = el('input', { type: 'text', 'aria-label': 'Answer the agent', placeholder: task.question || 'Answer the agent' });
-      card.append(input, button('Reply', async () => {
-        try { receiveHostAgentTask(await lfos.lfos.agent.tasks.provideInput(task.id, input.value)); }
-        catch (error) { if (aiPanel) { aiPanel.error = error.message; renderAiPanel(); } }
-      }), action('Stop', 'cancel'));
-    }
-  }
+function renderHistoricalAgentTask(task) {
+  const card = el('section', { class: 'agent-task-card' });
+  if (task) card.append(el('strong', { text: `Agent record · ${task.status}` }), el('p', { text: task.summary || task.question || task.error || '' }));
   return card;
 }
 async function pauseProjectTasks(projectId) {
@@ -5271,16 +5140,19 @@ async function pauseProjectTasks(projectId) {
 }
 const projectAgentService = new ProjectAgentService({
   getWorkspace: sessionId => state.workspaces.find(entry => coordinator.owns(`project:${entry.id}`) && projectSession(entry).id === sessionId),
-  async commit(before, next) {
+  async commit(before, next, call) {
     if (committingProject) throw Object.assign(new Error('Another project change is being saved.'), { code: 'BUSY' });
     committingProject = true; app.inert = true;
     const index = state.workspaces.findIndex(entry => entry.id === before.id);
     const history = state.history[before.id] ||= [], oldRedo = state.redo[before.id] || [];
-    history.push(snapshotWorkspace(before)); state.redo[before.id] = [];
+    const oldHistory = [...history];
+    if (call?.capability.endsWith('.undo')) { history.pop(); state.redo[before.id] = [...oldRedo, snapshotWorkspace(before)]; }
+    else if (call?.capability.endsWith('.redo')) { history.push(snapshotWorkspace(before)); state.redo[before.id] = oldRedo.slice(0, -1); }
+    else if (!call?.metadataOnly && !['save_project', 'set_view', 'capture_region', 'export_artifact'].some(tool => call?.capability.endsWith(`.${tool}`))) { history.push(snapshotWorkspace(before)); state.redo[before.id] = []; }
     state.workspaces[index] = next;
     try {
-      if (!await persist(true, before.id)) throw new Error('Project changes could not be saved. No successful write was acknowledged.');
-    } catch (error) { state.workspaces[index] = before; history.pop(); state.redo[before.id] = oldRedo; throw error; }
+      if (!await persist(true, before.id, !call?.metadataOnly && !['save_project', 'set_view', 'capture_region', 'export_artifact'].some(tool => call?.capability.endsWith(`.${tool}`)))) throw new Error('Project changes could not be saved. No successful write was acknowledged.');
+    } catch (error) { state.workspaces[index] = before; history.splice(0, history.length, ...oldHistory); state.redo[before.id] = oldRedo; throw error; }
     finally { committingProject = false; app.inert = false; }
     if (history.length > 40) history.shift();
     if (currentId === next.id) { ensurePositions(next); renderWorkspace(); }
@@ -5289,6 +5161,53 @@ const projectAgentService = new ProjectAgentService({
   searchSources: (workspace, query, options) => searchWorkspaceSources(workspace, query, { ...options, ensurePdfIndex: (source, indexOptions = {}) => ensureAgentPdfIndex(source, { ...indexOptions, required: true }) }),
   readSource: (workspace, sourceId, range, options) => readWorkspaceSource(workspace, sourceId, range, { ...options, ensurePdfIndex: (source, indexOptions = {}) => ensureAgentPdfIndex(source, { ...indexOptions, required: true }) }),
   sourceIndexStatus: agentSourceIndexStatus,
+  controls: {
+    normalize: workspace => ensureUnifiedNodeEdges(workspace, { save: false }),
+    anchorText: (workspace, targetId) => sourcePlainText(workspace, targetId),
+    markHighlight: (workspace, anchor) => markAnchorInMarkdown(workspace, anchor),
+    unmarkHighlight: (workspace, anchor) => unmarkAnchorInMarkdown(workspace, anchor),
+    history(workspace, direction) { return (direction === 'undo' ? state.history : state.redo)[workspace.id]?.at(-1); },
+    get_view(workspace) { requireVisibleProject(workspace); return agentView(); },
+    get_save_status(workspace) {
+      const entry = lfosDocuments.get(workspace.id);
+      return { localSaved: !pendingChangedIds.has(workspace.id) && !saveError, linked: !!entry, linkedSaved: !!entry && !lfosDocumentIsDirty(workspace.id, entry), projectRevision: workspace.projectRevision || 0, error: entry?.error?.message || saveError || null };
+    },
+    async save_project(workspace, _args, _call, { signal }) {
+      const revision = workspace.projectRevision || 0;
+      if (!await persist(true, workspace.id, false)) throw new Error('Local project persistence failed.');
+      await viewPersistence.flush(workspace.id);
+      if (signal.aborted) throw Object.assign(new Error('Save cancelled before file dispatch.'), { code: 'CANCELLED' });
+      const result = await lfosDocumentStore.save(workspace.id, { allowPicker: true });
+      if (!result || result.cancelled) throw Object.assign(new Error('Save cancelled. The project has not been saved to an LFOS file.'), { code: 'CANCELLED' });
+      if ((state.workspaces.find(w => w.id === workspace.id)?.projectRevision || 0) !== revision || lfosDocumentIsDirty(workspace.id)) throw Object.assign(new Error('Project changed during Save. Save the latest revision again.'), { code: 'CONFLICT' });
+      return { localSaved: true, linkedSaved: true, cancelled: false, savedRevision: revision };
+    },
+    async set_view(workspace, args) {
+      requireVisibleProject(workspace);
+      for (const id of [...(args.nodeIds || []), ...(args.revealId ? [args.revealId] : [])]) if (!workspace.nodes.some(n => n.id === id) && id !== 'article' && !workspace.sources.some(source => source.id === id)) throw Object.assign(new Error('View target not found.'), { code: 'NOT_FOUND' });
+      if (args.nodeIds) { selectedId = args.nodeIds.length === 1 ? args.nodeIds[0] : null; selectedIds = new Set(args.nodeIds); }
+      for (const key of ['x', 'y', 'zoom']) if (args[key] !== undefined) view[key] = args[key];
+      if (args.revealId) {
+        if (workspace.sources.some(source => source.id === args.revealId)) openSource(args.revealId);
+        else if (args.revealId === 'article') { selectedId = null; view.x = 150; view.y = 70; }
+        else { selectedId = args.revealId; const position = workspace.layout?.positions?.[args.revealId]; if (position) { view.x = 150 - position.x * view.zoom; view.y = 70 - position.y * view.zoom; } }
+      }
+      renderWorkspace(); if (args.fit) fitCanvas(); else applyView(); saveView();
+      return { viewRevision: agentView().viewRevision };
+    },
+    async capture_region(workspace, args, call, { signal }) {
+      requireVisibleProject(workspace);
+      const capture = await captureRegion(args.region, args.viewRevision, agentView, signal);
+      const artifact = await lfos.lfos.agent.artifacts.put({ taskId: call.taskId, operationId: call.operationId, title: 'LF-Core region', mimeType: 'image/png', dataBase64: capture.dataBase64, previewBase64: capture.previewBase64, width: capture.width, height: capture.height, capture: { region: args.region, viewRevision: args.viewRevision } });
+      return { artifacts: [artifact] };
+    },
+    async export_artifact(_workspace, args) {
+      const result = await lfos.lfos.agent.artifacts.get(args.artifactId);
+      const saved = await exportPng(result.dataUrl, result.artifact.title, lfos);
+      if (!saved) throw Object.assign(new Error('Image export cancelled. No image was saved.'), { code: 'CANCELLED' });
+      return { exported: saved, cancelled: !saved, artifactId: args.artifactId };
+    },
+  },
   async importAttachment({ fileName, mimeType, dataBase64 }) {
     const bytes = Uint8Array.from(atob(dataBase64), character => character.charCodeAt(0));
     return mediaSource(new File([bytes], fileName, { type: mimeType }));
@@ -5303,10 +5222,97 @@ const projectAgentService = new ProjectAgentService({
     return { sourceId, fileName: artifact.name, bytes: bytes.length, mimeType: LFCORE_MIME_TYPE };
   },
 });
+function requireVisibleProject(workspace) {
+  if (workspace.id !== currentId || !document.querySelector('.workspace-shell')) throw Object.assign(new Error('Open the original project view before using visual tools.'), { code: 'UNAVAILABLE' });
+}
+function agentView() {
+  const rect = node => { const r = node.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; };
+  const viewport = { x: 0, y: 0, width: innerWidth, height: innerHeight };
+  const regions = [...document.querySelectorAll('.canvas-viewport, .sources-panel, .research-panel, .paper')].filter(node => node.getBoundingClientRect().width > 0).map((node, index) => ({ id: node.classList[0] + ':' + index, bounds: rect(node) }));
+  const visibleEntities = [...document.querySelectorAll('.topic-card[data-node]')].map(node => ({ id: node.dataset.node, bounds: rect(node) })).filter(entity => entity.bounds.x + entity.bounds.width > 0 && entity.bounds.y + entity.bounds.height > 0 && entity.bounds.x < innerWidth && entity.bounds.y < innerHeight);
+  const signature = JSON.stringify({ project: work()?.id, revision: work()?.projectRevision, view, viewport, regions, visibleEntities, selection: [...selectedIds], selectedId, openSourceId, sourcePage, sourceJump, editingTarget, scrolls: [...document.querySelectorAll('.workspace-shell *')].filter(node => !node.closest('.ai-panel, lfos-agent-panel') && (node.scrollHeight > node.clientHeight + 1 || node.scrollWidth > node.clientWidth + 1)).map(node => [node.className?.baseVal ?? node.className, node.scrollLeft, node.scrollTop]) });
+  let hash = 2166136261; for (let i = 0; i < signature.length; i++) hash = Math.imul(hash ^ signature.charCodeAt(i), 16777619);
+  return { viewRevision: `${work()?.id}:${hash >>> 0}`, viewport, camera: { ...view }, selection: selectedId ? [selectedId] : [...selectedIds], visibleEntities, regions };
+}
+async function exportUserScreenshot() {
+  closeDocumentMenu();
+  const region = await selectRegion(); if (!region) return;
+  const snapshot = agentView();
+  const captured = await captureRegion(region, snapshot.viewRevision, agentView);
+  const dialog = document.createElement('dialog'); dialog.className = 'screenshot-preview';
+  const image = document.createElement('img'); image.src = `data:image/png;base64,${captured.dataBase64}`; image.alt = 'Captured LF-Core region';
+  const save = button('Save PNG…', () => void exportPng(image.src, work().title + '-region', lfos).then(saved => { if (saved) dialog.close(); }).catch(error => announce(error.message)));
+  dialog.append(image, save, button('Close', () => dialog.close())); dialog.addEventListener('close', () => dialog.remove()); document.body.append(dialog); dialog.showModal();
+}
+let agentUiModule;
+const agentElements = new Map();
+const agentPanelBindings = new Map(), mountedAgentPanels = new Map(), revealedAgentMounts = new Map();
+function receiveMountedAgentPanel(panel) {
+  if (panel.placement !== 'app' || panel.workspace.kind !== 'app' || !panel.mountRevision || panel.closed) return;
+  if (!state.workspaces.some(project => project.id === panel.workspace.projectId && coordinator.owns(`project:${project.id}`))) return;
+  const key = `${panel.workspace.projectId}:${panel.conversationId}`;
+  if (agentPanelBindings.get(key) !== panel.id) agentElements.delete(key);
+  const previous = mountedAgentPanels.get(panel.workspace.projectId);
+  agentPanelBindings.set(key, panel.id); mountedAgentPanels.set(panel.workspace.projectId, panel);
+  if (currentId !== panel.workspace.projectId && previous?.mountRevision !== panel.mountRevision) announce(`Agent mounted to ${panel.workspaceTitle || 'the selected project'}. Open that project to use it.`);
+  revealMountedAgentPanel();
+}
+function revealMountedAgentPanel() {
+  const panel = mountedAgentPanels.get(currentId);
+  if (!panel || !aiFeaturesEnabled || revealedAgentMounts.get(panel.id) === panel.mountRevision || !document.querySelector('.workspace-shell')) return;
+  revealedAgentMounts.set(panel.id, panel.mountRevision);
+  const chats = state.chats[currentId] ||= [];
+  let chat = chats.find(c => c.id === panel.conversationId);
+  if (!chat) { chat = { id: panel.conversationId, title: 'Mounted agent', assistantMode: 'agent', createdAt: panel.updatedAt, updatedAt: panel.updatedAt, context: { mode: 'article', nodeIds: [], passage: null }, messages: [] }; chats.push(chat); }
+  chat.assistantMode = 'agent';
+  if (aiPanel && currentChat()) currentChat().composerDraft = aiPanel.draft;
+  aiPanel = { chatId: chat.id, tab: 'chat', draft: '', busy: false, error: '', previewId: null, width: aiPanel?.width, assistantMode: 'agent' };
+  openSourceId = null; researchPanel = null; refreshWorkspacePanels();
+}
+let agentContextTimer;
+function scheduleAgentContext() {
+  clearTimeout(agentContextTimer);
+  agentContextTimer = setTimeout(() => { for (const panel of agentElements.values()) if (panel.isConnected) void panel.refreshContext().catch(error => announce(error.message)); }, 300);
+}
+async function currentAgentWorkspace(item) {
+  const session = (await lfos.lfos.agent.discover()).sessions.find(s => s.projectId === item.id && s.id === projectSession(item).id);
+  if (!session) throw new Error('The current project provider is not ready.');
+  return { kind: 'app', sessionId: session.id, projectId: session.projectId, providerId: session.providerId };
+}
+async function mountAgentPanel(mount, item, chat) {
+  await lfosConnection;
+  if (!lfos.agentAvailable || !lfos.has('agent.panels')) throw new Error('Update LFOS and enable Agent permissions to use the universal panel.');
+  await registerProjectProvider();
+  const uiUrl = new URL('ui.js', LFOS_SDK_URL).href;
+  agentUiModule ||= import(uiUrl).catch(error => { agentUiModule = null; throw error; });
+  await agentUiModule;
+  if (!mount.isConnected) return;
+  if (!document.querySelector('link[data-agent-kit]')) { const css = document.createElement('link'); css.rel = 'stylesheet'; css.href = new URL('ui.css', uiUrl).href; css.dataset.agentKit = ''; document.head.append(css); }
+  const key = `${item.id}:${chat.id}`;
+  const cached = agentElements.get(key);
+  if (cached) { mount.replaceChildren(cached); return; }
+  const panel = document.createElement('lfos-agent-panel');
+  agentElements.set(key, panel);
+  if (agentPanelBindings.has(key)) panel.panelId = agentPanelBindings.get(key);
+  panel.workspace = await currentAgentWorkspace(item); panel.conversationId = chat.id; panel.client = lfos.lfos;
+  panel.history = (chat.messages || []).map((message, index) => ({
+    role: message.role === 'user' ? 'user' : 'assistant', content: message.agentProposal?.message || message.agentTask?.summary || message.content || '',
+    taskId: message.agentTaskId || (message.role === 'user' ? chat.messages[index + 1]?.agentTaskId : undefined),
+    changes: (message.agentProposal?.operations || []).map(operation => {
+      const text = value => typeof value === 'string' ? value : value?.document?.markdown || (value == null ? '' : JSON.stringify(value, null, 2));
+      const before = text(operation.before), after = text(operation.after);
+      return { id: operation.id, title: operation.tool, before: before.slice(0, 8000), after: after.slice(0, 8000), truncated: before.length > 8000 || after.length > 8000 };
+    }),
+  }));
+  panel.effort = loadModelSettings().thinkingEffort;
+  panel.getContext = () => ({ selection: currentAgentFocus().focus, history: (chat.messages || []).slice(-6).map(message => ({ role: message.role === 'user' ? 'user' : 'assistant', content: String(message.content || '').slice(0, 1000) })), references: [...(openSourceId && openSourceId !== 'library' ? [{ kind: 'source', id: openSourceId, page: sourcePage }] : []), ...(editingTarget ? [{ kind: 'document', id: editingTarget }] : [])], projectRevision: work()?.projectRevision || 0, viewRevision: agentView().viewRevision });
+  panel.addEventListener('lfos-agent-task', event => receiveHostAgentTask(event.detail));
+  mount.replaceChildren(panel);
+}
 async function registerProjectProvider() {
   if (!lfos.agentAvailable || !navigator.locks || loadError) throw new Error('Agent project access is unavailable in this browser or storage session.');
   const owned = state.workspaces.filter(project => coordinator.owns(`project:${project.id}`));
-  await lfos.lfos.agent.registerProvider({ sessions: owned.map(projectSession), capabilities: owned.flatMap(projectCapabilities), invoke: (call, context) => projectAgentService.invoke(call, context), operationStatus: call => projectAgentService.operationStatus(call) });
+  await lfos.lfos.agent.registerProvider({ sessions: owned.map(projectSession), capabilities: owned.flatMap(project => projectCapabilities(project, { get_view: project.id === currentId, set_view: project.id === currentId, capture_region: project.id === currentId && lfos.has('agent.images') })), invoke: (call, context) => projectAgentService.invoke(call, context), operationStatus: call => projectAgentService.operationStatus(call) });
 }
 async function initializeProjectAgent() {
   await lfosConnection;
@@ -5314,10 +5320,15 @@ async function initializeProjectAgent() {
   try {
     await registerProjectProvider();
     lfos.lfos.agent.subscribe(receiveHostAgentTask);
+    lfos.lfos.agent.panels.subscribe(receiveMountedAgentPanel);
+    for (const panel of await lfos.lfos.agent.panels.list()) receiveMountedAgentPanel(panel);
     for (const task of await lfos.lfos.agent.tasks.list()) receiveHostAgentTask(task);
-  } catch (error) { console.error('[LF CORE] Agent connection failed.', error); }
+  } catch (error) { console.error('[LF CORE] Agent connection failed.', error); if (aiPanel?.assistantMode === 'agent') { aiPanel.error = error.message; renderAiPanel(); } }
 }
 void initializeProjectAgent();
+document.addEventListener('scroll', event => { if (!(event.target instanceof Element) || !event.target.closest('.ai-panel, lfos-agent-panel')) scheduleAgentContext(); }, true);
+document.addEventListener('pointerup', scheduleAgentContext, { passive: true });
+window.addEventListener('resize', scheduleAgentContext);
 
 renderHome();
 void openInitialLFOSProject();

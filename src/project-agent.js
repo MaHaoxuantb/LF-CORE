@@ -1,3 +1,7 @@
+import { setProjectParent, removeRelationship } from './relationships.js';
+import { projectOutput, validateValue } from './project-agent-output.js';
+import { preserveDocumentBinding } from './lfos-documents.js';
+import { makeAnchor } from './anchors.js';
 import { WorkspaceAgentService } from './agent-service.js';
 import { isSourceNode, nodeLabel, sourceNode } from './node-content.js';
 import { createResearchQuestion, recordCloseout, normalizeResearch, compareIdeas } from './research.js';
@@ -6,7 +10,22 @@ const string = { type: 'string', maxLength: 100_000 };
 const id = { type: 'string', maxLength: 200 };
 const integer = { type: 'integer', minimum: 0 };
 const schema = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
-const definitions = {
+const number = { type: 'number' };
+const rect = schema({ x: number, y: number, width: { type: 'number', minimum: 1 }, height: { type: 'number', minimum: 1 } }, ['x', 'y', 'width', 'height']);
+const side = { type: 'string', enum: ['left', 'top', 'right', 'bottom', 'auto'] };
+export const definitions = {
+  get_view: ['Inspect the current visible project view and CSS-pixel regions', 'read', {}, []],
+  get_save_status: ['Inspect local and LFOS-file save status for this project', 'read', {}, []],
+  save_project: ['Explicitly save this project and its linked LFOS file; ask the user to choose a destination when needed', 'write', {}, []],
+  list_relationships: ['Read all relationships and passage highlights with pagination', 'read', { cursor: integer, limit: { type: 'integer', minimum: 1, maximum: 100 } }, []],
+  set_view: ['Select or reveal entities and set the current project camera', 'write', { nodeIds: { type: 'array', items: id, maxItems: 100 }, revealId: id, x: number, y: number, zoom: { type: 'number', minimum: 0.1, maximum: 4 }, fit: { type: 'boolean' } }, []],
+  set_node_layout: ['Move, resize, collapse or expand a node', 'write', { nodeId: id, x: number, y: number, width: { type: 'number', minimum: 100, maximum: 4000 }, height: { type: 'number', minimum: 60, maximum: 4000 }, collapsed: { type: 'boolean' } }, ['nodeId']],
+  add_highlight: ['Create an anchored passage highlight in an article, Markdown node, or source', 'write', { targetId: id, start: integer, end: integer }, ['targetId', 'start', 'end']],
+  delete_highlight: ['Remove a highlight and dependent passage connections', 'destructive', { highlightId: id }, ['highlightId']],
+  undo: ['Undo the latest project edit, retaining operation receipts and the save destination', 'write', {}, []],
+  redo: ['Redo the latest undone project edit', 'write', {}, []],
+  capture_region: ['Capture a visible project region as a PNG artifact for visual inspection; use get_view coordinates and revision', 'write', { region: rect, viewRevision: id }, ['region', 'viewRevision']],
+  export_artifact: ['Export an existing captured PNG through the LFOS save picker', 'external', { artifactId: id }, ['artifactId']],
   verify_changes: ['Verify committed operations against current project records; return mismatches and verified operation IDs', 'read', { operationIds: { type: 'array', items: id, maxItems: 100 } }, ['operationIds']],
   get_project_index: ['Read the project index', 'read', { cursor: integer, sourceCursor: integer, limit: { type: 'integer', minimum: 1, maximum: 100 } }, []],
   search_project: ['Search project documents and research records', 'read', { query: string, cursor: integer, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['query']],
@@ -18,8 +37,8 @@ const definitions = {
   replace_markdown: ['Replace a complete Markdown document', 'write', { targetId: id, markdown: string }, ['targetId', 'markdown']],
   edit_markdown: ['Replace an exact, unique text passage while preserving the rest', 'write', { targetId: id, before: string, after: string }, ['targetId', 'before', 'after']],
   set_parent: ['Move a node or branch', 'write', { nodeId: id, parentId: { type: ['string', 'null'] } }, ['nodeId', 'parentId']],
-  create_edge: ['Connect two Markdown nodes', 'write', { fromId: id, toId: id, label: string, direction: { type: 'string', enum: ['forward', 'backward', 'both'] } }, ['fromId', 'toId']],
-  update_edge: ['Edit a graph connection', 'write', { edgeId: id, fromId: id, toId: id, label: { type: ['string', 'null'] }, direction: { type: 'string', enum: ['forward', 'backward', 'both'] } }, ['edgeId']],
+  create_edge: ['Connect two Markdown nodes', 'write', { fromId: id, toId: id, label: string, fromSide: side, toSide: side, direction: { type: 'string', enum: ['forward', 'reverse', 'both'] } }, ['fromId', 'toId']],
+  update_edge: ['Edit a graph connection', 'write', { edgeId: id, fromId: id, toId: id, label: { type: ['string', 'null'] }, fromSide: side, toSide: side, direction: { type: 'string', enum: ['forward', 'reverse', 'both'] } }, ['edgeId']],
   delete_node: ['Delete a node; keep children by reparenting them to its parent', 'destructive', { nodeId: id }, ['nodeId']],
   delete_edge: ['Delete a graph connection', 'destructive', { edgeId: id }, ['edgeId']],
   attach_source_reference: ['Attach a passage returned by a source read/search in this task', 'write', { nodeId: id, passageToken: id }, ['nodeId', 'passageToken']],
@@ -38,15 +57,15 @@ const definitions = {
 export function projectSession(workspace) {
   return { id: `lfcore:${workspace.id}`, projectId: workspace.id, title: workspace.title, revision: workspace.projectRevision || 0, providerId: 'com.linecoflow.lfcore' };
 }
-export function projectCapabilities(workspace) {
-  return Object.entries(definitions).map(([tool, [description, effect, properties, required]]) => ({ id: `com.linecoflow.lfcore.${tool}`, title: description, description, effect, input: schema(properties, required), output: { type: 'object' }, available: true, cancellable: true, sessionId: projectSession(workspace).id }));
+export function projectCapabilities(workspace, availability = {}) {
+  return Object.entries(definitions).map(([tool, [description, effect, properties, required]]) => ({ id: `com.linecoflow.lfcore.${tool}`, title: description, description, effect, input: schema(properties, required), output: projectOutput(tool), available: availability[tool] !== false, cancellable: true, sessionId: projectSession(workspace).id }));
 }
 const error = (code, message) => Object.assign(new Error(message), { code });
 
 // The UI and provider use the same commit path. No whole-workspace proposal is applied.
 export class ProjectAgentService {
-  constructor({ getWorkspace, commit, searchSources, readSource, sourceIndexStatus, readAttachment, exportProject, importAttachment, lock = async (_id, action) => action() }) {
-    Object.assign(this, { getWorkspace, commit, searchSources, readSource, sourceIndexStatus, readAttachment, exportProject, importAttachment, lock });
+  constructor({ getWorkspace, commit, searchSources, readSource, sourceIndexStatus, readAttachment, exportProject, importAttachment, controls = {}, lock = async (_id, action) => action() }) {
+    Object.assign(this, { getWorkspace, commit, searchSources, readSource, sourceIndexStatus, readAttachment, exportProject, importAttachment, controls, lock });
     this.queue = Promise.resolve(); this.taskSources = new Map(); this.taskAliases = new Map();
   }
   workspace(sessionId) {
@@ -58,13 +77,25 @@ export class ProjectAgentService {
   async operationStatus({ sessionId, operationId }) {
     // A lost reply must not turn an in-flight commit into an absent receipt.
     await this.queue;
-    const receipt = this.workspace(sessionId).agentReceipts?.[operationId];
-    return receipt ? { status: 'committed', result: receipt.result } : { status: 'absent' };
+    const workspace = this.workspace(sessionId), receipt = workspace.agentReceipts?.[operationId];
+    return receipt ? { status: 'committed', result: receipt.result } : { status: workspace.agentPendingOperations?.[operationId] ? 'unknown' : 'absent' };
   }
   invoke(call, { signal, reportProgress = () => {} } = {}) {
     const tool = call.capability?.replace('com.linecoflow.lfcore.', '');
     if (definitions[tool]?.[1] === 'read') return this.execute(call, signal, reportProgress);
-    const run = () => this.lock(call.sessionId, () => this.execute(call, signal, reportProgress));
+    const run = () => this.lock(call.sessionId, async () => {
+      try { return await this.execute(call, signal, reportProgress); }
+      catch (reason) {
+        if (reason.code === 'CANCELLED') {
+          const current = this.workspace(call.sessionId);
+          if (current.agentPendingOperations?.[call.operationId]) {
+            const clean = structuredClone(current); delete clean.agentPendingOperations[call.operationId];
+            await this.commit(current, clean, { ...call, metadataOnly: true });
+          }
+        }
+        throw reason;
+      }
+    });
     const pending = this.queue.then(run); this.queue = pending.catch(() => {}); return pending;
   }
   async execute(call, signal, reportProgress) {
@@ -73,6 +104,7 @@ export class ProjectAgentService {
     if (!call.capability?.startsWith(prefix)) throw error('NOT_SUPPORTED', 'Unknown project capability.');
     const tool = call.capability.slice(prefix.length), definition = definitions[tool];
     if (!definition) throw error('NOT_SUPPORTED', 'Unknown project capability.');
+    validateValue(schema(definition[2], definition[3]), call.arguments);
     const workspace = this.workspace(call.sessionId), revision = workspace.projectRevision || 0;
     const mutation = definition[1] !== 'read';
     let requestFingerprint;
@@ -85,16 +117,60 @@ export class ProjectAgentService {
         if (receipt.request !== requestFingerprint) throw error('INVALID_ARGUMENT', 'Operation ID was already used for a different request.');
         return structuredClone(receipt.result);
       }
+      if (workspace.agentPendingOperations?.[call.operationId]) throw error('UNCERTAIN_OPERATION', 'This operation needs reconciliation before retrying.');
       if (!Number.isInteger(call.expectedRevision) || call.expectedRevision !== revision || (this.workspace(call.sessionId).projectRevision || 0) !== revision) throw error('CONFLICT', `Project revision changed. Read the project again; current revision is ${revision}.`);
     }
     const service = new WorkspaceAgentService(workspace, { searchSources: this.searchSources && ((query, options) => this.searchSources(workspace, query, { ...options, signal, onProgress: ({ page, pages }) => reportProgress?.(`Indexing source · page ${page} of ${pages}`) })), readSource: this.readSource && ((sourceId, range) => this.readSource(workspace, sourceId, range, { signal, onProgress: ({ page, pages }) => reportProgress?.(`Indexing source · page ${page} of ${pages}`) })), sourceIndexStatus: this.sourceIndexStatus });
-    service._endpoint = value => { const nodeId = service.aliases.get(value) || value; if (!service.draft.nodes.some(node => node.id === nodeId)) throw error('NOT_FOUND', 'Graph endpoint not found.'); return nodeId; };
+    service._endpoint = value => { const nodeId = service.aliases.get(value) || value; if (!service.draft.nodes.some(node => node.id === nodeId) && !(service.draft.highlights || []).some(h => `h:${h.id}` === nodeId)) throw error('NOT_FOUND', 'Graph endpoint not found.'); return nodeId; };
     const passageKey = `${call.taskId}:${workspace.id}`;
     service.passages = new Map(this.taskSources.get(passageKey) || []);
     service.aliases = new Map(this.taskAliases.get(passageKey) || []);
     const args = { ...call.arguments };
     let result;
-    if (tool === 'verify_changes') {
+    if (['get_view', 'get_save_status', 'set_view', 'save_project', 'capture_region', 'export_artifact'].includes(tool)) {
+      const handler = this.controls[tool];
+      if (!handler) throw error('UNAVAILABLE', `${tool} is unavailable in this project window.`);
+      if (['save_project', 'export_artifact'].includes(tool)) {
+        const staged = structuredClone(workspace);
+        (staged.agentPendingOperations ||= {})[call.operationId] = { taskId: call.taskId, request: requestFingerprint };
+        await this.commit(workspace, staged, { ...call, metadataOnly: true });
+      }
+      result = await handler(workspace, args, call, { signal });
+    } else if (tool === 'list_relationships') {
+      const cursor = args.cursor || 0, limit = Math.min(args.limit || 50, 100);
+      result = { edges: workspace.edges.slice(cursor, cursor + limit), highlights: (workspace.highlights || []).map(h => ({ id: h.id, targetId: h.targetId, start: h.start, end: h.end, quote: h.quote })), nextCursor: cursor + limit < workspace.edges.length ? cursor + limit : null };
+    } else if (tool === 'set_node_layout') {
+      const node = service.draft.nodes.find(n => n.id === args.nodeId);
+      if (!node) throw error('NOT_FOUND', 'Node not found.');
+      service.draft.layout ||= {}; service.draft.layout.positions ||= {}; service.draft.layout.sizes ||= {};
+      if (args.x !== undefined || args.y !== undefined) service.draft.layout.positions[node.id] = { ...(service.draft.layout.positions[node.id] || { x: 0, y: 0 }), ...(args.x !== undefined ? { x: args.x } : {}), ...(args.y !== undefined ? { y: args.y } : {}) };
+      if (args.width !== undefined || args.height !== undefined) service.draft.layout.sizes[node.id] = { ...(service.draft.layout.sizes[node.id] || {}), ...(args.width !== undefined ? { width: args.width } : {}), ...(args.height !== undefined ? { height: args.height } : {}) };
+      if (args.collapsed !== undefined) node.collapsed = args.collapsed;
+      result = { nodeId: node.id };
+    } else if (tool === 'add_highlight') {
+      const target = this.controls.anchorText ? this.controls.anchorText(workspace, args.targetId) : args.targetId === 'article' ? workspace.article.markdown : workspace.nodes.find(n => n.id === args.targetId)?.document?.markdown ?? workspace.sources.find(s => s.id === args.targetId)?.text;
+      if (typeof target !== 'string') throw error('UNAVAILABLE', 'Read a text-backed document or source before highlighting.');
+      const anchor = makeAnchor(args.targetId, target, args.start, args.end);
+      const highlight = { ...anchor, id: crypto.randomUUID() };
+      this.controls.markHighlight?.(service.draft, highlight);
+      (service.draft.highlights ||= []).push(highlight); result = { highlightId: highlight.id };
+    } else if (tool === 'delete_highlight') {
+      if (!(service.draft.highlights || []).some(h => h.id === args.highlightId)) throw error('NOT_FOUND', 'Highlight not found.');
+      this.controls.unmarkHighlight?.(service.draft, service.draft.highlights.find(h => h.id === args.highlightId));
+      service.draft.highlights = service.draft.highlights.filter(h => h.id !== args.highlightId);
+      service.draft.edges = service.draft.edges.filter(e => e.fromId !== `h:${args.highlightId}` && e.toId !== `h:${args.highlightId}`);
+      for (const node of service.draft.nodes) if (node.anchor?.id === args.highlightId) node.anchor = null;
+      result = { deletedId: args.highlightId };
+    } else if (tool === 'undo' || tool === 'redo') {
+      if (!this.controls.history) throw error('UNAVAILABLE', 'Project history is unavailable.');
+      const restored = this.controls.history(workspace, tool);
+      if (!restored) throw error('NOT_FOUND', `Nothing to ${tool}.`);
+      service.draft = structuredClone(restored);
+      service.draft.agentReceipts = structuredClone(workspace.agentReceipts || {});
+      service.draft.agentHistory = structuredClone(workspace.agentHistory || []);
+      preserveDocumentBinding(workspace, service.draft);
+      result = { restored: true };
+    } else if (tool === 'verify_changes') {
       if (!Array.isArray(args.operationIds) || !args.operationIds.length || args.operationIds.length > 100 || args.operationIds.some(id => typeof id !== 'string' || !id || id.length > 200)) throw error('INVALID_ARGUMENT', 'Verify between 1 and 100 operation IDs.');
       const requested = new Set(args.operationIds);
       const history = (workspace.agentHistory || []).filter(entry => entry.runId === call.taskId && entry.operationIds.some(id => requested.has(id)));
@@ -129,11 +205,11 @@ export class ProjectAgentService {
       const nodeId = service.aliases.get(args.nodeId) || args.nodeId, parentId = service.aliases.get(args.parentId) || args.parentId;
       const node = service.draft.nodes.find(entry => entry.id === nodeId);
       if (!node || parentId && !service.draft.nodes.some(entry => entry.id === parentId)) throw error('NOT_FOUND', 'Node or parent not found.');
-      const before = node.parentId; node.parentId = parentId ?? null;
+      const before = node.parentId; setProjectParent(service.draft, nodeId, parentId);
       service._record(tool, args, before, node.parentId, { targetId: node.id }); result = { nodeId, parentId: node.parentId };
     } else if (tool === 'edit_markdown') {
       args.targetId = service.aliases.get(args.targetId) || args.targetId;
-      const target = args.targetId === 'article' ? service.draft.article : service.draft.nodes.find(node => node.id === args.targetId)?.document;
+      const target = this.controls.anchorText ? this.controls.anchorText(workspace, args.targetId) : args.targetId === 'article' ? service.draft.article : service.draft.nodes.find(node => node.id === args.targetId)?.document;
       if (!target || typeof args.before !== 'string' || !args.before || typeof args.after !== 'string' || target.markdown.split(args.before).length !== 2) throw error('CONFLICT', 'The passage must match exactly once. Read the document again.');
       result = await service._execute('replace_markdown', { targetId: args.targetId, markdown: target.markdown.replace(args.before, () => args.after) });
     } else if (tool === 'search_project') {
@@ -156,7 +232,7 @@ export class ProjectAgentService {
       result = { deletedId: node.id };
     } else if (tool === 'delete_edge') {
       if (!service.draft.edges.some(edge => edge.id === args.edgeId)) throw error('NOT_FOUND', 'Edge not found.');
-      service.draft.edges = service.draft.edges.filter(edge => edge.id !== args.edgeId); result = { deletedId: args.edgeId };
+      removeRelationship(service.draft, args.edgeId); result = { deletedId: args.edgeId };
     } else if (tool === 'rename_project') {
       if (!String(args.title || '').trim()) throw error('INVALID_ARGUMENT', 'Project title cannot be empty.');
       service.draft.title = args.title.trim(); result = { title: service.draft.title };
@@ -215,14 +291,18 @@ export class ProjectAgentService {
       (service.draft.agentArtifacts ||= []).push({ id: result.sourceId, type: 'file', title: result.fileName, fileName: result.fileName, mimeType: result.mimeType, byteLength: result.bytes, addedAt: new Date().toISOString(), provenance: 'ai' });
     }
     else result = await service._execute(tool, args);
-    if (signal?.aborted) throw error('CANCELLED', 'Project operation cancelled before commit.');
+    if (signal?.aborted) {
+      if (['save_project', 'export_artifact'].includes(tool)) throw error('UNCERTAIN_OPERATION', 'Save or export may have completed before cancellation. Reconcile its outcome before continuing.');
+      throw error('CANCELLED', 'Project operation cancelled before commit.');
+    }
     this.taskSources.set(passageKey, new Map([...(this.taskSources.get(passageKey) || []), ...service.passages]));
-    if (!mutation) return { ...result, revision };
+    if (!mutation) { const output = { ...result, revision }; validateValue(projectOutput(tool), output); return output; }
     // Async source reads/export preparation may have allowed a user edit.
     if ((this.workspace(call.sessionId).projectRevision || 0) !== revision) throw error('CONFLICT', 'Project changed while the operation was being prepared.');
+    if (!['save_project', 'set_view', 'capture_region', 'export_artifact'].includes(tool)) this.controls.normalize?.(service.draft);
     validateProject(service.draft);
     const next = service.draft;
-    next.projectRevision = revision + 1; next.updatedAt = new Date().toISOString();
+    next.projectRevision = ['save_project', 'set_view', 'capture_region', 'export_artifact'].includes(tool) ? revision : revision + 1; next.updatedAt = new Date().toISOString();
     if (next.article.markdown !== workspace.article.markdown) next.article.revision = (workspace.article.revision || 0) + 1;
     result = { ...result, revision: next.projectRevision, verificationRequired: true };
     const origin = { kind: 'agent', runId: call.taskId, operationIds: [call.operationId], acceptedAt: next.updatedAt };
@@ -242,6 +322,8 @@ export class ProjectAgentService {
     });
     result.moreChanges = changes.length > 10;
 
+    preserveDocumentBinding(this.workspace(call.sessionId), next);
+    validateValue(projectOutput(tool), result);
     (next.agentReceipts ||= {})[call.operationId] = { request: requestFingerprint, result };
     await this.commit(workspace, next, call);
     this.taskAliases.set(passageKey, service.aliases);
@@ -293,5 +375,5 @@ export async function readAgentAttachment(workspace, { sourceId, offset = 0, len
   else if (stored instanceof ArrayBuffer) bytes = new Uint8Array(stored);
   else if (ArrayBuffer.isView(stored)) bytes = new Uint8Array(stored.buffer, stored.byteOffset, stored.byteLength);
   else throw error('STORAGE', 'Attachment bytes could not be read.');
-  return { sourceId, title: source.title, offset, totalBytes: bytes.length, encoding: 'base64', data: btoa(String.fromCharCode(...bytes.subarray(offset, offset + length))) };
+  return { sourceId, title: source.title || source.fileName || 'Attachment', offset, totalBytes: bytes.length, encoding: 'base64', data: btoa(String.fromCharCode(...bytes.subarray(offset, offset + length))) };
 }

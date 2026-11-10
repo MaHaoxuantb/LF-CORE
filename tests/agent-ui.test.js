@@ -18,24 +18,10 @@ test('historical agent proposals render without a live task object', () => {
 });
 
 
-test('task updates refresh Stop and placeholder without replacing the composer draft', () => {
-  const start = source.indexOf('function syncHostAgentComposer(');
-  const end = source.indexOf('\nfunction updateHostAgentTaskView(', start);
-  const input = { value: 'Unsent draft', placeholder: '' };
-  let stop;
-  const form = {
-    querySelector: selector => selector === 'textarea' ? input : stop,
-    append: control => { stop = control; },
-  };
-  const sync = vm.runInNewContext(`${source.slice(start, end)}; syncHostAgentComposer`, {
-    currentChat: () => ({ id: 'conversation' }),
-    document: { querySelector: () => form },
-    agentStopButton: task => ({ dataset: { agentStop: task.id }, remove() { stop = undefined; } }),
-  });
-  sync({ id: 'task', conversationId: 'conversation', status: 'running' });
-  assert.equal(stop.dataset.agentStop, 'task');
-  sync({ id: 'task', conversationId: 'conversation', status: 'completed' });
-  assert.equal(stop, undefined);
-  assert.equal(input.value, 'Unsent draft');
-  assert.match(input.placeholder, /Describe/);
+test('live task events do not replace the universal composer or duplicate its controls', () => {
+  const start = source.indexOf('function receiveHostAgentTask(');
+  const end = source.indexOf('async function pauseProjectTasks(', start);
+  assert.ok(!source.slice(start, end).includes('renderAiPanel('));
+  assert.ok(!source.includes('function renderHostAgentTask('));
+  assert.ok(source.includes("document.createElement('lfos-agent-panel')"));
 });

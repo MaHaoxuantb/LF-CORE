@@ -1,12 +1,11 @@
+import { updateRelationship } from './relationships.js';
 import { isSourceNode, nodeLabel } from './node-content.js';
 
 export const AGENT_LIMITS = Object.freeze({
-  maxTurns: 6,
   maxCallsPerTurn: 8,
   maxMutations: 24,
   maxCreatedNodes: 12,
   maxMarkdownChars: 100_000,
-  maxContextChars: 40_000,
   maxReadChars: 12_000
 });
 
@@ -40,28 +39,8 @@ function safeLabel(value) {
 
 function direction(value) {
   const result = value || 'forward';
-  if (!['forward', 'backward', 'both'].includes(result)) throw new Error('Edge direction must be forward, backward, or both.');
+  if (!['forward', 'reverse', 'both'].includes(result)) throw new Error('Edge direction must be forward, reverse, or both.');
   return result;
-}
-
-export function parseAgentResponse(raw) {
-  let parsed;
-  try { parsed = JSON.parse(String(raw).replace(/^```(?:json)?\s*|\s*```$/g, '').trim()); }
-  catch { throw new Error('The model returned an invalid agent response.'); }
-  if (!parsed || !['continue', 'ready'].includes(parsed.status) || typeof parsed.message !== 'string' || !Array.isArray(parsed.calls)) {
-    throw new Error('The model returned an invalid agent response.');
-  }
-  if (parsed.calls.length > AGENT_LIMITS.maxCallsPerTurn) throw new Error(`The model requested more than ${AGENT_LIMITS.maxCallsPerTurn} tools at once.`);
-  const ids = new Set();
-  const calls = parsed.calls.map((call) => {
-    object(call, 'Every agent call must be an object.');
-    if (typeof call.id !== 'string' || !call.id.trim() || ids.has(call.id)) throw new Error('Agent call IDs must be unique non-empty strings.');
-    if (!AGENT_TOOLS.includes(call.tool)) throw new Error(`Unsupported agent tool: ${String(call.tool)}.`);
-    ids.add(call.id);
-    return { id: call.id, tool: call.tool, args: object(call.args || {}) };
-  });
-  if (parsed.status === 'ready' && calls.length) throw new Error('A ready agent response cannot request more tools.');
-  return { status: parsed.status, message: parsed.message.trim(), calls };
 }
 
 export class WorkspaceAgentService {
@@ -251,6 +230,7 @@ export class WorkspaceAgentService {
       if (fromId === toId) throw new Error('An edge cannot connect a node to itself.');
       if ((this.draft.edges || []).some((edge) => edge.fromId === fromId && edge.toId === toId || edge.fromId === toId && edge.toId === fromId)) throw new Error('Those nodes are already connected.');
       const edge = { id: this.uuid(), fromId, toId, label: safeLabel(args.label), direction: direction(args.direction), provenance: 'ai', origins: [] };
+      for (const key of ['fromSide', 'toSide']) if (args[key] !== undefined) edge[key] = args[key];
       (this.draft.edges ||= []).push(edge);
       const operation = this._record(tool, args, null, structuredClone(edge), { targetId: edge.id });
       return { edgeId: edge.id, operationId: operation.id };
@@ -263,9 +243,11 @@ export class WorkspaceAgentService {
       const toId = args.toId == null ? edge.toId : this._endpoint(args.toId);
       if (fromId === toId) throw new Error('An edge cannot connect a node to itself.');
       if (this.draft.edges.some((entry) => entry.id !== edge.id && (entry.fromId === fromId && entry.toId === toId || entry.fromId === toId && entry.toId === fromId))) throw new Error('Those nodes are already connected.');
-      Object.assign(edge, { fromId, toId });
-      if ('label' in args) edge.label = safeLabel(args.label);
-      if ('direction' in args) edge.direction = direction(args.direction);
+      const patch = { fromId, toId };
+      if ('label' in args) patch.label = safeLabel(args.label);
+      if ('direction' in args) patch.direction = direction(args.direction);
+      for (const key of ['fromSide', 'toSide']) if (args[key] !== undefined) patch[key] = args[key];
+      updateRelationship(this.draft, edge.id, patch);
       const operation = this._record(tool, args, before, structuredClone(edge), { targetId: edge.id });
       return { edgeId: edge.id, operationId: operation.id };
     }

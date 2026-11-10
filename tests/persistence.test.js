@@ -179,3 +179,14 @@ test('project packaging runs on another thread and returns transferable bytes wi
     assert.throws(() => projectExportBytes('old.lfcore', '{}'), /ArrayBuffer/, 'the obsolete string export payload must be rejected');
   } finally { await worker.terminate(); }
 });
+
+test('explicit project view flush leaves other project views queued', async () => {
+  const { ViewPersistence } = await import('../src/view-persistence.js');
+  const writes = [];
+  const persistence = new ViewPersistence({ write: async (id, view) => writes.push({ id, view }), delay: 10000 });
+  persistence.schedule('current', { x: 1, y: 2, zoom: 1 });
+  persistence.schedule('other', { x: 3, y: 4, zoom: 1 });
+  await persistence.flush('current'); assert.deepEqual(writes.map(w => w.id), ['current']);
+  assert.equal(persistence.pending.has('other'), true);
+  await persistence.flush(); assert.deepEqual(writes.map(w => w.id), ['current', 'other']);
+});

@@ -1,7 +1,7 @@
 # Agent mode integration
 
 Agent mode requires the LFOS host agent runtime, SolOS Intelligence, and the
-version-5 LF CORE website manifest (`agent:use`, `agent:provide`, `ai:generate`).
+version-6 LF CORE website manifest (`agent:use`, `agent:provide`, `ai:generate`).
 Deploy LunOS/SDK support first, update the installed LF CORE app, then enable
 the new permissions. Outside LFOS, ordinary Chat retains its provider settings;
 Agent does not silently fall back to the old local proposal loop.
@@ -128,3 +128,5 @@ verify the results before completion; pending write verification and unknown
 outcomes still block completion. Final answers appear only after acceptance,
 not as progress messages on each rejected completion attempt. Repeated
 verification status is coalesced instead of flooding the transcript.
+
+Universal agent UI uses the public `<lfos-agent-panel>`. App placement is limited to the current project; Move to system opens the existing LFOS Side Mount window. Typed view, Save, relationship, layout, history, region capture and export operations are provider tools. Region screenshot export is also in Project options. Deploy backend image support and LFOS/SDK before the version-6 manifest. Connected SolOS and actual Safari acceptance remain required.

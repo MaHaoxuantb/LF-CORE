@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_LIMITS, WorkspaceAgentService, applyAgentProposal, parseAgentResponse } from '../src/agent-service.js';
+import { AGENT_LIMITS, WorkspaceAgentService, applyAgentProposal } from '../src/agent-service.js';
 import { createWorkspace } from '../src/storage.js';
 
 function ids() {
@@ -19,13 +19,6 @@ function fixture() {
   return workspace;
 }
 
-test('agent protocol accepts only bounded allowlisted calls', () => {
-  assert.deepEqual(parseAgentResponse('{"status":"ready","message":"Done","calls":[]}'), { status: 'ready', message: 'Done', calls: [] });
-  assert.throws(() => parseAgentResponse('not json'), /invalid agent response/);
-  assert.throws(() => parseAgentResponse('{"status":"continue","message":"","calls":[{"id":"1","tool":"delete_node","args":{}}]}'), /Unsupported agent tool/);
-  const calls = Array.from({ length: AGENT_LIMITS.maxCallsPerTurn + 1 }, (_, index) => ({ id: String(index), tool: 'get_project_index', args: {} }));
-  assert.throws(() => parseAgentResponse(JSON.stringify({ status: 'continue', message: '', calls })), /more than/);
-});
 
 test('draft tools inspect, create, edit, connect, and remain isolated', async () => {
   const workspace = fixture();

@@ -19,6 +19,7 @@
   "dependencies": {
     "dompurify": "^3.4.15",
     "esbuild": "^0.28.2",
+    "html2canvas": "1.4.1",
     "katex": "^0.18.7",
     "marked": "^18.0.13",
     "marked-katex-extension": "^5.1.13",

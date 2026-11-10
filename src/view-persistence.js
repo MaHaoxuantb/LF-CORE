@@ -16,10 +16,10 @@ export class ViewPersistence {
     this.timer = setTimeout(() => void this.flush().catch(this.onError), this.delay);
   }
 
-  flush() {
+  flush(id) {
     clearTimeout(this.timer);
-    const jobs = [...this.pending];
-    this.pending.clear();
+    const jobs = [...this.pending].filter(([projectId]) => id === undefined || projectId === id);
+    for (const [projectId] of jobs) this.pending.delete(projectId);
     const operation = this.queue.then(async () => {
       let failure;
       for (const [id, job] of jobs) {

@@ -42,6 +42,17 @@ function isStoredFile(source) {
   return ['pdf', 'image', 'video', 'file'].includes(source?.type);
 }
 
+function portableAgentRecords(chats) {
+  for (const chat of chats) for (const message of chat.messages || []) {
+    delete message.agentTaskId;
+    if (message.agentTask) {
+      const task = message.agentTask;
+      message.agentTask = { status: ['completed', 'cancelled'].includes(task.status) ? task.status : 'interrupted', summary: typeof task.summary === 'string' ? task.summary : '', plan: Array.isArray(task.plan) ? task.plan.filter(step => typeof step === 'string') : [], evidence: Array.isArray(task.evidence) ? task.evidence.filter(item => typeof item === 'string') : [] };
+    }
+  }
+  return chats;
+}
+
 export function serializeProject(workspace, chats = [], fileBytes = new Map(), exportedAt = new Date().toISOString()) {
   assertObject(workspace, 'There is no project to download.');
   const files = {};
@@ -53,12 +64,13 @@ export function serializeProject(workspace, chats = [], fileBytes = new Map(), e
   }
   const exportedWorkspace = structuredClone(workspace);
   delete exportedWorkspace.agentReceipts;
+  delete exportedWorkspace.agentPendingOperations;
   delete exportedWorkspace.agentArtifacts;
   delete exportedWorkspace.lfosDocumentId;
   delete exportedWorkspace.lfosFileHash;
   delete exportedWorkspace.lfosSavedProjectRevision;
   const exportedChats = structuredClone(Array.isArray(chats) ? chats : []);
-  for (const chat of exportedChats) for (const message of chat.messages || []) delete message.agentTaskId;
+  portableAgentRecords(exportedChats);
   return JSON.stringify({
     format: PROJECT_FORMAT,
     version: PROJECT_VERSION,
@@ -131,6 +143,7 @@ export function parseProject(serialized, { uuid = () => crypto.randomUUID(), now
   workspace.id = uuid();
   workspace.projectRevision = 0;
   delete workspace.agentReceipts;
+  delete workspace.agentPendingOperations;
   delete workspace.agentArtifacts;
   delete workspace.lfosDocumentId;
   delete workspace.lfosFileHash;
@@ -138,6 +151,7 @@ export function parseProject(serialized, { uuid = () => crypto.randomUUID(), now
   workspace.createdAt = now();
   workspace.updatedAt = workspace.createdAt;
   const chats = Array.isArray(bundle.project.chats) ? structuredClone(bundle.project.chats) : [];
+  portableAgentRecords(chats);
   remapAgentProposals(chats, idMap, originalUpdatedAt, workspace.updatedAt);
   return { workspace, chats, media, pdfs: media.filter((entry) => entry.type === 'pdf').map(({ id, bytes }) => ({ id, bytes })) };
 }

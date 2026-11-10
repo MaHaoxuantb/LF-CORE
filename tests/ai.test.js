@@ -2,8 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import { completionUrl, encryptApiKey, unlockApiKey, getApiKey, lockApiKey, saveModelSettings, saveModelSecret, saveDeveloperMode, loadModelSettings, endpointRequiresApiKey } from '../src/model-settings.js';
-import { complete, chatModel, generateArticle, askModel, partialChatReply, proposeInsertion, runAgent } from '../src/ai.js';
-import { WorkspaceAgentService } from '../src/agent-service.js';
+import { complete, chatModel, generateArticle, askModel, partialChatReply, proposeInsertion } from '../src/ai.js';
 import { LFOSIntegration } from '../src/lfos.js';
 import { createWorkspace } from '../src/storage.js';
 
@@ -129,49 +128,6 @@ test('partial chat reply exposes only the decoded reply field', () => {
   assert.equal(partialChatReply('Plain response'), 'Plain response');
 });
 
-test('agent loop performs multiple inspected tool turns and returns an isolated proposal', async () => {
-  const workspace = createWorkspace('Agent loop', '# Article\n\nOriginal.');
-  workspace.id = 'workspace'; workspace.updatedAt = 'base';
-  const service = new WorkspaceAgentService(workspace, { uuid: (() => { let id = 0; return () => `agent-${++id}`; })() });
-  const replies = [
-    { status: 'continue', message: 'Inspecting.', calls: [{ id: 'index', tool: 'get_project_index', args: {} }] },
-    { status: 'continue', message: 'Building.', calls: [{ id: 'node', tool: 'create_node', args: { markdown: '# New idea' } }] },
-    { status: 'ready', message: 'Added one idea.', calls: [] }
-  ];
-  const progress = [];
-  const result = await runAgent({}, '', 'Add an idea', service, {
-    completeRequest: async () => JSON.stringify(replies.shift()),
-    onProgress: (entry) => progress.push(entry)
-  });
-  assert.equal(result.proposal.operations.length, 1);
-  assert.equal(result.proposal.after.nodes.length, 1);
-  assert.equal(workspace.nodes.length, 0);
-  assert.equal(result.proposal.message, 'Added one idea.');
-  assert.ok(progress.some((entry) => entry.phase === 'tools'));
-});
-
-test('agent loop gives malformed JSON one repair attempt', async () => {
-  const workspace = createWorkspace('Repair'); workspace.updatedAt = 'base';
-  const service = new WorkspaceAgentService(workspace);
-  const replies = ['not json', '{"status":"ready","message":"No change","calls":[]}'];
-  const result = await runAgent({}, '', 'Inspect', service, { completeRequest: async () => replies.shift() });
-  assert.equal(result.turns, 2);
-  assert.equal(result.proposal.operations.length, 0);
-});
-
-test('agent loop returns a labeled partial draft at its step limit', async () => {
-  const workspace = createWorkspace('Limited'); workspace.updatedAt = 'base';
-  const service = new WorkspaceAgentService(workspace);
-  let turn = 0;
-  const result = await runAgent({}, '', 'Keep working', service, { completeRequest: async () => JSON.stringify({
-    status: 'continue', message: `Step ${++turn}`,
-    calls: turn === 1 ? [{ id: 'create', tool: 'create_node', args: { markdown: '# Partial' } }] : [{ id: `index-${turn}`, tool: 'get_project_index', args: {} }]
-  }) });
-  assert.equal(result.limitReached, true);
-  assert.equal(result.proposal.runStatus, 'limit_reached');
-  assert.equal(result.proposal.operations.length, 1);
-});
-
 test('SolOS settings need no endpoint model and preserve endpoint credentials across switches', () => {
   const data = new Map();
   const storage = { setItem: (key, value) => data.set(key, value), getItem: (key) => data.get(key) };
@@ -211,15 +167,10 @@ test('SolOS completion bypasses endpoint authentication and never falls back to 
 });
 
 
-test('SolOS chat streams parsed replies and its agent preserves staged review behavior', async () => {
+test('SolOS Chat streams parsed replies through the canonical Intelligence SDK', async () => {
   const workspace = createWorkspace('SolOS agent', '# Article\n\nOriginal.');
   workspace.id = 'workspace'; workspace.updatedAt = 'base';
-  const replies = [
-    { reply: 'Hello learner', edits: [] },
-    { status: 'continue', message: 'Working', calls: [{ id: 'index', tool: 'get_project_index', args: {} }] },
-    { status: 'continue', message: 'Working', calls: [{ id: 'node', tool: 'create_node', args: { markdown: '# New idea' } }] },
-    { status: 'ready', message: 'Draft ready', calls: [] }
-  ];
+  const replies = [{ reply: 'Hello learner', edits: [] }];
   const requests = [];
   const intelligence = new LFOSIntegration({ windowRef: { self: {}, top: {} }, loadSdk: async () => ({ lfos: {
     ready: async () => ({ name: 'LFOS', protocolVersion: 1, capabilities: ['ai.responses.text'] }),
@@ -234,11 +185,6 @@ test('SolOS chat streams parsed replies and its agent preserves staged review be
   const chat = await chatModel(settings, '', [], 'Hello', { targets: [], selectedTargetIds: [], text: '' }, { intelligence, onReply: text => updates.push(text) });
   assert.equal(chat.reply, 'Hello learner');
   assert.deepEqual(updates, ['Hello learner']);
-  const service = new WorkspaceAgentService(workspace);
-  const result = await runAgent(settings, '', 'Add an idea', service, { intelligence });
-  assert.equal(result.proposal.operations.length, 1);
-  assert.equal(result.proposal.after.nodes.length, 1);
-  assert.equal(workspace.nodes.length, 0);
-  assert.equal(requests.length, 4);
+  assert.equal(requests.length, 1);
   assert.ok(requests.every(request => request.reasoning.effort === 'high'));
 });

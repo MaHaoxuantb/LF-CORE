@@ -83,6 +83,7 @@ test('project exports retain task summaries but exclude live receipts and task h
   const exported = serializeProject(f.workspace, [{ messages: [{ role: 'assistant', content: 'Done', agentTaskId: 'live', agentTask: { status: 'completed', summary: 'Done' } }] }]);
   const bundle = JSON.parse(exported);
   assert.equal(bundle.project.workspace.agentReceipts, undefined); assert.equal(bundle.project.chats[0].messages[0].agentTaskId, undefined);
+  assert.equal(bundle.project.chats[0].messages[0].agentTask.id, undefined);
   const imported = parseProject(exported);
   assert.equal(imported.workspace.projectRevision, 0); assert.equal(imported.chats[0].messages[0].agentTask.summary, 'Done');
 });
@@ -225,4 +226,111 @@ test('export artifacts participate in durable change verification', async () => 
   assert.deepEqual((await f.call('verify_changes', { operationIds: ['export'] })).verifiedOperations, ['export']);
   f.workspace.agentArtifacts = [];
   assert.deepEqual((await f.call('verify_changes', { operationIds: ['export'] })).mismatches, ['agentArtifacts:artifact']);
+});
+
+test('canonical relationships include reverse arrows, passage endpoints and connection sides', async () => {
+  const f = fixture();
+  const a = await f.call('create_node', { markdown: '# A' });
+  const b = await f.call('create_node', { markdown: '# B' });
+  const edge = await f.call('create_edge', { fromId: a.nodeId, toId: b.nodeId, direction: 'reverse', fromSide: 'right', toSide: 'left' });
+  assert.equal(f.workspace.edges[0].direction, 'reverse');
+  await f.call('update_edge', { edgeId: edge.edgeId, label: 'explains', direction: 'forward', fromSide: 'bottom' });
+  assert.equal(f.workspace.edges[0].fromSide, 'bottom');
+  await assert.rejects(f.call('update_edge', { edgeId: edge.edgeId, direction: 'backward' }), /direction/i);
+  const highlight = await f.call('add_highlight', { targetId: 'article', start: 0, end: 9 });
+  await f.call('create_edge', { fromId: `h:${highlight.highlightId}`, toId: a.nodeId, direction: 'reverse' });
+  assert.equal((await f.call('list_relationships', { limit: 1 })).nextCursor, 1);
+  await f.call('delete_highlight', { highlightId: highlight.highlightId });
+  assert.ok(f.workspace.edges.every(e => !e.fromId.startsWith('h:')));
+});
+test('layout changes are durable, verified, undoable project operations', async () => {
+  const f = fixture(); const node = await f.call('create_node', { markdown: '# Move me' });
+  const result = await f.call('set_node_layout', { nodeId: node.nodeId, x: 120, y: -80, width: 320, collapsed: true });
+  assert.equal(f.workspace.layout.positions[node.nodeId].x, 120);
+  assert.equal(f.workspace.nodes[0].collapsed, true);
+  const receipt = Object.keys(f.workspace.agentReceipts).at(-1);
+  assert.ok((await f.call('verify_changes', { operationIds: [receipt] })).verifiedOperations.includes(receipt));
+  assert.equal(result.verificationRequired, true);
+});
+test('explicit Save and captures use the same durable operation receipt without phantom content revisions', async () => {
+  let saves = 0, captures = 0;
+  const artifact = { id: 'image', title: 'Region', mimeType: 'image/png', byteLength: 42, provenance: { taskId: 'task', operationId: 'capture' } };
+  const f = fixture({ controls: {
+    save_project: async () => { saves++; return { localSaved: true, linkedSaved: true, cancelled: false, savedRevision: 0 }; },
+    capture_region: async () => { captures++; return { artifacts: [artifact] }; },
+  } });
+  await f.call('save_project', {}, { operationId: 'save' });
+  await f.call('save_project', {}, { operationId: 'save' });
+  assert.equal(saves, 1); assert.equal(f.workspace.projectRevision, 0);
+  assert.deepEqual((await f.call('capture_region', { region: { x: 0, y: 0, width: 10, height: 10 }, viewRevision: 'view' })).artifacts, [artifact]);
+  assert.equal(captures, 1);
+});
+test('cancelled Save retains content and cannot claim a successful save', async () => {
+  const f = fixture({ controls: { save_project: async () => { throw Object.assign(new Error('Save cancelled'), { code: 'CANCELLED' }); } } });
+  await assert.rejects(f.call('save_project'), { code: 'CANCELLED' });
+  assert.equal(f.workspace.agentReceipts, undefined); assert.equal(f.workspace.projectRevision, 0);
+});
+
+test('Save with a lost final checkpoint remains unknown across provider recreation', async () => {
+  let workspace = createWorkspace('Save outcome', '# Persisted'), commits = 0;
+  const options = { getWorkspace: () => workspace, commit: async (_before, next) => { if (++commits === 2) throw new Error('Disk full after file Save'); workspace = next; }, controls: { save_project: async () => ({ localSaved: true, linkedSaved: true, cancelled: false, savedRevision: 0 }) } };
+  const service = new ProjectAgentService(options);
+  const call = { capability: 'com.linecoflow.lfcore.save_project', arguments: {}, sessionId: projectSession(workspace).id, taskId: 'task', operationId: 'save', expectedRevision: 0 };
+  await assert.rejects(service.invoke(call), /Disk full/);
+  assert.equal((await service.operationStatus(call)).status, 'unknown');
+  assert.equal((await new ProjectAgentService(options).operationStatus(call)).status, 'unknown');
+  await assert.rejects(service.invoke(call), { code: 'UNCERTAIN_OPERATION' });
+  assert.equal(JSON.parse(serializeProject(workspace)).project.workspace.agentPendingOperations, undefined);
+});
+test('agent Undo and Redo retain receipts while advancing project revision', async () => {
+  let f;
+  f = fixture({ controls: { history: () => f.history.at(-1) } });
+  const created = await f.call('create_node', { markdown: '# Reversible' }, { operationId: 'create' });
+  await f.call('undo'); assert.equal(f.workspace.nodes.length, 0); assert.equal(f.workspace.projectRevision, 2);
+  assert.equal((await f.service.operationStatus({ sessionId: projectSession(f.workspace).id, operationId: 'create' })).status, 'committed');
+  const recovered = await f.call('create_node', { markdown: '# Reversible' }, { operationId: 'create', expectedRevision: 0 });
+  assert.equal(recovered.nodeId, created.nodeId); assert.equal(f.workspace.nodes.length, 0);
+  await f.call('redo'); assert.equal(f.workspace.nodes[0].id, created.nodeId); assert.equal(f.workspace.projectRevision, 3);
+});
+
+test('the real view normalization preserves agent endpoint edits and relationship deletion', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const vm = await import('node:vm');
+  const source = await readFile(new URL('../src/app.js', import.meta.url), 'utf8');
+  const start = source.indexOf('function ensureUnifiedNodeEdges('), end = source.indexOf('\nconst isHighlightId', start);
+  const normalize = vm.runInNewContext(source.slice(start, end) + '; ensureUnifiedNodeEdges;', { crypto, markAnchorInMarkdown: () => false, persist() { throw new Error('Draft normalization must not persist the current UI project'); } });
+  const f = fixture({ controls: { normalize: workspace => normalize(workspace, { save: false }) } });
+  const a = await f.call('create_node', { markdown: '# A' });
+  const b = await f.call('create_node', { markdown: '# B' });
+  const c = await f.call('create_node', { markdown: '# C', parentId: a.nodeId });
+  const edge = f.workspace.edges.find(edge => edge.toId === c.nodeId);
+  assert.ok(edge.structural);
+  await f.call('update_edge', { edgeId: edge.id, fromId: b.nodeId, direction: 'reverse' });
+  assert.equal(f.workspace.nodes.find(n => n.id === c.nodeId).parentId, b.nodeId);
+  assert.equal(f.workspace.edges.filter(e => e.toId === c.nodeId).length, 1);
+  await f.call('delete_edge', { edgeId: edge.id });
+  assert.equal(f.workspace.nodes.find(n => n.id === c.nodeId).parentId, null);
+  assert.equal(f.workspace.edges.length, 0);
+});
+
+test('explicit Save retains the newly chosen LFOS destination when committing its receipt', async () => {
+  let f;
+  f = fixture({ controls: { save_project: async () => {
+    Object.assign(f.workspace, { lfosDocumentId: 'chosen-file', lfosFileHash: 'new-hash', lfosSavedProjectRevision: 0 });
+    return { localSaved: true, linkedSaved: true, cancelled: false, savedRevision: 0 };
+  } } });
+  await f.call('save_project');
+  assert.equal(f.workspace.lfosDocumentId, 'chosen-file'); assert.equal(f.workspace.lfosFileHash, 'new-hash');
+  assert.equal(f.workspace.lfosSavedProjectRevision, 0);
+});
+
+test('cancellation after a file Save retains its unknown outcome instead of reporting absence', async () => {
+  const controller = new AbortController();
+  const f = fixture({ controls: { save_project: async () => {
+    controller.abort();
+    return { localSaved: true, linkedSaved: true, cancelled: false, savedRevision: 0 };
+  } } });
+  const call = { capability: 'com.linecoflow.lfcore.save_project', arguments: {}, sessionId: projectSession(f.workspace).id, taskId: 'task', operationId: 'save-after-stop', expectedRevision: 0 };
+  await assert.rejects(f.service.invoke(call, { signal: controller.signal }), { code: 'UNCERTAIN_OPERATION' });
+  assert.equal((await f.service.operationStatus(call)).status, 'unknown');
 });

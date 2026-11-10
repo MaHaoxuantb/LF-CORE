@@ -1418,3 +1418,9 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .canvas-viewport .markdown-preview,
 .canvas-viewport .markdown-preview pre,
 .canvas-viewport .markdown-preview .katex-display { touch-action: none; }
+
+.universal-agent-mount { min-height: 0; flex: 1; overflow: hidden; }
+.capture-overlay { position: fixed; inset: 0; z-index: 100000; cursor: crosshair; background: #0002; touch-action: none; }
+.capture-region { position: absolute; border: 2px solid #6f9cff; box-shadow: 0 0 0 10000px #0004; pointer-events: none; }
+.screenshot-preview { max-width: 90vw; max-height: 90vh; border: 1px solid #8888; border-radius: 14px; padding: 16px; }
+.screenshot-preview img { display: block; max-width: 80vw; max-height: 75vh; object-fit: contain; margin-bottom: 12px; }
