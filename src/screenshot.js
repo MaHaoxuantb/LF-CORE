@@ -1,4 +1,3 @@
-import html2canvas from 'html2canvas';
 const fail = (code, message) => Object.assign(new Error(message), { code });
 export function validateRegion(region, expectedRevision, snapshot) {
   if (snapshot.viewRevision !== expectedRevision) throw fail('CONFLICT', 'The view changed. Inspect it again before capturing.');
@@ -21,6 +20,7 @@ async function png(canvas) {
 export async function captureRegion(region, expectedRevision, getSnapshot, signal) {
   const intersects = node => { const bounds = node.getBoundingClientRect(); return bounds.right > region.x && bounds.bottom > region.y && bounds.left < region.x + region.width && bounds.top < region.y + region.height; };
   const snapshot = getSnapshot(); validateRegion(region, expectedRevision, snapshot);
+  const { default: html2canvas } = await ready(import('html2canvas'), signal);
   await ready(document.fonts?.ready, signal);
   if (signal?.aborted) throw fail('CANCELLED', 'Capture cancelled.');
   const root = document.querySelector('.workspace-shell');

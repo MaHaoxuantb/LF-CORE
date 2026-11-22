@@ -5,7 +5,6 @@ import { createWorkspace, emptyState, loadSaveMode, saveSaveMode, snapshotWorksp
 import { loadDatabaseState, readDatabaseState, requestPersistentStorage } from './state-store.js';
 import { renderMarkdown, headingTokens, wrapMarkdownHighlight, unwrapMarkdownHighlight, markdownHTMLText } from './markdown.js';
 import { isSourceNode, nodeLabel, sourceNode } from './node-content.js';
-import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist/build/pdf.mjs';
 import { putPdf, getPdf, deletePdf, putMedia, getMedia, deleteMedia, putSourceTextIndex, getSourceTextIndex, deleteSourceTextIndex } from './source-store.js';
 import { connectionPort, crossConnectionRoute, nearestConnectionSide, snappedConnectionSides } from './cross-connection.js';
 import { loadModelSettings, saveModelSettings, saveModelSecret, saveDeveloperMode, encryptApiKey, unlockApiKey, getApiKey, lockApiKey, endpointRequiresApiKey, THINKING_EFFORTS } from './model-settings.js';
@@ -33,7 +32,16 @@ import packageInfo from '../package.json';
 import 'katex/dist/katex.min.css';
 import './style.css';
 
-GlobalWorkerOptions.workerSrc = '/dist/pdf.worker.mjs';
+async function loadPdfEngine() {
+  const pdf = await import('pdfjs-dist/build/pdf.mjs');
+  pdf.GlobalWorkerOptions.workerSrc = '/dist/pdf.worker.mjs';
+  return pdf;
+}
+
+async function openPdfDocument(bytes) {
+  const { getDocument } = await loadPdfEngine();
+  return getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
+}
 
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
@@ -753,7 +761,7 @@ async function pdfSource(file, id = crypto.randomUUID(), expectedChecksum = null
   const bytes = await file.arrayBuffer();
   const checksum = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((byte) => byte.toString(16).padStart(2, '0')).join('');
   if (expectedChecksum && checksum !== expectedChecksum) throw new Error('This is a different PDF. Reattach the original file so saved passages stay accurate.');
-  const document = await getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
+  const document = await openPdfDocument(bytes);
   await putPdf(id, bytes);
   pdfDocuments.set(id, document);
   const source = { id, type: 'pdf', title: sourceTitle(file.name), fileName: file.name, byteLength: bytes.byteLength, checksum, pages: document.numPages, addedAt: new Date().toISOString() };
@@ -795,7 +803,7 @@ async function loadPdfForIndex(sourceId) {
   if (document) return document;
   const bytes = await getPdf(sourceId);
   if (!bytes) return null;
-  document = await getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
+  document = await openPdfDocument(bytes);
   pdfDocuments.set(sourceId, document);
   return document;
 }
@@ -2426,7 +2434,7 @@ function pdfNodeViewer(node, source, card) {
       if (!document) {
         const bytes = await getPdf(source.id);
         if (!bytes) throw new Error('PDF bytes are missing. Open Library to reattach the file.');
-        document = await getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
+        document = await openPdfDocument(bytes);
         pdfDocuments.set(source.id, document);
       }
       const page = await document.getPage(pageNumber);
@@ -3582,7 +3590,7 @@ async function drawPdfPage(source, number, scroll, actions) {
     if (!document) {
       const bytes = await getPdf(source.id);
       if (!bytes) return showMissingPdf(source, scroll);
-      document = await getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
+      document = await openPdfDocument(bytes);
       pdfDocuments.set(source.id, document);
     }
     if (!scroll.isConnected) return;
@@ -3601,6 +3609,7 @@ async function drawPdfPage(source, number, scroll, actions) {
     const textRoot = el('div', { class: 'textLayer' });
     surface.append(canvas, textRoot); scroll.replaceChildren(surface);
     await page.render({ canvasContext: context, viewport, transform: ratio === 1 ? undefined : [ratio, 0, 0, ratio, 0, 0] }).promise;
+    const { TextLayer } = await loadPdfEngine();
     await new TextLayer({ textContentSource: page.streamTextContent(), container: textRoot, viewport }).render();
     if (!scroll.isConnected) return;
     textRoot.addEventListener('mouseup', () => sourceSelectionActions(source, number, textRoot, actions));
