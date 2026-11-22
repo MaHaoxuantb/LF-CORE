@@ -20,3 +20,28 @@ export function canvasTransform(view) {
   if (!hasCanvasView(view)) throw new TypeError('Canvas camera coordinates must be finite and zoom must be positive.');
   return `translate3d(${view.x}px, ${view.y}px, 0) scale(${view.zoom})`;
 }
+
+export function framePointerMove(pointerId, apply) {
+  let frame = null, pending = null;
+  return {
+    move(event) {
+      if (event.pointerId != null && event.pointerId !== pointerId) return;
+      pending = event;
+      if (frame !== null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        const latest = pending;
+        pending = null;
+        apply(latest);
+      });
+    },
+    finish(event) {
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = null;
+      // Pointer release may carry a newer position than the last move.
+      const final = Number.isFinite(event?.clientX) && Number.isFinite(event?.clientY) ? event : pending;
+      pending = null;
+      if (event?.type === 'pointerup' && final) apply(final);
+    }
+  };
+}

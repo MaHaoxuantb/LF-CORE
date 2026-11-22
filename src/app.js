@@ -25,7 +25,7 @@ import { attachLFOSHeader } from './lfos-header.js';
 import { PersistenceClient } from './persistence-client.js';
 import { ViewPersistence } from './view-persistence.js';
 import { WindowCoordinator } from './window-coordinator.js';
-import { canvasTransform, fittedCanvasView, hasCanvasView } from './canvas-view.js';
+import { canvasTransform, fittedCanvasView, framePointerMove, hasCanvasView } from './canvas-view.js';
 import { attachCanvasTouch } from './canvas-touch.js';
 import {backgroundCompute} from './compute-client.js';
 import packageInfo from '../package.json';
@@ -221,6 +221,7 @@ const requiredPdfIndexes = new Set();
 const pendingMediaDeletes = new Map();
 let selectedPassage = null, editGroup = null, view = { x: 0, y: 0, zoom: 1 };
 let viewFrame = null, toastTimer = null;
+let canvasConnections = null;
 let outlineHeight = null;
 let aiPanel = null;
 lfosConnection.then(() => { if (aiPanel) renderAiPanel({ focusComposer: false }); });
@@ -1049,6 +1050,7 @@ function openNewProjectGuide() {
 
 function renderHome() {
   gestureActive = false;
+  canvasConnections = null;
   void flushView().catch(viewPersistence.onError);
   currentId = null; selectedId = null; selectedIds.clear(); editingMarkdown = false; editingTarget = null; editingBeforeView = null; selectedPassage = null; openSourceId = null;
   graphFocus = null; graphFocusNodeIds = null; spaceKeySession = null; disposeAiPanel();
@@ -1595,12 +1597,15 @@ function unmarkAnchorInMarkdown(item, anchor) {
   return true;
 }
 
-function endpointPoint(item, id, toward = null) {
-  if (!isHighlightId(id)) return endpointExists(item, id) ? pointFor(item, id) : null;
-  const highlight = highlightFor(item, id);
+function endpointPoint(item, id, toward = null, index = null) {
+  if (!isHighlightId(id)) {
+    const exists = index ? index.nodes.has(id) : endpointExists(item, id);
+    return exists ? pointFor(item, id) : null;
+  }
+  const highlight = index ? index.highlights.get(id) : highlightFor(item, id);
   if (!highlight) return null;
   const marks = [...document.querySelectorAll(`.anchor-mark[data-highlight="${highlight.id}"]`)];
-  const scene = document.querySelector('.scene');
+  const scene = index?.scene ?? document.querySelector('.scene');
   if (!marks.length || !scene) return null;
   const origin = highlight.targetId === 'article' ? rootBounds : pointFor(item, highlight.targetId);
   const right = !toward || toward.x + toward.width / 2 >= origin.x + origin.width / 2;
@@ -1614,10 +1619,10 @@ function endpointPoint(item, id, toward = null) {
   return { x: ((right ? line.right : line.left) - bounds.left) / view.zoom, y: (line.top + line.height / 2 - bounds.top) / view.zoom, width: 0, height: 0 };
 }
 
-function edgePoints(item, edge) {
-  const fromBase = isHighlightId(edge.fromId) ? null : endpointPoint(item, edge.fromId);
-  const toBase = isHighlightId(edge.toId) ? null : endpointPoint(item, edge.toId);
-  return { from: fromBase || endpointPoint(item, edge.fromId, toBase), to: toBase || endpointPoint(item, edge.toId, fromBase) };
+function edgePoints(item, edge, index = null) {
+  const fromBase = isHighlightId(edge.fromId) ? null : endpointPoint(item, edge.fromId, null, index);
+  const toBase = isHighlightId(edge.toId) ? null : endpointPoint(item, edge.toId, null, index);
+  return { from: fromBase || endpointPoint(item, edge.fromId, toBase, index), to: toBase || endpointPoint(item, edge.toId, fromBase, index) };
 }
 
 function renderWorkspace() {
@@ -1652,6 +1657,7 @@ function renderWorkspace() {
       button(`Library${item.sources?.length ? ` (${item.sources.length})` : ''}`, () => openSource(openSourceId ? null : 'library'), `source-toggle ${openSourceId ? 'active' : ''}`, { 'aria-pressed': String(!!openSourceId), 'aria-label': 'Toggle library' })));
 
   app.replaceChildren(el('div', { class: `workspace-shell ${graphFocus ? 'graph-focus-active graph-focus-readonly' : ''} ${editingTarget ? 'editing-mode-active' : ''}`.trim() }, renderCanvas(item), chrome));
+  indexCanvasConnections(item, app.querySelector('.scene'));
   prepareLFOSHeader(chrome);
   updateSaveControls();
   applyView();
@@ -2036,11 +2042,11 @@ function sourceFor(item, node) {
   return null;
 }
 
-function measurePaper() {
+function measurePaper(targets) {
   const paper = document.querySelector('.paper');
   if (!paper) return;
   rootBounds = { x: ROOT.x, y: ROOT.y, width: paper.offsetWidth, height: paper.offsetHeight };
-  updateConnectors();
+  updateConnectors(targets);
 }
 
 function connectorRoute(from, to, fromY = null, side = 'auto') {
@@ -2075,7 +2081,10 @@ function updateRoute(path, from, to, fromY = null, side = 'auto') {
 }
 
 function updateCrossRoute(path, from, to, fromSide = 'auto', toSide = 'auto') {
-  const route = crossConnectionRoute(from, to, fromSide, toSide);
+  applyCrossRoute(path, crossConnectionRoute(from, to, fromSide, toSide));
+}
+
+function applyCrossRoute(path, route) {
   path.setAttribute('d', route.d);
   path._hit?.setAttribute('d', route.d);
   if (path._gradient) {
@@ -2245,23 +2254,17 @@ function renderConnectionHandles(scene, item) {
   }
 }
 
-function edgeMidpoint(from, to, fromSide = 'auto', toSide = 'auto') {
-  const route = crossConnectionRoute(from, to, fromSide, toSide);
-  // A cubic curve's midpoint is not generally halfway between its endpoints.
-  // Place the description at t=.5 so it stays on the visible connection.
-  return {
-    x: (route.x1 + 3 * route.c1x + 3 * route.c2x + route.x2) / 8,
-    y: (route.y1 + 3 * route.c1y + 3 * route.c2y + route.y2) / 8,
-  };
-}
-
 function placeEdgeLabel(label, item, edge, fromSide = edge.fromSide, toSide = edge.toSide) {
   const { from, to } = edgePoints(item, edge);
-  if (!from || !to) { label.style.display = 'none'; return; }
-  label.style.display = '';
-  const middle = edgeMidpoint(from, to, fromSide, toSide);
-  label.style.left = `${middle.x}px`;
-  label.style.top = `${middle.y}px`;
+  applyEdgeLabelRoute(label, from && to ? crossConnectionRoute(from, to, fromSide, toSide) : null);
+}
+
+function applyEdgeLabelRoute(label, route) {
+  label.style.display = route ? '' : 'none';
+  if (!route) return;
+  // Place the description at t=.5 on the cubic curve.
+  label.style.left = `${(route.x1 + 3 * route.c1x + 3 * route.c2x + route.x2) / 8}px`;
+  label.style.top = `${(route.y1 + 3 * route.c1y + 3 * route.c2y + route.y2) / 8}px`;
 }
 
 function edgeDirection(edge) { return ['forward', 'reverse', 'both'].includes(edge.direction) ? edge.direction : 'both'; }
@@ -2347,20 +2350,44 @@ function renderAnchorConnectors(item) {
   return svg;
 }
 
-function updateConnectors() {
-  const item = work(); if (!item) return;
+function indexCanvasConnections(item, scene) {
+  const nodes = new Set(item.nodes.map(node => node.id));
+  const highlights = new Map(item.highlights.map(mark => [`h:${mark.id}`, mark]));
+  const paths = new Map([...scene.querySelectorAll('[data-edge]')].map(path => [path.dataset.edge, path]));
+  const labels = new Map([...scene.querySelectorAll('[data-edge-label]')].map(label => [label.dataset.edgeLabel, label]));
+  const edges = new Map(), incident = new Map();
   for (const edge of item.edges) {
-    const path = document.querySelector(`[data-edge="${edge.id}"]`);
-    const { from, to } = edgePoints(item, edge);
-    if (path) {
-      path.style.display = from && to ? '' : 'none';
-      path._hit.style.display = from && to ? '' : 'none';
-      if (from && to) updateCrossRoute(path, from, to, edge.fromSide, edge.toSide);
+    const path = paths.get(edge.id), label = labels.get(edge.id);
+    if (!path && !label) continue;
+    const entry = { edge, path, label };
+    edges.set(edge.id, entry);
+    for (const id of [edge.fromId, edge.toId]) {
+      const owner = highlights.get(id)?.targetId ?? id;
+      if (!incident.has(owner)) incident.set(owner, new Set());
+      incident.get(owner).add(entry);
     }
-    const label = document.querySelector(`[data-edge-label="${edge.id}"]`);
-    if (label) placeEdgeLabel(label, item, edge);
   }
-  positionConnectionHandles(item);
+  canvasConnections = { item, scene, nodes, highlights, edges, incident };
+}
+
+function updateConnectors(targets) {
+  const item = work(), index = canvasConnections;
+  if (!index || index.item !== item) return;
+  const entries = targets ? new Set(targets.flatMap(id => [...(index.incident.get(id) || [])])) : index.edges.values();
+  // Measure text anchors before changing any SVG or label styles.
+  const routes = [...entries].map(entry => {
+    const { edge } = entry;
+    const { from, to } = edgePoints(item, edge, index);
+    return [entry, from && to ? crossConnectionRoute(from, to, edge.fromSide, edge.toSide) : null];
+  });
+  for (const [{ path, label }, route] of routes) {
+    if (path) {
+      path.style.display = path._hit.style.display = route ? '' : 'none';
+      if (route) applyCrossRoute(path, route);
+    }
+    if (label) applyEdgeLabelRoute(label, route);
+  }
+  if (activeConnection && (!targets || entries.has(index.edges.get(activeConnection.id)))) positionConnectionHandles(item);
 }
 
 function nodeGeometryTargets(item, excludedIds = []) {
@@ -2854,8 +2881,7 @@ function startNodeResize(event, node, card, grip) {
   const item = work(), original = { ...pointFor(item, node.id) }, x = event.clientX, y = event.clientY;
   const targets = nodeGeometryTargets(item, [node.id]);
   grip.setPointerCapture(event.pointerId);
-  const move = (next) => {
-    if (next.pointerId != null && next.pointerId !== event.pointerId) return;
+  const { move, finish } = framePointerMove(event.pointerId, (next) => {
     const proposedWidth = clamp(Math.round(original.width + (next.clientX - x) / view.zoom), NODE_SIZE_LIMITS.minWidth, NODE_SIZE_LIMITS.maxWidth);
     const proposedHeight = clamp(Math.round(original.height + (next.clientY - y) / view.zoom), NODE_SIZE_LIMITS.minHeight, maximumNodeHeight(card, proposedWidth));
     const resolved = resolveResizeGeometry({
@@ -2874,14 +2900,13 @@ function startNodeResize(event, node, card, grip) {
     applyNodeSizeClass(card, width, height);
     updateCardOverflow(card);
     showAlignmentGuides(resolved.guides.filter((guide) => guide.axis === 'x' ? width === Math.round(resolved.width) : height === Math.round(resolved.height)));
-    updateConnectors();
-  };
+    updateConnectors([node.id]);
+  });
   let ended = false;
   const up = (next) => {
     if (ended || (next?.pointerId != null && next.pointerId !== event.pointerId)) return;
-    // Release can carry a newer position than the last delivered move.
-    if (next?.type === 'pointerup' && Number.isFinite(next.clientX) && Number.isFinite(next.clientY)) move(next);
     ended = true;
+    finish(next);
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
     window.removeEventListener('pointercancel', up);
@@ -2949,15 +2974,15 @@ function startNodeDrag(event, node, card) {
   const original = Object.fromEntries(moving.map((id) => [id, { ...item.layout.positions[id] }]));
   const originalBounds = selectionBounds(moving.map((id) => pointFor(item, id)));
   const targets = nodeGeometryTargets(item, moving);
+  const cards = new Map(moving.map(id => [id, document.querySelector(`[data-node="${id}"]`)]));
   const originX = event.clientX, originY = event.clientY;
   let moved = false, ended = false;
-  const move = (next) => {
-    if (next.pointerId != null && next.pointerId !== event.pointerId) return;
+  const { move, finish } = framePointerMove(event.pointerId, (next) => {
     if (!moved && Math.hypot(next.clientX - originX, next.clientY - originY) < (event.pointerType === 'touch' ? 8 : 5)) return;
     if (!moved) {
       moved = true;
       card._nodeDragged = true;
-      card.setPointerCapture?.(event.pointerId);
+      if (next.type !== 'pointerup') card.setPointerCapture?.(event.pointerId);
     }
     const pointerDx = Math.round((next.clientX - originX) / view.zoom), pointerDy = Math.round((next.clientY - originY) / view.zoom);
     const resolved = resolveMoveGeometry({
@@ -2973,15 +2998,16 @@ function startNodeDrag(event, node, card) {
     for (const id of moving) {
       const position = { x: original[id].x + dx, y: original[id].y + dy };
       item.layout.positions[id] = position;
-      const element = document.querySelector(`[data-node="${id}"]`);
+      const element = cards.get(id);
       if (element) { element.style.left = `${position.x}px`; element.style.top = `${position.y}px`; }
     }
     showAlignmentGuides(resolved.guides);
-    updateConnectors();
-  };
+    updateConnectors(moving);
+  });
   const up = (next) => {
     if (ended || (next?.pointerId != null && next.pointerId !== event.pointerId)) return;
     ended = true;
+    finish(next);
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
     window.removeEventListener('pointercancel', up);
@@ -3015,7 +3041,7 @@ function syncNodeGeometry(item, ids) {
     applyNodeSizeClass(card, width, height);
     updateCardOverflow(card);
   }
-  updateConnectors();
+  updateConnectors(ids);
 }
 
 function selectNodeInPlace(id, card, node, item) {
@@ -3044,7 +3070,12 @@ function syncCanvasSelection() {
     document.querySelectorAll('.connection-handle').forEach((handle) => handle.remove());
     document.querySelectorAll('.edge-label-chip.active').forEach((chip) => {
       const edge = item.edges.find((entry) => entry.id === chip.dataset.edgeLabel);
-      if (edge) chip.replaceWith(renderEdgeLabel(item, edge));
+      if (edge) {
+        const label = renderEdgeLabel(item, edge);
+        chip.replaceWith(label);
+        const entry = canvasConnections?.edges.get(edge.id);
+        if (entry) entry.label = label;
+      }
     });
   }
   if (!graphIsReadOnly() && !selectedId && selectedIds.size > 1) {
@@ -3721,19 +3752,17 @@ function startPaperResize(event, paper, grip) {
   const size = { ...work().layout.articleSize };
   const startX = event.clientX, startY = event.clientY;
   grip.setPointerCapture(event.pointerId);
-  const move = (next) => {
-    if (next.pointerId != null && next.pointerId !== event.pointerId) return;
+  const { move, finish } = framePointerMove(event.pointerId, (next) => {
     const width = clamp(Math.round(size.width + (next.clientX - startX) / view.zoom), 320, 1100);
     const minHeight = clamp(Math.round(size.minHeight + (next.clientY - startY) / view.zoom), 250, 2400);
     paper.style.width = `${width}px`; paper.style.minHeight = `${minHeight}px`;
-    measurePaper();
-  };
+    measurePaper(['article']);
+  });
   let ended = false;
   const up = (next) => {
     if (ended || (next?.pointerId != null && next.pointerId !== event.pointerId)) return;
-    // Release can carry a newer position than the last delivered move.
-    if (next?.type === 'pointerup' && Number.isFinite(next.clientX) && Number.isFinite(next.clientY)) move(next);
     ended = true;
+    finish(next);
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
     window.removeEventListener('pointercancel', up);
@@ -3746,7 +3775,7 @@ function startPaperResize(event, paper, grip) {
       change((entry) => { entry.layout.articleSize = final; }, { rerender: false });
       paper.style.width = `${final.width}px`; paper.style.minHeight = `${final.minHeight}px`;
     }
-    measurePaper();
+    measurePaper(['article']);
   };
   const cancel = (next) => {
     if (next?.pointerId != null && next.pointerId !== event.pointerId) return;

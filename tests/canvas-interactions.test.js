@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { resolveMoveGeometry, resolveResizeGeometry, selectionBounds } from '../src/node-geometry.js';
+import { framePointerMove } from '../src/canvas-view.js';
 
 const source = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
 
@@ -23,6 +24,8 @@ function fixture() {
   };
   const cards = { a: element(), b: element() }, controls = { Undo: element(), Redo: element(), 'Toggle snap': element(), 'Toggle align': element() };
   const listeners = new Map();
+  const frames = new Map();
+  let frameId = 0;
   let saves = 0, connections = 0;
   const context = vm.createContext({
     console, structuredClone, committingProject: false, item, cards, geometryPreferences: { snapping: true, alignment: true },
@@ -36,6 +39,8 @@ function fixture() {
     selectionBounds, resolveMoveGeometry, resolveResizeGeometry,
     clamp: (value, min, max) => Math.max(min, Math.min(max, value)), maximumNodeHeight: () => 920,
     showAlignmentGuides() {}, applyNodeSizeClass() {}, updateCardOverflow() {}, updateConnectors: () => connections++,
+    requestAnimationFrame: (callback) => { frames.set(++frameId, callback); return frameId; },
+    cancelAnimationFrame: (id) => frames.delete(id),
     document: { querySelector(selector) {
       const node = selector.match(/^\[data-node="(.*?)"\]$/);
       const label = selector.match(/^\[aria-label="(.*?)"\]$/);
@@ -47,13 +52,19 @@ function fixture() {
       removeEventListener: (name) => listeners.delete(name)
     }
   });
+  vm.runInContext(framePointerMove.toString(), context);
   for (const name of ['setGeometryPreference', 'change', 'syncNodeGeometry', 'startNodeDrag', 'startNodeResize', 'startPaperResize', 'resizeNodeWithKeys', 'refreshWorkspacePanels', 'toggleOutline', 'openSource', 'disposeAiPanel', 'toggleAiPanel', 'toggleResearchPanel']) {
     const match = source.match(new RegExp(`^function ${name}\\([^]*?^}`, 'm'));
     assert.ok(match, `${name} exists`);
     vm.runInContext(match[0], context);
   }
   const pointer = { button: 0, clientX: 0, clientY: 0, pointerId: 1, preventDefault() {}, stopPropagation() {} };
-  return { context, item, cards, controls, listeners, pointer, saves: () => saves, connections: () => connections };
+  const flushFrame = () => {
+    const callbacks = [...frames.values()];
+    frames.clear();
+    callbacks.forEach(callback => callback());
+  };
+  return { context, item, cards, controls, listeners, pointer, flushFrame, saves: () => saves, connections: () => connections };
 }
 
 test('snap and align combinations update controls without remounting the canvas', () => {
@@ -128,6 +139,7 @@ for (const group of [false, true]) {
       const original = structuredClone(f.item.layout.positions);
       f.context.startNodeDrag(f.pointer, { id: 'a' }, f.cards.a);
       f.listeners.get('pointermove')({ clientX: 73, clientY: 39 });
+      f.flushFrame();
       assert.notEqual(f.item.layout.positions.a.x, original.a.x);
       const final = structuredClone(f.item.layout.positions);
       f.listeners.get(cancel ? 'pointercancel' : 'pointerup')({ type: cancel ? 'pointercancel' : 'pointerup' });
@@ -150,6 +162,7 @@ for (const cancel of [false, true]) {
     const f = fixture(), original = structuredClone(f.item.layout.sizes.a);
     f.context.startNodeResize(f.pointer, { id: 'a' }, f.cards.a, f.cards.a);
     f.listeners.get('pointermove')({ clientX: 80, clientY: 60 });
+    f.flushFrame();
     const final = structuredClone(f.item.layout.sizes.a);
     f.listeners.get(cancel ? 'pointercancel' : 'pointerup')({ type: cancel ? 'pointercancel' : 'pointerup' });
     assert.deepEqual(structuredClone(f.item.layout.sizes.a), cancel ? original : final);
@@ -159,6 +172,45 @@ for (const cancel of [false, true]) {
     assert.equal(f.listeners.size, 0);
   });
 }
+
+test('node drag coalesces movement and commits the latest release position', () => {
+  const f = fixture();
+  f.context.geometryPreferences = { snapping: false, alignment: false };
+  f.context.startNodeDrag(f.pointer, { id: 'a' }, f.cards.a);
+  f.listeners.get('pointermove')({ pointerId: 1, clientX: 30, clientY: 20 });
+  f.listeners.get('pointermove')({ pointerId: 1, clientX: 40, clientY: 20 });
+  assert.equal(f.connections(), 0);
+  f.flushFrame();
+  assert.equal(f.connections(), 1);
+  assert.equal(f.item.layout.positions.a.x, 40);
+  f.listeners.get('pointermove')({ pointerId: 1, clientX: 50, clientY: 20 });
+  f.listeners.get('pointerup')({ type: 'pointerup', pointerId: 1, clientX: 60, clientY: 20 });
+  f.flushFrame();
+  assert.equal(f.item.layout.positions.a.x, 60);
+  assert.equal(f.saves(), 1);
+});
+
+test('moving a card updates its direct and highlight connections only once', () => {
+  const edges = [
+    { id: 'direct', fromId: 'a', toId: 'b' },
+    { id: 'passage', fromId: 'h:mark', toId: 'b' },
+    { id: 'other', fromId: 'c', toId: 'd' }
+  ];
+  const item = { nodes: ['a', 'b', 'c', 'd'].map(id => ({ id })), highlights: [{ id: 'mark', targetId: 'a' }], edges };
+  const paths = edges.map(({ id }) => ({ dataset: { edge: id }, style: {}, _hit: { style: {} } }));
+  const updated = [];
+  const context = vm.createContext({
+    canvasConnections: null, item, activeConnection: null, work: () => item,
+    scene: { querySelectorAll: selector => selector === '[data-edge]' ? paths : [] },
+    edgePoints: () => ({ from: {}, to: {} }), crossConnectionRoute: () => ({}),
+    applyCrossRoute: path => updated.push(path.dataset.edge)
+  });
+  for (const name of ['indexCanvasConnections', 'updateConnectors']) {
+    vm.runInContext(source.match(new RegExp(`^function ${name}\\([^]*?^}`, 'm'))[0], context);
+  }
+  vm.runInContext("indexCanvasConnections(item, scene); updateConnectors(['a', 'b']);", context);
+  assert.deepEqual(updated, ['direct', 'passage']);
+});
 
 test('keyboard resize keeps focus on the mounted grip and records history', () => {
   const f = fixture();
