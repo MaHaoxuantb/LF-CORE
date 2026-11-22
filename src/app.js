@@ -2,7 +2,7 @@ import { removeRelationship, updateRelationship } from './relationships.js';
 import { captureRegion, selectRegion, exportPng } from './screenshot.js';
 import { makeAnchor, resolveAnchor, selectionOffsets, passageText, passageOffset, highlightAtSelection } from './anchors.js';
 import { createWorkspace, emptyState, loadSaveMode, saveSaveMode, snapshotWorkspace } from './storage.js';
-import { loadDatabaseState, readDatabaseState, requestPersistentStorage } from './state-store.js';
+import { loadDatabaseCatalog, projectSummary, readDatabaseCatalog, readDatabaseProject, requestPersistentStorage } from './state-store.js';
 import { renderMarkdown, headingTokens, wrapMarkdownHighlight, unwrapMarkdownHighlight, markdownHTMLText } from './markdown.js';
 import { isSourceNode, nodeLabel, sourceNode } from './node-content.js';
 import { putPdf, getPdf, deletePdf, putMedia, getMedia, deleteMedia, putSourceTextIndex, getSourceTextIndex, deleteSourceTextIndex } from './source-store.js';
@@ -126,14 +126,15 @@ window.addEventListener('pageshow', event => { if (event.persisted) location.rel
 let committingProject = false;
 let providerRegistrationTimer;
 const hostAgentTasks = new Map();
-let state, loadError = null, saveError = null;
+const state = emptyState();
+let projectCatalog = new Map(), loadError = null, saveError = null;
 try {
-  state = await loadDatabaseState();
+  projectCatalog = new Map((await loadDatabaseCatalog()).map(summary => [summary.id, summary]));
   requestPersistentStorage();
 }
 catch (error) {
   console.error('[LF CORE] Failed to load saved workspace data.', error);
-  state = emptyState(); loadError = error.message; saveError = error.message;
+  loadError = error.message; saveError = error.message;
 }
 let saveMode = 'auto';
 try { saveMode = loadSaveMode(); } catch { /* Browser storage can be unavailable. */ }
@@ -198,6 +199,7 @@ else if (colorSchemeQuery) colorSchemeQuery.addListener(handleSystemAppearanceCh
 const backgroundPersistence = new PersistenceClient(state);
 const documentRevisions = new Map();
 const pendingChangedIds = new Set();
+const pendingProjectDeletes = new Set();
 let stateRevision = 0, lastSavedRevision = 0, dirty = false;
 const viewPersistence = new ViewPersistence({ write: async (id, value) => { windowViews.set(id, { ...value }); sessionStorage.setItem('lfcore-window-views', JSON.stringify([...windowViews])); }, onError: (error) => {
   console.warn('[LF CORE] Could not save the canvas position.', error);
@@ -376,7 +378,14 @@ async function runStateSaveLoop() {
       const revision = stateRevision;
       for (const id of pendingChangedIds) job.ids.add(id);
       pendingChangedIds.clear();
+      const deletions = [...job.ids].filter(id => pendingProjectDeletes.has(id));
       await backgroundPersistence.save(state, job.ids);
+      for (const id of deletions) {
+        pendingProjectDeletes.delete(id);
+        projectCatalog.delete(id);
+        coordinator.release(`project:${id}`);
+      }
+      if (deletions.length) void refreshLibrary().catch(error => announce(error.message));
       coordinator.changed();
       lastSavedRevision = revision;
       dirty = stateRevision !== lastSavedRevision;
@@ -891,21 +900,15 @@ async function uploadProjectFile(file, { lfosHandle = null, successMessage = 'Pr
       file = (await lfos.readProject(lfosHandle)).file;
       incomingHash = await fileHash(await file.arrayBuffer());
       await refreshLibrary();
-      const existing = state.workspaces.find(w => w.lfosDocumentId === documentId);
+      const existing = [...projectSummaries().values()].find(w => w.lfosDocumentId === documentId);
       if (existing) {
         if (lfosDocuments.has(existing.id)) {
           await lfos.release(lfosHandle); await openWorkspace(existing.id); return;
         }
         if (!await claimProject(existing.id)) { await lfos.release(lfosHandle); releaseDocumentIfUnused(documentId); return; }
         // Refresh after acquiring ownership; a previous writer may have just saved.
-        const latest = await readDatabaseState();
-        const saved = latest.workspaces.find(w => w.id === existing.id);
-        if (saved) {
-          state.workspaces = state.workspaces.filter(w => w.id !== existing.id); state.workspaces.push(saved);
-          for (const kind of ['history', 'redo', 'chats', 'databaseRevisions']) (state[kind] ||= {})[saved.id] = latest[kind][saved.id];
-        }
-        const current = saved || existing;
-        if (current.lfosFileHash === incomingHash) {
+        const current = await hydrateProject(existing.id);
+        if (current?.lfosFileHash === incomingHash) {
           rememberLFOSDocument(current.id, lfosHandle);
           if ((current.projectRevision || 0) !== (current.lfosSavedProjectRevision || 0)) {
             lfosDocuments.get(current.id).revision--;
@@ -915,10 +918,12 @@ async function uploadProjectFile(file, { lfosHandle = null, successMessage = 'Pr
         }
         // The external file changed. Preserve the local project independently,
         // rather than granting a fresh write revision to stale local contents.
-        delete current.lfosDocumentId; delete current.lfosFileHash; delete current.lfosSavedProjectRevision;
-        current.title += ' (local copy)';
-        if (!await persist(true, current.id)) throw new Error('Could not preserve the local copy.');
-        announce('The LFOS file changed. Its previous local copy was kept separately.');
+        if (current) {
+          delete current.lfosDocumentId; delete current.lfosFileHash; delete current.lfosSavedProjectRevision;
+          current.title += ' (local copy)';
+          if (!await persist(true, current.id)) throw new Error('Could not preserve the local copy.');
+          announce('The LFOS file changed. Its previous local copy was kept separately.');
+        } else coordinator.release(`project:${existing.id}`);
       }
     } catch (error) { await lfos.release(lfosHandle); if (documentId) releaseDocumentIfUnused(documentId); throw error; }
   }
@@ -1079,14 +1084,7 @@ function renderHome() {
   });
   if (loadError) uploadProjectButton.disabled = true;
   const cards = el('div', { class: 'workspace-list' });
-  if (!state.workspaces.length) cards.append(el('div', { class: 'empty-home' }, el('strong', { text: 'No projects yet' }), el('span', { text: 'Create one in three short steps, or explore the example.' })));
-  for (const item of [...state.workspaces].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) {
-    const tile = el('div', { class: 'workspace-tile' });
-    tile.style.setProperty('--project-accent', projectAccentValues[item.accentColor] || projectAccentValues.gold);
-    tile.append(button('', () => openWorkspace(item.id), 'workspace-open', { 'aria-label': `Open ${item.title}` }), button('×', () => deleteWorkspace(item.id), 'workspace-delete', { 'aria-label': `Delete ${item.title}`, title: `Delete ${item.title}` }));
-    tile.firstElementChild.append(el('span', { class: 'tile-glyph', text: '◈' }), el('span', {}, el('strong', { text: item.title }), el('small', { text: `${item.nodes.length} connected node${item.nodes.length === 1 ? '' : 's'}` })), el('span', { class: 'tile-arrow', text: '↗' }));
-    cards.append(tile);
-  }
+  renderProjectCards(cards);
   const exampleButton = button('Explore the Plate tectonics example', async () => {
     const item = createWorkspace('Plate tectonics', example);
     if (!await claimProject(item.id)) return;
@@ -1130,18 +1128,15 @@ async function openInitialLFOSProject() {
 }
 
 async function deleteWorkspace(id) {
-  let item = state.workspaces.find((entry) => entry.id === id);
-  if (!item || !await confirmAction({ title: 'Delete project?', message: `“${item.title}” and all its connected nodes will be permanently deleted. This cannot be undone.`, confirmLabel: 'Delete project', danger: true })) return;
+  const summary = projectSummaries().get(id);
+  if (!summary || !await confirmAction({ title: 'Delete project?', message: `“${summary.title}” and all its connected nodes will be permanently deleted. This cannot be undone.`, confirmLabel: 'Delete project', danger: true })) return;
   const alreadyOwned = coordinator.owns(`project:${id}`);
   if (!await claimProject(id)) return;
-  if (!alreadyOwned) {
-    try {
-      const latest = await readDatabaseState();
-      item = latest.workspaces.find(w => w.id === id);
-      if (!item) { coordinator.release(`project:${id}`); await refreshLibrary(); return; }
-      state.databaseRevisions[id] = latest.databaseRevisions[id];
-    } catch (error) { coordinator.release(`project:${id}`); announce(error.message); return; }
-  }
+  let item;
+  try {
+    item = await hydrateProject(id);
+    if (!item) { coordinator.release(`project:${id}`); await refreshLibrary(); return; }
+  } catch (error) { if (!alreadyOwned) coordinator.release(`project:${id}`); announce(error.message); return; }
   try { await pauseProjectTasks(id); } catch (error) { announce(error.message); return; }
   forgetLFOSDocument(id);
   if (item.lfosDocumentId) void lfosDocumentStore.queue.then(() => releaseDocumentIfUnused(item.lfosDocumentId));
@@ -1149,23 +1144,51 @@ async function deleteWorkspace(id) {
   for (const node of item.nodes || []) pdfNodePages.delete(node.id);
   state.workspaces = state.workspaces.filter((entry) => entry.id !== id);
   delete state.history[id]; delete state.redo[id]; delete state.chats[id];
+  pendingProjectDeletes.add(id);
   persist(false, id); renderHome();
 }
 
-async function refreshLibrary() {
-  if (!state) return;
-  const request = ++libraryRefreshSequence;
-  const latest = await readDatabaseState();
-  if (request !== libraryRefreshSequence) return;
-  // Owned projects may contain unsaved edits; only import unowned records.
-  const owned = state.workspaces.filter(w => coordinator.owns(`project:${w.id}`));
-  state.workspaces = [...owned, ...latest.workspaces.filter(w => !coordinator.owns(`project:${w.id}`))];
-  for (const kind of ['history', 'redo', 'chats', 'databaseRevisions']) {
-    state[kind] ||= {};
-    for (const id of Object.keys(state[kind])) if (!coordinator.owns(`project:${id}`)) delete state[kind][id];
-    for (const [id, value] of Object.entries(latest[kind] || {})) if (!coordinator.owns(`project:${id}`)) state[kind][id] = value;
+function projectSummaries() {
+  const summaries = new Map(projectCatalog);
+  for (const project of state.workspaces) summaries.set(project.id, projectSummary(project));
+  for (const id of pendingProjectDeletes) summaries.delete(id);
+  return summaries;
+}
+
+function renderProjectCards(cards) {
+  cards.replaceChildren();
+  const summaries = [...projectSummaries().values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  if (!summaries.length) cards.append(el('div', { class: 'empty-home' }, el('strong', { text: 'No projects yet' }), el('span', { text: 'Create one in three short steps, or explore the example.' })));
+  for (const item of summaries) {
+    const tile = el('div', { class: 'workspace-tile' });
+    tile.style.setProperty('--project-accent', projectAccentValues[item.accentColor] || projectAccentValues.gold);
+    tile.append(button('', () => openWorkspace(item.id), 'workspace-open', { 'aria-label': `Open ${item.title}` }), button('×', () => deleteWorkspace(item.id), 'workspace-delete', { 'aria-label': `Delete ${item.title}`, title: `Delete ${item.title}` }));
+    tile.firstElementChild.append(el('span', { class: 'tile-glyph', text: '◈' }), el('span', {}, el('strong', { text: item.title }), el('small', { text: `${item.nodeCount} connected node${item.nodeCount === 1 ? '' : 's'}` })), el('span', { class: 'tile-arrow', text: '↗' }));
+    cards.append(tile);
   }
-  if (app.querySelector('.home')) renderHome();
+}
+
+async function refreshLibrary() {
+  const request = ++libraryRefreshSequence;
+  const latest = await readDatabaseCatalog();
+  if (request !== libraryRefreshSequence) return;
+  projectCatalog = new Map(latest.map(summary => [summary.id, summary]));
+  const cards = app.querySelector('.home .workspace-list');
+  if (cards) renderProjectCards(cards);
+}
+
+async function hydrateProject(id) {
+  if (pendingProjectDeletes.has(id)) return null;
+  const loaded = state.workspaces.find(project => project.id === id);
+  if (loaded && coordinator.owns(`project:${id}`)) return loaded;
+  const record = await readDatabaseProject(id);
+  if (!record || pendingProjectDeletes.has(id)) return null;
+  const concurrent = state.workspaces.find(project => project.id === id);
+  if (concurrent) return concurrent;
+  state.workspaces.push(record.workspace);
+  for (const kind of ['history', 'redo', 'chats']) state[kind][id] = record[kind] || [];
+  (state.databaseRevisions ||= {})[id] = record.revision;
+  return record.workspace;
 }
 async function claimProject(id) {
   try {
@@ -1177,20 +1200,22 @@ async function claimProject(id) {
 let openingProject = 0;
 async function openWorkspace(id) {
   const request = ++openingProject;
-  if (!coordinator.owns(`project:${id}`)) {
-    // Refresh under the lease, so an owner's final committed edits are visible.
-    if (!await claimProject(id)) return;
-    try {
-      const latest = await readDatabaseState();
-      const workspace = latest.workspaces.find(w => w.id === id);
-      if (!workspace) { coordinator.release(`project:${id}`); await refreshLibrary(); return; }
-      state.workspaces = state.workspaces.filter(w => w.id !== id); state.workspaces.push(workspace);
-      for (const kind of ['history', 'redo', 'chats', 'databaseRevisions']) (state[kind] ||= {})[id] = latest[kind][id];
-    } catch (error) { coordinator.release(`project:${id}`); announce(error.message); return; }
-  }
-  const project = state.workspaces.find(w => w.id === id);
+  const alreadyOwned = coordinator.owns(`project:${id}`);
+  if (!alreadyOwned && !await claimProject(id)) return;
+  let project;
+  try {
+    project = await hydrateProject(id);
+    if (!project) { if (!pendingProjectDeletes.has(id)) coordinator.release(`project:${id}`); await refreshLibrary(); return; }
+  } catch (error) { if (!alreadyOwned) coordinator.release(`project:${id}`); announce(error.message); return; }
   if (project?.lfosDocumentId && !coordinator.owns(`document:${project.lfosDocumentId}`)) {
-    if (!await coordinator.acquire(`document:${project.lfosDocumentId}`)) { coordinator.release(`project:${id}`); announce('This LFOS document is already open in another window.'); return; }
+    if (!await coordinator.acquire(`document:${project.lfosDocumentId}`)) {
+      if (!alreadyOwned) {
+        state.workspaces = state.workspaces.filter(workspace => workspace.id !== id);
+        for (const kind of ['history', 'redo', 'chats', 'databaseRevisions']) delete state[kind]?.[id];
+        coordinator.release(`project:${id}`);
+      }
+      announce('This LFOS document is already open in another window.'); return;
+    }
   }
   if (request !== openingProject) return;
   scheduleProjectRegistration();

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { indexedDB } from 'fake-indexeddb';
 import { createWorkspace, emptyState } from '../src/storage.js';
-import { openDatabase, readDatabaseState, commitDatabaseProjects, loadDatabaseState } from '../src/state-store.js';
+import { openDatabase, readDatabaseCatalog, readDatabaseProject, readDatabaseState, commitDatabaseProjects, loadDatabaseState } from '../src/state-store.js';
 import { PersistenceClient } from '../src/persistence-client.js';
 import { PersistenceJobs } from '../src/persistence-jobs.js';
 import { WindowCoordinator } from '../src/window-coordinator.js';
@@ -44,6 +44,28 @@ test('two windows save separate projects without losing either edit', async () =
   const saved = await readDatabaseState();
   assert.deepEqual(saved.workspaces.map(w => w.title), ['A edited', 'B edited']);
   assert.equal(saved.databaseRevisions[a], 2); assert.equal(saved.databaseRevisions[b], 2);
+});
+
+test('catalog backfills order-only metadata and stays consistent with project revisions', async () => {
+  const [a, b] = await seed();
+  const db = await openDatabase();
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction('records', 'readwrite');
+      tx.oncomplete = resolve;
+      tx.onabort = () => reject(tx.error);
+      tx.objectStore('records').put({ order: [a, b], initialized: true }, 'library-v2');
+    });
+  } finally { db.close(); }
+  assert.deepEqual((await readDatabaseCatalog()).map(row => [row.id, row.title, row.article]), [[a, 'A', undefined], [b, 'B', undefined]]);
+  const { workspace, revision, history, chats } = await readDatabaseProject(a);
+  assert.equal(revision, 1);
+  assert.deepEqual([history, chats], [[], []]);
+  workspace.title = 'Renamed A';
+  await commitDatabaseProjects({ ...emptyState(), workspaces: [workspace] }, { ids: [a, b], expected: { [a]: 1, [b]: 1 } });
+  assert.deepEqual((await readDatabaseCatalog()).map(row => row.title), ['Renamed A']);
+  assert.equal(await readDatabaseProject(b), null);
+  assert.equal((await readDatabaseProject(a)).revision, 2);
 });
 
 test('stale writers conflict atomically without partially updating other projects', async () => {

@@ -38,6 +38,10 @@ function projectRecord(state, workspace, revision = 1) {
   const id = workspace.id;
   return { workspace, revision, history: state.history[id] || [], redo: state.redo[id] || [], chats: state.chats[id] || [] };
 }
+export function projectSummary(workspace) {
+  const { id, title, updatedAt, accentColor, lfosDocumentId } = workspace;
+  return { id, title, updatedAt, accentColor, lfosDocumentId, nodeCount: workspace.nodes?.length || 0 };
+}
 async function databaseOperation(action) {
   const db = await openDatabase();
   try {
@@ -55,7 +59,8 @@ async function databaseOperation(action) {
         legacy.onsuccess = () => {
           try {
             const state = legacy.result == null ? emptyState() : normalizeState(legacy.result);
-            const library = { order: state.workspaces.map(w => w.id), initialized: legacy.result != null };
+            const library = { order: state.workspaces.map(w => w.id), initialized: legacy.result != null,
+              catalog: new Map(state.workspaces.map(w => [w.id, projectSummary(w)])) };
             for (const workspace of state.workspaces) store.put(projectRecord(state, workspace), PROJECT_PREFIX + workspace.id);
             store.put(library, LIBRARY_KEY);
             store.delete(STATE_KEY);
@@ -65,6 +70,45 @@ async function databaseOperation(action) {
       };
     });
   } finally { db.close(); }
+}
+
+const orderedSummaries = library => library.order.map(id => library.catalog.get(id)).filter(Boolean);
+
+export async function readDatabaseCatalog() {
+  const existing = await transact('readonly', store => store.get(LIBRARY_KEY));
+  if (existing?.catalog instanceof Map) return orderedSummaries(existing);
+  // Older windows can still write order-only metadata. Rebuild from the same
+  // transaction that reads their records so summaries cannot race a save.
+  return databaseOperation((store, library, done) => {
+    if (library.catalog instanceof Map) return done(orderedSummaries(library));
+    const catalog = new Map();
+    let remaining = library.order.length;
+    const complete = () => {
+      const indexed = { ...library, catalog };
+      store.put(indexed, LIBRARY_KEY);
+      done(orderedSummaries(indexed));
+    };
+    if (!remaining) return complete();
+    for (const id of library.order) {
+      const request = store.get(PROJECT_PREFIX + id);
+      request.onsuccess = () => {
+        if (request.result) catalog.set(id, projectSummary(request.result.workspace));
+        if (!--remaining) complete();
+      };
+    }
+  });
+}
+
+export async function loadDatabaseCatalog(storage = localStorage) {
+  if (hasLegacyState(storage)) await loadDatabaseState({ storage });
+  return readDatabaseCatalog();
+}
+
+export async function readDatabaseProject(id) {
+  const record = await transact('readonly', store => store.get(PROJECT_PREFIX + id));
+  if (!record) return null;
+  normalizeState({ ...emptyState(), workspaces: [record.workspace], history: { [id]: record.history || [] }, redo: { [id]: record.redo || [] } });
+  return record;
 }
 export function readDatabaseState() {
   return databaseOperation((store, library, done) => {
@@ -108,17 +152,19 @@ export function commitDatabaseProjects(state, { ids, expected = {} }) {
           }
         }
         const deleted = new Set();
+        const catalog = library.catalog instanceof Map ? library.catalog : null;
         for (const id of changes) {
           const workspace = projects.get(id);
-          if (!workspace) { store.delete(PROJECT_PREFIX + id); deleted.add(id); revisions[id] = 0; }
+          if (!workspace) { store.delete(PROJECT_PREFIX + id); deleted.add(id); catalog?.delete(id); revisions[id] = 0; }
           else {
             revisions[id] = (expected[id] || 0) + 1;
             store.put(projectRecord(state, workspace, revisions[id]), PROJECT_PREFIX + id);
+            catalog?.set(id, projectSummary(workspace));
           }
         }
         const order = library.order.filter(id => !deleted.has(id));
         for (const workspace of [...state.workspaces].reverse()) if (changes.includes(workspace.id) && !order.includes(workspace.id)) order.unshift(workspace.id);
-        store.put({ order, initialized: true }, LIBRARY_KEY);
+        store.put({ order, initialized: true, ...(catalog && { catalog }) }, LIBRARY_KEY);
         done(revisions);
       };
     }
