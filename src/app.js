@@ -1639,6 +1639,7 @@ function renderWorkspace() {
   if (selectedId) selectedIds.clear();
   else selectedIds = new Set([...selectedIds].filter((id) => item.nodes.some((node) => node.id === id && isVisible(item, node))));
   ensurePositions(item);
+  const modeClasses = `${graphFocus ? ' graph-focus-active graph-focus-readonly' : ''}${editingTarget ? ' editing-mode-active' : ''}`;
   const chrome = el('div', { class: 'workspace-chrome' },
     el('div', { class: 'header-left-group' },
       el('div', { class: 'header-navigation' },
@@ -1656,21 +1657,39 @@ function renderWorkspace() {
       button('Research', toggleResearchPanel, `source-toggle ${researchPanel ? 'active' : ''}`, { 'aria-pressed': String(!!researchPanel), 'aria-label': 'Toggle research' }),
       button(`Library${item.sources?.length ? ` (${item.sources.length})` : ''}`, () => openSource(openSourceId ? null : 'library'), `source-toggle ${openSourceId ? 'active' : ''}`, { 'aria-pressed': String(!!openSourceId), 'aria-label': 'Toggle library' })));
 
-  app.replaceChildren(el('div', { class: `workspace-shell ${graphFocus ? 'graph-focus-active graph-focus-readonly' : ''} ${editingTarget ? 'editing-mode-active' : ''}`.trim() }, renderCanvas(item), chrome));
-  indexCanvasConnections(item, app.querySelector('.scene'));
+  const mounted = canvasConnections?.item === item && canvasConnections.scene.isConnected;
+  const shell = mounted ? canvasConnections.scene.closest('.canvas-shell') : renderCanvas();
+  shell.className = `canvas-shell${modeClasses}`;
+  shell.querySelector('.canvas-viewport').setAttribute('aria-readonly', String(graphIsReadOnly()));
+  if (mounted) {
+    const workspace = shell.parentElement;
+    workspace.className = `workspace-shell${modeClasses}`;
+    workspace.querySelector('.workspace-chrome').replaceWith(chrome);
+    for (const panel of shell.querySelectorAll(':scope > :not(.canvas-viewport, .canvas-control-cluster)')) panel.remove();
+  } else {
+    app.replaceChildren(el('div', { class: `workspace-shell${modeClasses}` }, shell, chrome));
+  }
+  const scene = shell.querySelector('.scene');
+  const changedContent = renderCanvasScene(item, scene);
+  indexCanvasConnections(item, scene);
   prepareLFOSHeader(chrome);
   updateSaveControls();
   applyView();
-  for (const preview of document.querySelectorAll('.markdown-preview')) {
-    const targetId = preview.dataset.documentId;
-    markAnchors(preview, item.highlights.filter((highlight) => highlight.targetId === targetId));
-    activateMarkdownHighlightDrag(preview, targetId);
-    activateFormulaSelection(preview, targetId);
+  for (const { element, highlights } of changedContent) {
+    const preview = element.querySelector('.markdown-preview');
+    if (preview) {
+      const targetId = preview.dataset.documentId;
+      if (highlights.length) markAnchors(preview, highlights);
+      activateMarkdownHighlightDrag(preview, targetId);
+      activateFormulaSelection(preview, targetId);
+    }
+    if (element.matches('.topic-card')) updateCardOverflow(element);
+    const editor = element.querySelector('.markdown-editor');
+    if (editor) resizeEditor(editor);
   }
-  document.querySelectorAll('.topic-card').forEach(updateCardOverflow);
-  document.querySelectorAll('.markdown-editor').forEach(resizeEditor);
   measurePaper();
-  renderConnectionHandles(document.querySelector('.scene'), item);
+  renderConnectionHandles(scene, item);
+  renderCanvasPanels(item, shell);
   if (selectedPassage) renderPassageToolbar();
   if (aiPanel) renderAiPanel();
   if (researchPanel) renderResearchPanel();
@@ -1722,19 +1741,10 @@ function historyButton(kind, action, enabled) {
   return control;
 }
 
-function renderCanvas(item) {
-  const viewport = el('main', { class: 'canvas-viewport', 'aria-label': 'Project workspace', 'aria-readonly': String(graphIsReadOnly()) });
+function renderCanvas() {
+  const viewport = el('main', { class: 'canvas-viewport', 'aria-label': 'Project workspace' });
   const scene = el('div', { class: 'scene' });
-  scene.style.transform = canvasTransform(view);
-  scene.append(renderPaper(item));
-  scene.append(renderConnectors(item));
-  for (const node of item.nodes) if (isVisible(item, node)) scene.append(renderNode(node, item));
   scene.append(el('div', { class: 'alignment-guides', 'aria-hidden': 'true' }));
-  // Lines that meet passage marks sit above the document and cards.
-  scene.append(renderAnchorConnectors(item));
-  for (const edge of item.edges) {
-    if (endpointVisible(item, edge.fromId) && endpointVisible(item, edge.toId)) scene.append(renderEdgeLabel(item, edge));
-  }
   viewport.append(scene, el('div', { class: 'app-watermark', 'aria-hidden': 'true', text: 'LF CORE' }));
   attachPanAndZoom(viewport);
   const presets = el('div', { class: 'zoom-presets', role: 'menu', 'aria-label': 'Zoom presets' });
@@ -1761,7 +1771,10 @@ function renderCanvas(item) {
       openContextMenu(viewport, rect.left + rect.width / 2, rect.top + rect.height / 2);
     }, 'geometry-toggle', { 'aria-label': 'Canvas actions', title: 'Add a node or fit the view' }));
   const controls = el('div', { class: 'canvas-control-cluster' }, zoom, geometry, touchControls);
-  const shell = el('div', { class: `canvas-shell ${graphFocus ? 'graph-focus-active graph-focus-readonly' : ''} ${editingTarget ? 'editing-mode-active' : ''}`.trim() }, viewport, controls);
+  return el('div', { class: 'canvas-shell' }, viewport, controls);
+}
+
+function renderCanvasPanels(item, shell) {
   if (outlineOpen) shell.append(renderOutline(item));
   if (!graphIsReadOnly() && !selectedId && selectedIds.size > 1) {
     shell.append(el('div', { class: 'selection-toolbar', role: 'status' }, el('span', { text: `${selectedIds.size} selected` }), button('Delete', () => removeNodes([...selectedIds]), 'selection-delete'), button('Clear', () => { selectedIds.clear(); syncCanvasSelection(); }, 'selection-clear')));
@@ -1769,7 +1782,125 @@ function renderCanvas(item) {
   if (graphFocus) shell.append(renderGraphFocusToolbar(item));
   if (editingTarget) shell.append(renderEditingToolbar());
   if (openSourceId) shell.append(renderSourcesPanel(item));
-  return shell;
+}
+
+function reconcileCanvasContent(item, scene, graph) {
+  const changed = [];
+  const previous = scene.canvasContent || { cards: new Map() };
+  const articleHighlights = graph.highlightsByTarget.get('article') || [];
+  const articleKey = [item.article.markdown, editingMarkdown, !!editingTarget, aiFeaturesEnabled, JSON.stringify(articleHighlights)];
+  let paper = previous.paper;
+  if (!paper || articleKey.some((value, index) => value !== previous.articleKey[index])) {
+    const next = renderPaper(item);
+    if (paper) paper.replaceWith(next);
+    else scene.prepend(next);
+    paper = next;
+    changed.push({ element: paper, highlights: articleHighlights });
+  }
+  paper.classList.toggle('focus-muted', !!graphFocus);
+  paper.classList.toggle('editing-focus-target', editingTarget === 'article');
+  paper.style.width = `${item.layout.articleSize.width}px`;
+  paper.style.minHeight = `${item.layout.articleSize.minHeight}px`;
+
+  const cards = new Map();
+  for (const [id, { element }] of previous.cards) if (!graph.visible.has(id)) element.remove();
+  let before = scene.querySelector('.alignment-guides');
+  for (let offset = item.nodes.length - 1; offset >= 0; offset--) {
+    const node = item.nodes[offset];
+    const id = node.id;
+    if (!graph.visible.has(id)) continue;
+    const source = graph.sources.get(node.document?.sourceId);
+    const highlights = graph.highlightsByTarget.get(id) || [];
+    const childCount = graph.children.get(id)?.length || 0;
+    const key = [node, node.document, node.document?.markdown, source, source?.title, source?.pages, source?.width, source?.height,
+      source?.type, node.collapsed, childCount, editingTarget === id, JSON.stringify(highlights)];
+    const old = previous.cards.get(id);
+    let element = old?.element;
+    if (!old || key.some((value, index) => value !== old.key[index])) {
+      element = renderNode(node, item, childCount, source);
+      old?.element.remove();
+      changed.push({ element, highlights });
+    } else {
+      const { x, y, width, height } = pointFor(item, id);
+      if (element.style.left !== `${x}px`) element.style.left = `${x}px`;
+      if (element.style.top !== `${y}px`) element.style.top = `${y}px`;
+      if (element.style.width !== `${width}px` || element.style.height !== `${height}px`) {
+        element.style.width = `${width}px`;
+        element.style.height = `${height}px`;
+        applyNodeSizeClass(element, width, height);
+        updateCardOverflow(element);
+      }
+      element.classList.toggle('selected', selectedId === id || selectedIds.has(id));
+      element.classList.toggle('focus-related', graphFocusNodeIds?.has(id) === true);
+      element.classList.toggle('focus-muted', !!graphFocusNodeIds && !graphFocusNodeIds.has(id));
+      element.querySelector('.node-actions')?.remove();
+      if (selectedId === id && !graphFocus && !editingTarget) element.append(renderNodeActions(node, item));
+    }
+    if (element.nextElementSibling !== before) scene.insertBefore(element, before);
+    before = element;
+    cards.set(id, { element, key });
+  }
+  scene.canvasContent = { paper, articleKey, cards };
+  return changed;
+}
+
+function renderCanvasScene(item, scene) {
+  const nodes = new Map(item.nodes.map(node => [node.id, node]));
+  const sources = new Map(item.sources.map(source => [source.id, source]));
+  const children = new Map(), highlightsByTarget = new Map(), highlights = new Map();
+  const visible = new Set(), queue = [];
+  for (const node of item.nodes) {
+    if (!node.parentId) queue.push(node);
+    else {
+      if (!children.has(node.parentId)) children.set(node.parentId, []);
+      children.get(node.parentId).push(node);
+    }
+  }
+  for (const node of queue) {
+    if (visible.has(node.id)) continue;
+    visible.add(node.id);
+    if (!node.collapsed) for (const child of children.get(node.id) || []) queue.push(child);
+  }
+  for (const id of graphFocusNodeIds || []) visible.add(id);
+  for (const highlight of item.highlights) {
+    highlights.set(`h:${highlight.id}`, highlight);
+    if (!highlightsByTarget.has(highlight.targetId)) highlightsByTarget.set(highlight.targetId, []);
+    highlightsByTarget.get(highlight.targetId).push(highlight);
+  }
+  const graph = { nodes, sources, children, highlights, highlightsByTarget, visible, scene };
+  const changed = reconcileCanvasContent(item, scene, graph);
+  scene.querySelectorAll('.connection-handle').forEach(handle => handle.remove());
+  const edgeVisible = id => {
+    const mark = highlights.get(id);
+    return mark ? mark.targetId === 'article' || visible.has(mark.targetId) : visible.has(id);
+  };
+  const edges = item.edges.filter(edge => edgeVisible(edge.fromId) && edgeVisible(edge.toId));
+  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+  const lineKey = JSON.stringify([accent, !!graphFocusNodeIds, edges.map(edge => [edge.id, edge.fromId, edge.toId,
+    edge.fromSide, edge.toSide, edge.direction, isFocusEdge(item, edge, graph)])]);
+  if (scene.lineKey !== lineKey) {
+    scene.querySelectorAll(':scope > .connectors').forEach(layer => layer.remove());
+    scene.canvasContent.paper.after(renderConnectors(item, edges, graph, accent));
+    // Lines that meet passage marks sit above the document and cards.
+    scene.querySelector('.alignment-guides').after(renderAnchorConnectors(item, edges, graph));
+    scene.lineKey = lineKey;
+  }
+  const previousLabels = scene.edgeLabels || new Map();
+  const labels = new Map();
+  for (const edge of edges) {
+    const key = [edge, edge.label, edge.direction, activeConnection?.id === edge.id, focusEdgeClass(item, edge, graph)];
+    const old = previousLabels.get(edge.id);
+    let label = old?.label;
+    if (!old || !label.isConnected || key.some((value, index) => value !== old.key[index])) {
+      label = renderEdgeLabel(item, edge, graph);
+      if (old?.label.isConnected) old.label.replaceWith(label);
+      else scene.append(label);
+    }
+    labels.set(edge.id, { key, label });
+  }
+  for (const [id, { label }] of previousLabels) if (!labels.has(id)) label.remove();
+  scene.edgeLabels = labels;
+  return changed;
 }
 
 function renderGraphFocusToolbar(item) {
@@ -1994,22 +2125,22 @@ function focusNodeClass(id) {
   return graphFocusNodeIds.has(id) ? 'focus-related' : 'focus-muted';
 }
 
-function focusEndpointOwner(item, id) {
-  if (!isHighlightId(id)) return item.nodes.some((node) => node.id === id) ? id : null;
-  const targetId = highlightFor(item, id)?.targetId;
-  return targetId === 'article' || item.nodes.some((node) => node.id === targetId) ? targetId : null;
+function focusEndpointOwner(item, id, graph) {
+  const targetId = isHighlightId(id) ? (graph ? graph.highlights.get(id) : highlightFor(item, id))?.targetId : id;
+  const exists = graph ? graph.nodes.has(targetId) : item.nodes.some((node) => node.id === targetId);
+  return exists || (isHighlightId(id) && targetId === 'article') ? targetId : null;
 }
 
-function isFocusEdge(item, edge) {
+function isFocusEdge(item, edge, graph) {
   if (!graphFocusNodeIds) return false;
-  const owners = [focusEndpointOwner(item, edge.fromId), focusEndpointOwner(item, edge.toId)];
+  const owners = [focusEndpointOwner(item, edge.fromId, graph), focusEndpointOwner(item, edge.toId, graph)];
   if (owners.includes(null)) return false;
   return owners.every((id) => id === 'article' || graphFocusNodeIds.has(id)) && owners.some((id) => graphFocusNodeIds.has(id));
 }
 
-function focusEdgeClass(item, edge) {
+function focusEdgeClass(item, edge, graph) {
   if (!graphFocusNodeIds) return '';
-  return isFocusEdge(item, edge) ? 'focus-related' : 'focus-muted';
+  return isFocusEdge(item, edge, graph) ? 'focus-related' : 'focus-muted';
 }
 
 function pointFor(item, id) {
@@ -2254,8 +2385,8 @@ function renderConnectionHandles(scene, item) {
   }
 }
 
-function placeEdgeLabel(label, item, edge, fromSide = edge.fromSide, toSide = edge.toSide) {
-  const { from, to } = edgePoints(item, edge);
+function placeEdgeLabel(label, item, edge, fromSide = edge.fromSide, toSide = edge.toSide, graph) {
+  const { from, to } = edgePoints(item, edge, graph);
   applyEdgeLabelRoute(label, from && to ? crossConnectionRoute(from, to, fromSide, toSide) : null);
 }
 
@@ -2277,10 +2408,10 @@ function edgeMarkerAttrs(edge) {
   };
 }
 
-function renderEdgeLabel(item, edge) {
+function renderEdgeLabel(item, edge, graph) {
   const selected = activeConnection?.kind === 'edge' && activeConnection.id === edge.id;
-  const chip = el('div', { class: `edge-label-chip ${selected ? 'active' : ''} ${focusEdgeClass(item, edge)}`.trim(), 'data-edge-label': edge.id });
-  placeEdgeLabel(chip, item, edge);
+  const chip = el('div', { class: `edge-label-chip ${selected ? 'active' : ''} ${focusEdgeClass(item, edge, graph)}`.trim(), 'data-edge-label': edge.id });
+  placeEdgeLabel(chip, item, edge, edge.fromSide, edge.toSide, graph);
   const name = button(edge.label || '', () => {
     if (!selected) { selectConnection('edge', edge.id); return; }
     if (graphIsReadOnly()) return;
@@ -2312,37 +2443,35 @@ function renderEdgeLabel(item, edge) {
   return chip;
 }
 
-function renderConnectors(item) {
-  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#514fc1';
+function renderConnectors(item, entries, graph, accent) {
+  accent ||= '#514fc1';
   const svg = el('svg', { class: 'connectors', viewBox: '-4000 -4000 8000 8000', role: 'group', 'aria-label': 'Node connections' });
   const defs = el('defs');
   for (const [id, color, orient] of [['arrow-forward', accent, 'auto'], ['arrow-reverse', accent, 'auto-start-reverse']]) {
     defs.append(el('marker', { id, markerWidth: '8', markerHeight: '8', refX: '7', refY: '4', orient, markerUnits: 'userSpaceOnUse', viewBox: '0 0 8 8' }, el('path', { d: 'M1 1 7 4 1 7', fill: 'none', stroke: color, style: `stroke: ${color}`, 'stroke-width': '1.6', 'stroke-opacity': '.78', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })));
   }
   svg.append(defs);
-  const edges = [...item.edges].sort((a, b) => Number(isFocusEdge(item, a)) - Number(isFocusEdge(item, b)));
+  const edges = [...entries].sort((a, b) => Number(isFocusEdge(item, a, graph)) - Number(isFocusEdge(item, b, graph)));
   for (const edge of edges) {
     if (isHighlightId(edge.fromId) || isHighlightId(edge.toId)) continue;
-    const from = item.nodes.find((node) => node.id === edge.fromId), to = item.nodes.find((node) => node.id === edge.toId);
-    if (!from || !to || !isVisible(item, from) || !isVisible(item, to)) continue;
-    const lineClass = `cross-line ${edgeDirection(edge) === 'both' ? '' : 'one-way'} ${focusEdgeClass(item, edge)}`.trim();
+    const from = pointFor(item, edge.fromId), to = pointFor(item, edge.toId);
+    const lineClass = `cross-line ${edgeDirection(edge) === 'both' ? '' : 'one-way'} ${focusEdgeClass(item, edge, graph)}`.trim();
     const direction = edgeDirection(edge);
-    const path = makeConnector(svg, edge.id, pointFor(item, from.id), pointFor(item, to.id), null, edge.toSide, lineClass, { 'data-edge': edge.id, ...edgeMarkerAttrs(edge) }, () => selectConnection('edge', edge.id), direction === 'both', direction === 'reverse');
-    updateCrossRoute(path, pointFor(item, from.id), pointFor(item, to.id), edge.fromSide, edge.toSide);
+    const path = makeConnector(svg, edge.id, from, to, null, edge.toSide, lineClass, { 'data-edge': edge.id, ...edgeMarkerAttrs(edge) }, () => selectConnection('edge', edge.id), direction === 'both', direction === 'reverse');
+    updateCrossRoute(path, from, to, edge.fromSide, edge.toSide);
   }
   return svg;
 }
 
-function renderAnchorConnectors(item) {
+function renderAnchorConnectors(item, entries, graph) {
   const svg = el('svg', { class: 'connectors anchor-connectors', viewBox: '-4000 -4000 8000 8000', role: 'group', 'aria-label': 'Passage connections' });
   svg.append(el('defs'));
-  const edges = [...item.edges].sort((a, b) => Number(isFocusEdge(item, a)) - Number(isFocusEdge(item, b)));
+  const edges = [...entries].sort((a, b) => Number(isFocusEdge(item, a, graph)) - Number(isFocusEdge(item, b, graph)));
   for (const edge of edges) {
     if (!isHighlightId(edge.fromId) && !isHighlightId(edge.toId)) continue;
-    if (!endpointVisible(item, edge.fromId) || !endpointVisible(item, edge.toId)) continue;
-    const { from, to } = edgePoints(item, edge);
+    const { from, to } = edgePoints(item, edge, graph);
     const direction = edgeDirection(edge);
-    const lineClass = `cross-line ${direction === 'both' ? '' : 'one-way'} ${focusEdgeClass(item, edge)}`.trim();
+    const lineClass = `cross-line ${direction === 'both' ? '' : 'one-way'} ${focusEdgeClass(item, edge, graph)}`.trim();
     const path = makeConnector(svg, edge.id, from || rootBounds, to || rootBounds, null, edge.toSide, lineClass, { 'data-edge': edge.id, ...edgeMarkerAttrs(edge) }, () => selectConnection('edge', edge.id), direction === 'both', direction === 'reverse');
     if (!from || !to) { path.style.display = 'none'; path._hit.style.display = 'none'; }
     else updateCrossRoute(path, from, to, edge.fromSide, edge.toSide);
@@ -2563,10 +2692,9 @@ function imageNodeViewer(node, source, card) {
   return viewer;
 }
 
-function renderNode(node, item) {
+function renderNode(node, item, childCount, referencedSource) {
   const pos = item.layout.positions[node.id];
   const label = nodeLabel(node, item.sources);
-  const referencedSource = isSourceNode(node) ? item.sources.find((source) => source.id === node.document.sourceId) : null;
   const isEditing = editingTarget === node.id;
   const card = el('div', { class: `topic-card ${isSourceNode(node) ? 'source-node' : ''} ${selectedId === node.id || selectedIds.has(node.id) ? 'selected' : ''} ${focusNodeClass(node.id)} ${isEditing ? 'editing-node-content editing-focus-target' : ''}`.trim(), 'data-node': node.id, tabindex: '0', role: 'button', 'aria-label': label });
   const size = pointFor(item, node.id);
@@ -2614,10 +2742,9 @@ function renderNode(node, item) {
       event.stopPropagation(); beginNodeMarkdownEdit(node.id);
     });
   }
-  const count = item.nodes.filter((entry) => entry.parentId === node.id).length;
-  const footer = count && !graphIsReadOnly() ? el('div', { class: 'topic-footer' }, button(node.collapsed ? `＋ ${count}` : `− ${count}`, (event) => { event.stopPropagation(); change((entry) => { entry.nodes.find((n) => n.id === node.id).collapsed = !node.collapsed; }); }, 'collapse-button', { 'aria-label': node.collapsed ? 'Expand children' : 'Collapse children' })) : null;
-  const resize = graphIsReadOnly() || editingTarget ? null : button('', () => {}, 'resize-grip node-resize', { 'aria-label': `Resize ${label}`, title: 'Drag to resize; arrow keys also work' });
-  const link = graphIsReadOnly() || editingTarget ? null : button('↔', () => {}, 'link-grip', { 'aria-label': `Connect ${label} to another node or create one`, title: 'Drag to a node to connect, or empty space to create a node' });
+  const footer = childCount ? el('div', { class: 'topic-footer' }, button(node.collapsed ? `＋ ${childCount}` : `− ${childCount}`, (event) => { event.stopPropagation(); change((entry) => { entry.nodes.find((n) => n.id === node.id).collapsed = !node.collapsed; }); }, 'collapse-button', { 'aria-label': node.collapsed ? 'Expand children' : 'Collapse children' })) : null;
+  const resize = button('', () => {}, 'resize-grip node-resize', { 'aria-label': `Resize ${label}`, title: 'Drag to resize; arrow keys also work' });
+  const link = button('↔', () => {}, 'link-grip', { 'aria-label': `Connect ${label} to another node or create one`, title: 'Drag to a node to connect, or empty space to create a node' });
   link?.addEventListener('pointerdown', (event) => startEdgeDrag(event, node, link));
   link?.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -2628,8 +2755,7 @@ function renderNode(node, item) {
   resize?.addEventListener('keydown', (event) => resizeNodeWithKeys(event, node));
   card.append(content);
   if (footer) card.append(footer);
-  if (link) card.append(link);
-  if (resize) card.append(resize);
+  card.append(link, resize);
   if (selectedId === node.id && !graphFocus && !editingTarget) card.append(renderNodeActions(node, item));
   if (card.classList.contains('media-content-visible')) queueMicrotask(() => (card._ensurePdfPreview || card._ensureMediaPreview)?.());
   card.addEventListener('pointerdown', (event) => {
@@ -3075,6 +3201,8 @@ function syncCanvasSelection() {
         chip.replaceWith(label);
         const entry = canvasConnections?.edges.get(edge.id);
         if (entry) entry.label = label;
+        const cached = canvasConnections?.scene.edgeLabels.get(edge.id);
+        if (cached) { cached.label = label; cached.key[3] = false; }
       }
     });
   }
@@ -3888,8 +4016,8 @@ function markAnchors(preview, highlights) {
         const item = work();
         const linkedNode = item.nodes.find((node) => node.anchor?.id === match.highlight.id);
         const mark = el('span', { class: 'anchor-mark', tabindex: '0', role: 'button', 'data-highlight': match.highlight.id, ...(linkedNode ? { 'data-anchor-node': linkedNode.id } : {}), title: 'Click to edit connections', text });
-        mark.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--accent-soft').trim();
-        mark.style.borderBottomColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+        mark.style.backgroundColor = 'var(--accent-soft)';
+        mark.style.borderBottomColor = 'var(--accent)';
         activateHighlightActions(mark, match.highlight);
         fragment.append(mark);
       }

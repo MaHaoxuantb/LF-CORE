@@ -516,6 +516,8 @@ button:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .workspace-shell.editing-mode-active .canvas-control-cluster:focus-within { opacity: .9; }
 .editing-mode-active .editing-focus-target { z-index: 9; opacity: 1 !important; pointer-events: auto !important; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent), 0 18px 48px #20283a2b; }
 .editing-mode-active .app-watermark { opacity: .012; }
+.editing-mode-active .topic-card :is(.link-grip, .node-resize),
+.graph-focus-readonly .topic-card :is(.link-grip, .node-resize, .topic-footer) { display: none; }
 .editing-toolbar { position: absolute; z-index: 24; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; align-items: center; gap: 3px; max-width: calc(100vw - 36px); overflow-x: auto; padding: 5px; border: 1px solid #dcddec; border-radius: 11px; background: rgb(255 255 255 / 94%); box-shadow: 0 8px 28px #2739532b; color: #586178; white-space: nowrap; -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
 .editing-toolbar-label { padding: 0 8px 0 5px; color: #777f8d; font-size: .7rem; font-weight: 650; }
 .editing-tool, .editing-done { min-height: 31px; border: 0; border-radius: 7px; background: transparent; color: #505968; padding: 6px 9px; font-size: .72rem; }
