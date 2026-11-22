@@ -53,6 +53,21 @@ test('edits during a write stay dirty and the next queued save writes them', asy
   assert.equal(f.store.isDirty('project'), false);
 });
 
+test('automatic requests queued behind a write share one save of the newest revision', async () => {
+  const f = fixture();
+  let release;
+  const wait = new Promise(resolve => { release = resolve; });
+  f.store.enqueue(() => wait);
+  f.edit('first edit');
+  const queued = f.store.save('project', { automatic: true });
+  f.edit('latest edit');
+  assert.equal(f.store.save('project', { automatic: true }), queued);
+  release();
+  await queued;
+  assert.deepEqual(f.writes.map(write => write.contents), ['latest edit']);
+  assert.equal(f.store.isDirty('project'), false);
+});
+
 test('conflicts preserve dirty state and pause automatic retries until Save As', async () => {
   const f = fixture();
   const save = f.integration.saveProject;

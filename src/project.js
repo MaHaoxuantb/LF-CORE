@@ -8,6 +8,7 @@ function assertObject(value, message) {
 
 function bytesToBase64(bytes) {
   const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  if (typeof view.toBase64 === 'function') return view.toBase64();
   let binary = '';
   const chunkSize = 0x8000;
   for (let offset = 0; offset < view.length; offset += chunkSize) {
@@ -55,13 +56,20 @@ function portableAgentRecords(chats) {
 
 export function serializeProject(workspace, chats = [], fileBytes = new Map(), exportedAt = new Date().toISOString()) {
   assertObject(workspace, 'There is no project to download.');
-  const files = {};
+  const files = new Map();
   for (const source of workspace.sources || []) {
     if (!isStoredFile(source)) continue;
-    const bytes = fileBytes.get(source.id);
-    if (!bytes) throw new Error(`The ${source.type === 'pdf' ? 'PDF' : 'media file'} “${source.title || source.fileName || 'Untitled item'}” is missing. Reattach it before downloading this project.`);
-    files[source.id] = { encoding: 'base64', data: bytesToBase64(bytes) };
+    files.set(source.id, encodeProjectAttachment(source, fileBytes.get(source.id)));
   }
+  return serializeProjectWithAttachments(workspace, chats, files, exportedAt);
+}
+
+export function encodeProjectAttachment(source, bytes) {
+  if (!bytes) throw new Error(`The ${source.type === 'pdf' ? 'PDF' : 'media file'} “${source.title || source.fileName || 'Untitled item'}” is missing. Reattach it before downloading this project.`);
+  return { encoding: 'base64', data: bytesToBase64(bytes) };
+}
+
+export function serializeProjectWithAttachments(workspace, chats, files, exportedAt = new Date().toISOString()) {
   const exportedWorkspace = structuredClone(workspace);
   delete exportedWorkspace.agentReceipts;
   delete exportedWorkspace.agentPendingOperations;
@@ -76,7 +84,7 @@ export function serializeProject(workspace, chats = [], fileBytes = new Map(), e
     version: PROJECT_VERSION,
     exportedAt,
     project: { workspace: exportedWorkspace, chats: exportedChats },
-    files
+    files: Object.fromEntries(files)
   });
 }
 

@@ -8,6 +8,7 @@ export class LFOSDocuments {
     this.onSaved = onSaved;
     this.entries = new Map();
     this.queue = Promise.resolve();
+    this.queuedAutosaves = new Map();
   }
 
   enqueue(operation) {
@@ -36,7 +37,10 @@ export class LFOSDocuments {
   }
 
   save(id, { automatic = false, saveAs = false, allowPicker = false } = {}) {
-    return this.enqueue(async () => {
+    const queued = automatic && this.queuedAutosaves.get(id);
+    if (queued) return queued;
+    const result = this.enqueue(async () => {
+      if (automatic) this.queuedAutosaves.delete(id);
       const entry = this.entries.get(id);
       if (automatic && (!entry || entry.error || !this.isDirty(id, entry))) return null;
       if (!entry && !allowPicker) return null;
@@ -80,6 +84,8 @@ export class LFOSDocuments {
         this.onChange();
       }
     });
+    if (automatic) this.queuedAutosaves.set(id, result);
+    return result;
   }
 }
 

@@ -35,6 +35,32 @@ function fixture() {
   return { state, first, second, messages, writes, client };
 }
 
+test('project packaging reuses checksum-matched attachments and evicts them within its budget', async () => {
+  const workspace = createWorkspace('With an attachment');
+  const source = { id: 'file', type: 'file', title: 'Attachment', checksum: 'first' };
+  workspace.sources.push(source);
+  let reads = 0;
+  const jobs = new PersistenceJobs({ attachmentCacheLimit: 4, readMedia: () => Uint8Array.of(++reads) });
+  const pack = async () => {
+    const { contents } = await jobs.run({ type: 'package', workspace, chats: [] });
+    return JSON.parse(new TextDecoder().decode(contents));
+  };
+  assert.equal((await pack()).files.file.data, 'AQ==');
+  workspace.title = 'Edited title';
+  const edited = await pack();
+  assert.equal(edited.files.file.data, 'AQ==');
+  assert.equal(edited.project.workspace.title, 'Edited title');
+  assert.equal(reads, 1);
+  source.checksum = 'second';
+  assert.equal((await pack()).files.file.data, 'Ag==');
+  source.checksum = 'first';
+  assert.equal((await pack()).files.file.data, 'Aw==');
+  delete source.checksum;
+  await pack();
+  await pack();
+  assert.equal(reads, 5);
+});
+
 test('worker storage sends changed projects and new undo snapshots, preserving the rest of the library', async () => {
   const f = fixture();
   await f.client.ready;

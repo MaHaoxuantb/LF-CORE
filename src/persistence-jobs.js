@@ -1,21 +1,41 @@
-import { serializeProject, projectFileName } from './project.js';
+import { encodeProjectAttachment, serializeProjectWithAttachments, projectFileName } from './project.js';
 
-export async function packageProject(workspace, chats, readMedia) {
-  const bytes = new Map();
+export async function packageProject(workspace, chats, readMedia, cache = null) {
+  const files = new Map();
   for (const source of workspace.sources || []) {
-    if (['pdf', 'image', 'video', 'file'].includes(source.type)) bytes.set(source.id, await readMedia(source));
+    if (!['pdf', 'image', 'video', 'file'].includes(source.type)) continue;
+    const key = cache && source.checksum ? JSON.stringify([source.id, source.type, source.checksum]) : null;
+    let attachment = key && cache.entries.get(key);
+    if (attachment) {
+      cache.entries.delete(key);
+      cache.entries.set(key, attachment);
+    } else {
+      attachment = encodeProjectAttachment(source, await readMedia(source));
+      const size = attachment.data.length;
+      if (key && size <= cache.limit) {
+        while (cache.size + size > cache.limit) {
+          const [oldest, value] = cache.entries.entries().next().value;
+          cache.size -= value.data.length;
+          cache.entries.delete(oldest);
+        }
+        cache.entries.set(key, attachment);
+        cache.size += size;
+      }
+    }
+    files.set(source.id, attachment);
   }
-  const contents = new TextEncoder().encode(serializeProject(workspace, chats, bytes)).buffer;
+  const contents = new TextEncoder().encode(serializeProjectWithAttachments(workspace, chats, files)).buffer;
   return { contents, name: projectFileName(workspace.title) };
 }
 
 // The worker owns the large library/undo mirror. UI messages contain only the
 // changed project and newly created undo snapshots, rather than the full library.
 export class PersistenceJobs {
-  constructor({ writeState, readMedia }) {
+  constructor({ writeState, readMedia, attachmentCacheLimit = 96 * 1024 * 1024 }) {
     this.writeState = writeState;
     this.readMedia = readMedia;
     this.snapshots = new Map();
+    this.attachmentCache = { entries: new Map(), size: 0, limit: attachmentCacheLimit };
   }
 
   async run(job) {
@@ -27,7 +47,7 @@ export class PersistenceJobs {
       }
       return null;
     }
-    if (job.type === 'package') return packageProject(job.workspace, job.chats, this.readMedia);
+    if (job.type === 'package') return packageProject(job.workspace, job.chats, this.readMedia, this.attachmentCache);
     if (job.type !== 'save') throw new Error('Unknown persistence operation.');
     for (const { key, value } of job.snapshots) this.snapshots.set(key, value);
     const resolveSnapshot = (key) => {
