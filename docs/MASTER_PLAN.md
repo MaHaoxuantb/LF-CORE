@@ -48,7 +48,7 @@ For the first build, prefer integrating focused open-source components over fork
 
 **Exit gate:** a user can start with “I want to learn LEAN,” read the generated article, investigate a selected proof step, and accept a useful explanation into a specific article passage. The article does not change when the answer is merely viewed. No citation appears without a real source reference.
 
-### Phase 4 — Research and consolidation
+### Phase 4 — Research and consolidation (retired prototype)
 
 **Build:** lightweight source discovery for selected questions, verified source attachment, compare or merge selected ideas, identify possible contradictions, and a session closeout that records current understanding and open questions. Keep research findings as proposals until reviewed.
 

@@ -62,15 +62,12 @@ test('source tokens remain scoped to a task and provenance survives attachment',
   assert.equal(f.workspace.nodes[0].sourceRefs[0].agentRunId, 'task');
   assert.equal(f.workspace.nodes[0].sourceRefs[0].anchor.quote, 'Verified source passage.');
 });
-test('research and source capabilities operate on the full project', async () => {
+test('agent source import and deletion update the project', async () => {
   const f = fixture();
   const source = await f.call('import_source', { title: 'Local evidence', text: 'Plates move slowly.' });
-  await f.call('update_research', { kind: 'questions', text: 'How do plates move?', sourceIds: [source.sourceId] });
-  const records = await f.call('read_research', { kind: 'questions' });
-  assert.equal(records.records.length, 1);
-  assert.equal((await f.call('search_project', { query: 'plates' })).matches.length, 1);
+  assert.equal((await f.call('get_project_index')).sources[0].id, source.sourceId);
   await f.call('delete_source', { sourceId: source.sourceId });
-  assert.deepEqual(f.workspace.research.questions[0].sourceIds, []);
+  assert.deepEqual(f.workspace.sources, []);
   assert.ok(projectCapabilities(f.workspace).some(item => item.effect === 'destructive'));
 });
 test('cancellation before commit cannot publish a change', async () => {

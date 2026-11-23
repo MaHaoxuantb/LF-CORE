@@ -43,11 +43,7 @@ The prototype stores project records and imported PDF bytes in this browser's In
 
 PDF text used by Agent search is extracted page-by-page with PDF.js and kept as a regenerable local IndexedDB cache keyed by the source checksum. The cache is not included in project downloads; imported PDF bytes remain the canonical copy and rebuild the index after upload. Image-only PDFs report that OCR is unavailable.
 
-Current scope includes reviewed research and consolidation, workspace chat with reviewed article and node edits, and the Phase 2 source workflow. See [implementation decisions](docs/IMPLEMENTATION_DECISIONS.md), [Phase 2 verification](docs/PHASE_2_CHECK.md), and [Phase 3 verification](docs/PHASE_3_CHECK.md) for the earlier prototype decisions.
-
-Open **Research** to preserve a question alongside the selected passage or nodes. A question can use an existing local source or search OpenAlex for scholarly works; discovery sends only the displayed search terms. Attaching a discovery result stores the provider record, verification time, and original URL. That confirms the record exists, not that it proves a claim. Inspect the original, write a finding, and review the complete article diff before applying it. The question, attached source IDs, proposal, and accepted article origin remain linked.
-
-The **Compare** tab creates a reviewable synthesis from two or more selected ideas. Its conservative contradiction marker only detects shared terminology with different positive/negative wording and is explicitly not a factual verdict. **Closeout** records current understanding and open questions without editing the article, giving the next session a compact return point.
+Current scope includes workspace chat with reviewed article and node edits and the source workflow. See [implementation decisions](docs/IMPLEMENTATION_DECISIONS.md), [Phase 2 verification](docs/PHASE_2_CHECK.md), and [Phase 3 verification](docs/PHASE_3_CHECK.md) for the earlier prototype decisions.
 
 [Phase 0/1 verification](docs/PHASE_0_1_CHECK.md) records the technical exit-gate checks, the PDF reading spike, and what still requires learner observation.
 
@@ -58,7 +54,6 @@ Project documents:
 - [Design guidelines](docs/DESIGN_GUIDELINES.md) — interface principles and prototype behavior.
 - [macOS distribution](docs/MACOS_DISTRIBUTION.md) — Electron development, Developer ID signing, notarization, and GitHub Actions releases.
 - [LFOS integration](docs/LFOS_INTEGRATION.md) — hosted-app configuration, file associations, capability behavior, and verification.
-- [Phase 4 verification](docs/PHASE_4_CHECK.md) — research, consolidation, provenance, and closeout checks.
 
 These documents define a prototype direction, not a finished specification. Decisions marked *open* in the master plan should be resolved through a working slice and user observation.
 

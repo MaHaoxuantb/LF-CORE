@@ -38,15 +38,9 @@ Project operations execute against the window owning that project, protected by 
 
 The host owns task checkpoints, task grants, tool discovery, clarification, verification, and execution budgets. Defaults are 50 model turns and 10 minutes per resumable segment. Tasks become interrupted after LFOS restart. Existing saved proposals can still be reviewed and applied, but new Agent requests use the host runtime. See [Agent integration](AGENT_MODE.md).
 
-## Phase 4 research and consolidation
+## Retired Research panel
 
-Research records live with the workspace as four explicit collections: questions, findings/proposals, comparisons, and session closeouts. A question retains the selected node IDs and quoted passage that motivated it. Source IDs are attached to the question and copied into any resulting article proposal and accepted article origin, so later article edits do not erase the reasoning trail.
-
-Lightweight discovery uses the public OpenAlex works search from the browser and sends only the search terms visible in the Research panel. An attached result becomes a `web` source with its OpenAlex work ID, resolution time, bibliographic metadata, and original URL. The interface consistently describes this as provider-record verification: it establishes that the indexed record exists, not that its contents prove a learner's claim. Existing pasted text and PDF sources can also be attached directly to a question. No discovered source is silently included in model context.
-
-Findings and comparison merges are stored as proposals containing the complete before/after article Markdown. They never modify the article on creation. Acceptance requires a full diff review, rejects stale proposals when the article has changed, increments the article revision, participates in undo/redo, and records question, source, comparison, and proposal IDs in article provenance.
-
-Comparison is deliberately local and inspectable. It summarizes up to eight selected article/node ideas, records shared terms, and raises a *possible* contradiction only when shared terms occur with different simple negative/positive wording. This is a review prompt, not semantic or factual adjudication. Session closeouts store current understanding plus discrete open questions and do not mutate the article.
+Earlier projects retain their saved research records and attached sources. The [Phase 4 verification notes](PHASE_4_CHECK.md) describe the original prototype.
 
 ## Phase 2 sources
 

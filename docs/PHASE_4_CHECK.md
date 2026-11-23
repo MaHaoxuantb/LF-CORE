@@ -1,5 +1,7 @@
 # Phase 4 verification
 
+These historical checks describe the retired Research panel.
+
 ## Implemented flow
 
 - A selected passage or set of nodes can seed a persistent research question. Each question records its original context, open/resolved status, attached source IDs, and timestamps.

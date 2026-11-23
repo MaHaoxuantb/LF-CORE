@@ -97,6 +97,7 @@ function remapSourceIds(workspace, idMap) {
       if (reference.anchor && idMap.has(reference.anchor.targetId)) reference.anchor.targetId = idMap.get(reference.anchor.targetId);
     }
   }
+  // Keep source links intact in records from older project files.
   for (const question of workspace.research?.questions || []) {
     question.sourceIds = (question.sourceIds || []).map((id) => idMap.get(id) || id);
   }

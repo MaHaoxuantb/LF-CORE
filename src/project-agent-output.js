@@ -8,7 +8,7 @@ const passage = object({ passageToken: text, sourceId: text, title: text, page: 
 const artifact = object({ id: text, title: text, mimeType: text, byteLength: integer, width: integer, height: integer, provenance: object({ taskId: text, operationId: text }, ['taskId', 'operationId']) }, ['id', 'title', 'mimeType', 'byteLength']);
 const fields = {
   verify_changes: { verifiedOperations: strings, mismatches: strings, checkedRecords: strings },
-  get_project_index: { workspace: object({ id: text, title: text }, ['id', 'title']), article: object({ id: text, revision: integer, headings: array(object({ line: integer, text })) }, ['id', 'revision']), nodes: array(object({ id: text, title: text, parentId: { type: ['string', 'null'] }, type: text }, ['id', 'title'])), sources: array(object({ id: text, title: text, type: text, indexStatus: text }, ['id', 'title', 'type'])), edges: array(edge), nextCursor: cursor, nextSourceCursor: cursor, researchCounts: object({ questions: integer, findings: integer, comparisons: integer, closeouts: integer }) },
+  get_project_index: { workspace: object({ id: text, title: text }, ['id', 'title']), article: object({ id: text, revision: integer, headings: array(object({ line: integer, text })) }, ['id', 'revision']), nodes: array(object({ id: text, title: text, parentId: { type: ['string', 'null'] }, type: text }, ['id', 'title'])), sources: array(object({ id: text, title: text, type: text, indexStatus: text }, ['id', 'title', 'type'])), edges: array(edge), nextCursor: cursor, nextSourceCursor: cursor },
   read_document: { targetId: text, startLine: integer, endLine: integer, totalLines: integer, text, truncated: boolean },
   search_sources: { matches: array(passage) }, read_source_passage: passage.properties,
   search_project: { matches: array(object({ targetId: text, kind: text, excerpt: text }, ['targetId', 'excerpt'])), nextCursor: cursor },
@@ -18,8 +18,7 @@ const fields = {
   save_project: { localSaved: boolean, linkedSaved: boolean, cancelled: boolean, savedRevision: integer },
   set_view: { viewRevision: text }, set_node_layout: { nodeId: text }, add_highlight: { highlightId: text },
   undo: { restored: boolean }, redo: { restored: boolean }, capture_region: { artifacts: array(artifact) }, export_artifact: { exported: boolean, cancelled: boolean, artifactId: text },
-  read_research: { records: array(object({ id: text, text, status: text, sourceIds: strings }, ['id'])), nextCursor: cursor },
-  update_research: { recordId: text }, compare_ideas: { recordId: text }, record_closeout: { recordId: text }, rename_project: { title: text },
+  rename_project: { title: text },
   create_node: { nodeId: text, operationId: text }, create_source_node: { nodeId: text }, create_edge: { edgeId: text, operationId: text }, update_edge: { edgeId: text, operationId: text },
   edit_markdown: { targetId: text, operationId: text }, replace_markdown: { targetId: text, operationId: text }, set_parent: { nodeId: text, parentId: { type: ['string', 'null'] } },
   attach_source_reference: { nodeId: text, sourceReferenceId: text }, import_source: { sourceId: text }, import_attachment: { sourceId: text },

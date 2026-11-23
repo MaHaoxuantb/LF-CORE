@@ -10,7 +10,7 @@ LF CORE registers each saved project as a session with a stable project ID and
 monotonic project revision. The native `lfos.agent/v1` MessagePort protocol
 exposes document indexing/search, Markdown reads and precise edits, graph
 operations, imported source passages, source/attachment import, bounded
-attachment reads, research records, comparisons, closeouts, and export artifacts.
+attachment reads, and export artifacts.
 This is a native LFOS protocol, not MCP. New research, computation, or external
 services require their own providers; unavailable capabilities are reported.
 
@@ -42,7 +42,7 @@ original task automatically.
 
 Automated tests cover transaction isolation, revision conflicts, exact edits,
 receipt replay, failed persistence, source token isolation, graph integrity,
-research operations, cancellation, and portable exports. LunOS adds runtime and
+source import and deletion, cancellation, and portable exports. LunOS adds runtime and
 SDK channel tests. Before release, exercise both interfaces on connected SolOS
 and actual Safari, including live edits, hidden-window indexing, Undo,
 permission revocation, LFOS restart, and resume without duplicate edits. Those

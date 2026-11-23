@@ -9,8 +9,11 @@ test('a project round trip preserves content and remaps storage identities', () 
   workspace.sources.push({ id: 'pdf-old', type: 'pdf', title: 'Reader', fileName: 'reader.pdf', pages: 2 });
   workspace.nodes.push({ id: 'node-1', document: { type: 'markdown', markdown: '# Gyres' }, sourceRefs: [{ sourceId: 'pdf-old', anchor: { targetId: 'pdf-old', quote: 'water' } }] });
   workspace.nodes.push({ id: 'source-node-1', document: { type: 'source', sourceId: 'pdf-old' }, sourceRefs: [] });
-  workspace.research.questions.push({ id: 'q1', text: 'Why?', sourceIds: ['pdf-old'] });
-  workspace.research.findings.push({ id: 'f1', sourceIds: ['pdf-old'], status: 'proposed' });
+  workspace.research = {
+    questions: [{ id: 'q1', text: 'Why?', sourceIds: ['pdf-old'] }],
+    findings: [{ id: 'f1', sourceIds: ['pdf-old'], status: 'accepted' }],
+  };
+  workspace.article.origins = [{ kind: 'research', proposalId: 'f1', sourceIds: ['pdf-old'] }];
   const agentAfter = structuredClone(workspace);
   agentAfter.nodes[0].sourceRefs.push({ sourceId: 'pdf-old', anchor: { targetId: 'pdf-old', quote: 'agent passage' } });
   const serialized = serializeProject(workspace, [{ id: 'chat-1', title: 'Question', assistantMode: 'agent', messages: [{ role: 'assistant', agentProposal: { status: 'proposed', baseUpdatedAt: workspace.updatedAt, before: workspace, after: agentAfter } }] }], new Map([['pdf-old', new Uint8Array([37, 80, 68, 70])]]), '2026-09-21T00:00:00.000Z');
@@ -23,6 +26,7 @@ test('a project round trip preserves content and remaps storage identities', () 
   assert.deepEqual(imported.workspace.nodes[1].document, { type: 'source', sourceId: 'pdf-new' });
   assert.deepEqual(imported.workspace.research.questions[0].sourceIds, ['pdf-new']);
   assert.deepEqual(imported.workspace.research.findings[0].sourceIds, ['pdf-new']);
+  assert.deepEqual(imported.workspace.article.origins[0].sourceIds, ['pdf-new']);
   assert.deepEqual(imported.pdfs[0], { id: 'pdf-new', bytes: new Uint8Array([37, 80, 68, 70]) });
   assert.equal(imported.chats[0].title, 'Question');
   assert.equal(imported.chats[0].assistantMode, 'agent');

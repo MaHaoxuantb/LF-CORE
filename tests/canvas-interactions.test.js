@@ -53,7 +53,7 @@ function fixture() {
     }
   });
   vm.runInContext(framePointerMove.toString(), context);
-  for (const name of ['setGeometryPreference', 'change', 'syncNodeGeometry', 'startNodeDrag', 'startNodeResize', 'startPaperResize', 'resizeNodeWithKeys', 'refreshWorkspacePanels', 'toggleOutline', 'openSource', 'disposeAiPanel', 'toggleAiPanel', 'toggleResearchPanel']) {
+  for (const name of ['setGeometryPreference', 'change', 'syncNodeGeometry', 'startNodeDrag', 'startNodeResize', 'startPaperResize', 'resizeNodeWithKeys', 'refreshWorkspacePanels', 'toggleOutline', 'openSource', 'disposeAiPanel', 'toggleAiPanel']) {
     const match = source.match(new RegExp(`^function ${name}\\([^]*?^}`, 'm'));
     assert.ok(match, `${name} exists`);
     vm.runInContext(match[0], context);
@@ -250,10 +250,9 @@ test('opening, switching, and closing panels only replaces panel DOM', () => {
     }
   };
   Object.assign(f.context, {
-    aiPanel: null, researchPanel: null, openSourceId: null,
+    aiPanel: null, openSourceId: null,
     renderSourcesPanel: () => panel('library'),
     renderAiPanel: () => shell.append(panel('chat')),
-    renderResearchPanel: () => shell.append(panel('research')),
     openAiPanel: () => { f.context.aiPanel = {}; f.context.refreshWorkspacePanels(); }
   });
   f.context.openSource('library');
@@ -265,10 +264,9 @@ test('opening, switching, and closing panels only replaces panel DOM', () => {
   f.context.toggleAiPanel();
   assert.equal(cancelled, 1);
   assert.equal(mounted.size, 0);
-  f.context.researchPanel = {};
-  f.context.refreshWorkspacePanels();
+  f.context.toggleAiPanel();
   f.context.openSource('library');
-  assert.equal(f.context.researchPanel, null);
+  assert.equal(f.context.aiPanel, null);
   assert.deepEqual([...mounted].map((entry) => entry.name), ['library']);
   f.context.openSource(null);
   assert.equal(mounted.size, 0);
